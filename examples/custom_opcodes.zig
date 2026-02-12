@@ -49,10 +49,10 @@ pub const CustomEvm = struct {
                 const a = stack.pop();
 
                 // Check for overflow
-                const result = a * b;
-                if (result < a and b != 0) {
+                const result = a.mul(b);
+                if (result.lt(a) and !b.isZero()) {
                     // Overflow occurred, push error code
-                    try stack.push(@as(primitives.U256, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF));
+                    try stack.push(primitives.U256.MAX);
                 } else {
                     try stack.push(result);
                 }
@@ -60,7 +60,7 @@ pub const CustomEvm = struct {
 
             CUSTOM_TIMESTAMP_OPCODE => {
                 // Push current timestamp
-                try stack.push(@as(primitives.U256, self.custom_timestamp));
+                try stack.push(primitives.U256.from(self.custom_timestamp));
             },
 
             CUSTOM_LOG_OPCODE => {
@@ -70,10 +70,10 @@ pub const CustomEvm = struct {
                 }
 
                 const value = stack.pop();
-                std.log.info("Custom log: {}", .{value});
+                std.log.info("Custom log: {any}", .{value});
 
                 // Push success indicator
-                try stack.push(@as(primitives.U256, 1));
+                try stack.push(primitives.U256.ONE);
             },
 
             else => {
@@ -152,7 +152,7 @@ pub fn main() !void {
     // Create contract account
     const contract_address: primitives.Address = [_]u8{0x01} ** 20;
     const account_info = state.AccountInfo.new(
-        @as(primitives.U256, 0), // balance
+        primitives.U256.ZERO, // balance
         0, // nonce
         primitives.KECCAK_EMPTY, // code hash
         bytecode.Bytecode{ .legacy_analyzed = bytecode.LegacyRawBytecode.init(&CUSTOM_BYTECODE).intoAnalyzed() },

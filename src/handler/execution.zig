@@ -73,7 +73,7 @@ pub const Execution = struct {
         const frame_data = main.FrameData.new(
             caller,
             target,
-            @as(primitives.U256, 0), // No value for delegate call
+            primitives.U256.ZERO, // No value for delegate call
             input,
             gas_limit,
             is_static,
@@ -95,7 +95,7 @@ pub const Execution = struct {
         input: []const u8,
         gas_limit: u64,
     ) !main.FrameResult {
-        return executeCall(evm, caller, target, @as(primitives.U256, 0), input, gas_limit, true);
+        return executeCall(evm, caller, target, primitives.U256.ZERO, input, gas_limit, true);
     }
 
     /// Execute call code frame

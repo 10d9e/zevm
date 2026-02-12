@@ -493,15 +493,15 @@ pub const Context = struct {
     // Block methods
 
     pub fn basefee(self: Context) primitives.U256 {
-        return @as(primitives.U256, self.block.basefee());
+        return primitives.U256.from(self.block.getBasefee());
     }
 
     pub fn blobGasprice(self: Context) primitives.U256 {
-        return @as(primitives.U256, self.block.blobExcessGasAndPrice().?.blobGasprice());
+        return primitives.U256.from(self.block.blobExcessGasAndPrice().?.blobGasprice());
     }
 
     pub fn gasLimit(self: Context) primitives.U256 {
-        return @as(primitives.U256, self.block.gasLimit());
+        return primitives.U256.from(self.block.getGasLimit());
     }
 
     pub fn difficulty(self: Context) primitives.U256 {
@@ -525,13 +525,13 @@ pub const Context = struct {
     }
 
     pub fn chainId(self: Context) primitives.U256 {
-        return @as(primitives.U256, self.cfg.chainId());
+        return primitives.U256.from(self.cfg.chainId());
     }
 
     // Transaction methods
 
     pub fn effectiveGasPrice(self: Context) primitives.U256 {
-        const base_fee = self.block.basefee();
+        const base_fee = self.block.getBasefee();
         return primitives.U256.fromU128(self.tx.effectiveGasPrice(base_fee));
     }
 

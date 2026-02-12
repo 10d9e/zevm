@@ -114,10 +114,10 @@ pub const JournalEntry = union(enum) {
             },
             .BalanceTransfer => |data| {
                 if (evm_state.getPtr(data.from)) |from_account| {
-                    from_account.info.balance += data.balance;
+                    from_account.info.balance = from_account.info.balance.add(data.balance);
                 }
                 if (evm_state.getPtr(data.to)) |to_account| {
-                    to_account.info.balance -= data.balance;
+                    to_account.info.balance = to_account.info.balance.sub(data.balance);
                 }
             },
             .NonceChanged => |address| {
@@ -738,10 +738,10 @@ pub const JournalInner = struct {
         // EIP-6780 (Cancun hard-fork): selfdestruct only if contract is created in the same tx
         const journal_entry = if (acc.isCreatedLocally() or !is_cancun_enabled) {
             acc.markSelfdestructedLocally();
-            acc.info.balance = @as(primitives.U256, 0);
+            acc.info.balance = primitives.U256.ZERO;
             JournalEntryFactory.accountDestroyed(address, target, destroyed_status, balance);
         } else if (!std.mem.eql(u8, &address, &target)) {
-            acc.info.balance = @as(primitives.U256, 0);
+            acc.info.balance = primitives.U256.ZERO;
             JournalEntryFactory.balanceTransfer(address, target, balance);
         } else {
             // State is not changed:

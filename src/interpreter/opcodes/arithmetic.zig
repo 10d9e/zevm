@@ -4,6 +4,8 @@ const Stack = @import("../stack.zig").Stack;
 const Gas = @import("../gas.zig").Gas;
 const InstructionResult = @import("../instruction_result.zig").InstructionResult;
 
+pub const U256 = primitives.U256;
+
 pub const GAS_VERYLOW: u64 = 3;
 pub const GAS_LOW: u64 = 5;
 pub const GAS_MID: u64 = 8;
@@ -18,7 +20,7 @@ pub inline fn opAdd(stack: *Stack, gas: *Gas) InstructionResult {
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = a +% b;
+    stack.setTopUnsafe().* = a.add(b);
     return .continue_;
 }
 
@@ -30,7 +32,7 @@ pub inline fn opDiv(stack: *Stack, gas: *Gas) InstructionResult {
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = if (b != 0) a / b else 0;
+    stack.setTopUnsafe().* = a.div(b);
     return .continue_;
 }
 
@@ -42,7 +44,7 @@ pub inline fn opSub(stack: *Stack, gas: *Gas) InstructionResult {
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = a -% b;
+    stack.setTopUnsafe().* = a.sub(b);
     return .continue_;
 }
 
@@ -54,7 +56,7 @@ pub inline fn opMul(stack: *Stack, gas: *Gas) InstructionResult {
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = a *% b;
+    stack.setTopUnsafe().* = a.mul(b);
     return .continue_;
 }
 
@@ -66,7 +68,7 @@ pub inline fn opMod(stack: *Stack, gas: *Gas) InstructionResult {
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = if (b != 0) a % b else 0;
+    stack.setTopUnsafe().* = a.mod(b);
     return .continue_;
 }
 
@@ -79,7 +81,7 @@ pub inline fn opAddmod(stack: *Stack, gas: *Gas) InstructionResult {
     const b = stack.peekUnsafe(1);
     const n = stack.peekUnsafe(2);
     stack.shrinkUnsafe(2);
-    stack.setTopUnsafe().* = addmod(a, b, n);
+    stack.setTopUnsafe().* = U256.addmod(a, b, n);
     return .continue_;
 }
 
@@ -92,7 +94,7 @@ pub inline fn opMulmod(stack: *Stack, gas: *Gas) InstructionResult {
     const b = stack.peekUnsafe(1);
     const n = stack.peekUnsafe(2);
     stack.shrinkUnsafe(2);
-    stack.setTopUnsafe().* = mulmod(a, b, n);
+    stack.setTopUnsafe().* = U256.mulmod(a, b, n);
     return .continue_;
 }
 
@@ -102,11 +104,11 @@ pub inline fn opMulmod(stack: *Stack, gas: *Gas) InstructionResult {
 pub inline fn opExp(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
     const exponent = stack.peekUnsafe(1);
-    const gas_cost = GAS_EXP + GAS_EXP_BYTE * byteSize(exponent);
+    const gas_cost = GAS_EXP + GAS_EXP_BYTE * exponent.byteSize();
     if (!gas.spend(gas_cost)) return .out_of_gas;
     const base = stack.peekUnsafe(0);
     stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = expMod256(base, exponent);
+    stack.setTopUnsafe().* = U256.exp(base, exponent);
     return .continue_;
 }
 
@@ -118,7 +120,7 @@ pub inline fn opSdiv(stack: *Stack, gas: *Gas) InstructionResult {
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = sdiv(a, b);
+    stack.setTopUnsafe().* = U256.sdiv(a, b);
     return .continue_;
 }
 
@@ -130,7 +132,7 @@ pub inline fn opSmod(stack: *Stack, gas: *Gas) InstructionResult {
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = smod(a, b);
+    stack.setTopUnsafe().* = U256.smod(a, b);
     return .continue_;
 }
 
@@ -142,407 +144,66 @@ pub inline fn opSignextend(stack: *Stack, gas: *Gas) InstructionResult {
     const byte_pos = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = signextend(byte_pos, value);
+    stack.setTopUnsafe().* = U256.signextend(byte_pos, value);
     return .continue_;
 }
 
-// --- Helpers ---
+// --- Legacy public helpers (delegate to U256 methods) ---
 
-/// Compute (a + b) % n using full limb arithmetic.
-/// Returns 0 when n == 0 (per EVM spec).
-pub fn addmod(a: primitives.U256, b: primitives.U256, n: primitives.U256) primitives.U256 {
-    if (n == 0) return 0;
-    const al = toLimbs(a);
-    const bl = toLimbs(b);
-    const nl = toLimbs(n);
-
-    // Add a + b → 5 limbs (carry in limb 4)
-    var sum: [5]u64 = undefined;
-    var carry: u64 = 0;
-    inline for (0..4) |i| {
-        const s: u128 = @as(u128, al[i]) + bl[i] + carry;
-        sum[i] = @truncate(s);
-        carry = @truncate(s >> 64);
-    }
-    sum[4] = carry;
-
-    // Fast path: no carry and sum < n
-    if (carry == 0 and limbLessThan(.{ sum[0], sum[1], sum[2], sum[3] }, nl)) {
-        return fromLimbs(.{ sum[0], sum[1], sum[2], sum[3] });
-    }
-
-    return fromLimbs(limbMod(5, sum, nl));
+pub inline fn addmod(a: U256, b: U256, n: U256) U256 {
+    return U256.addmod(a, b, n);
 }
 
-/// Compute (a * b) % n using schoolbook 256x256→512 multiply + Knuth division.
-/// O(1) fixed operations. Uses only u64 hardware division via div128by64.
-/// Returns 0 when n == 0 (per EVM spec).
-pub fn mulmod(a: primitives.U256, b: primitives.U256, n: primitives.U256) primitives.U256 {
-    if (n == 0) return 0;
-    if (a == 0 or b == 0) return 0;
-    const nl = toLimbs(n);
-    const product = mulFull(a, b);
-    // Fast path: product fits in 256 bits
-    if (product[4] | product[5] | product[6] | product[7] == 0) {
-        const pl = [4]u64{ product[0], product[1], product[2], product[3] };
-        if (limbLessThan(pl, nl)) return fromLimbs(pl);
-        return fromLimbs(limbMod(4, pl, nl));
-    }
-    return fromLimbs(limbMod(8, product, nl));
+pub inline fn mulmod(a: U256, b: U256, n: U256) U256 {
+    return U256.mulmod(a, b, n);
 }
 
-/// Decompose u256 into 4 little-endian u64 limbs.
-pub inline fn toLimbs(v: primitives.U256) [4]u64 {
-    return .{
-        @truncate(v),
-        @truncate(v >> 64),
-        @truncate(v >> 128),
-        @truncate(v >> 192),
-    };
+pub inline fn toLimbs(v: U256) [4]u64 {
+    return v.toLimbs();
 }
 
-/// Reassemble 4 little-endian u64 limbs into u256.
-pub inline fn fromLimbs(limbs: [4]u64) primitives.U256 {
-    return @as(primitives.U256, limbs[0]) |
-        (@as(primitives.U256, limbs[1]) << 64) |
-        (@as(primitives.U256, limbs[2]) << 128) |
-        (@as(primitives.U256, limbs[3]) << 192);
+pub inline fn fromLimbs(limbs: [4]u64) U256 {
+    return U256.fromLimbs(limbs);
 }
 
-/// 128÷64 division using 2 u64 divisions (Hacker's Delight "divlu").
-/// Precondition: hi < d, d has MSB set (i.e., d >= 2^63).
-/// Returns quotient and remainder, both u64.
 pub inline fn div128by64(hi: u64, lo: u64, d: u64) struct { q: u64, r: u64 } {
-    const dh: u64 = d >> 32;
-    const dl: u64 = d & 0xFFFFFFFF;
-    const lo_hi: u64 = lo >> 32;
-    const lo_lo: u64 = lo & 0xFFFFFFFF;
-
-    // First quotient digit (high 32 bits of q)
-    var q1: u64 = hi / dh;
-    var r1: u64 = hi - q1 * dh;
-    // Refine: while q1 >= 2^32 or q1*dl > r1:lo_hi
-    while (q1 >= (1 << 32) or q1 * dl > ((r1 << 32) | lo_hi)) {
-        q1 -= 1;
-        r1 += dh;
-        if (r1 >= (1 << 32)) break;
-    }
-
-    // New partial remainder
-    const rem1: u128 = ((@as(u128, hi) << 32) | lo_hi) -% @as(u128, q1) * d;
-    const rem1_64: u64 = @truncate(rem1);
-
-    // Second quotient digit (low 32 bits of q)
-    var q0: u64 = rem1_64 / dh;
-    var r0: u64 = rem1_64 - q0 * dh;
-    while (q0 >= (1 << 32) or q0 * dl > ((r0 << 32) | lo_lo)) {
-        q0 -= 1;
-        r0 += dh;
-        if (r0 >= (1 << 32)) break;
-    }
-
-    const rem0: u128 = ((@as(u128, rem1_64) << 32) | lo_lo) -% @as(u128, q0) * d;
-
-    return .{ .q = (q1 << 32) | q0, .r = @truncate(rem0) };
+    return U256.div128by64(hi, lo, d);
 }
 
-/// Compare two [4]u64 limb arrays (little-endian). Returns true if a < b.
 pub inline fn limbLessThan(a: [4]u64, b: [4]u64) bool {
-    var i: usize = 4;
-    while (i > 0) {
-        i -= 1;
-        if (a[i] != b[i]) return a[i] < b[i];
-    }
-    return false;
+    return U256.limbLessThan(a, b);
 }
 
-/// Schoolbook 4x4 multiplication: a * b → 8 little-endian u64 limbs (512 bits).
-pub fn mulFull(a: primitives.U256, b: primitives.U256) [8]u64 {
-    const al = toLimbs(a);
-    const bl = toLimbs(b);
-    var result = [_]u64{0} ** 8;
-
-    inline for (0..4) |i| {
-        var carry: u128 = 0;
-        inline for (0..4) |j| {
-            const prod: u128 = @as(u128, al[i]) * @as(u128, bl[j]) + result[i + j] + carry;
-            result[i + j] = @truncate(prod);
-            carry = prod >> 64;
-        }
-        result[i + 4] = @truncate(carry);
-    }
-
-    return result;
+pub inline fn mulFull(a: U256, b: U256) [8]u64 {
+    return U256.mulFull(a, b);
 }
 
-/// Generalized M-limb mod 4-limb using Knuth's Algorithm D with div128by64.
-/// M is the number of dividend limbs (4, 5, or 8). Uses only u64 hardware division.
 pub fn limbMod(comptime M: comptime_int, a: [M]u64, b: [4]u64) [4]u64 {
-    // Find highest non-zero limb in divisor
-    var n: usize = 0;
-    for (0..4) |i| {
-        if (b[3 - i] != 0) {
-            n = 4 - i;
-            break;
-        }
-    }
-    if (n == 0) return [_]u64{0} ** 4; // divisor is zero
-
-    // Single-limb divisor fast path: chain of div128by64 calls
-    if (n == 1) {
-        const d = b[0];
-        const shift: u6 = @intCast(@clz(d));
-        const d_norm = d << shift;
-
-        // Shift entire dividend by `shift` bits
-        var u_shifted: [M + 1]u64 = [_]u64{0} ** (M + 1);
-        if (shift == 0) {
-            for (0..M) |i| u_shifted[i] = a[i];
-        } else {
-            var carry: u64 = 0;
-            for (0..M) |i| {
-                u_shifted[i] = (a[i] << shift) | carry;
-                carry = a[i] >> @intCast(@as(u7, 64) - shift);
-            }
-            u_shifted[M] = carry;
-        }
-
-        // Chain divide from most significant limb
-        var rem: u64 = 0;
-        var i: usize = M;
-        // If shift produced an extra limb
-        if (u_shifted[M] != 0) {
-            // u_shifted[M] < d_norm is guaranteed since a < d * base^M
-            rem = u_shifted[M];
-            // rem < d_norm guaranteed
-        }
-        while (i > 0) {
-            i -= 1;
-            const dv = div128by64(rem, u_shifted[i], d_norm);
-            rem = dv.r;
-        }
-
-        // Denormalize remainder
-        rem >>= shift;
-        return .{ rem, 0, 0, 0 };
-    }
-
-    // Normalize: shift divisor so MSB of top limb is set
-    const shift: u6 = @intCast(@clz(b[n - 1]));
-
-    // Shift divisor
-    var v = [_]u64{0} ** 4;
-    if (shift == 0) {
-        for (0..n) |i| v[i] = b[i];
-    } else {
-        var carry: u64 = 0;
-        for (0..n) |i| {
-            v[i] = (b[i] << shift) | carry;
-            carry = b[i] >> @intCast(@as(u7, 64) - shift);
-        }
-    }
-
-    // Shift dividend (need M+1 limbs for overflow)
-    var u: [M + 1]u64 = [_]u64{0} ** (M + 1);
-    if (shift == 0) {
-        for (0..M) |i| u[i] = a[i];
-    } else {
-        var carry: u64 = 0;
-        for (0..M) |i| {
-            u[i] = (a[i] << shift) | carry;
-            carry = a[i] >> @intCast(@as(u7, 64) - shift);
-        }
-        u[M] = carry;
-    }
-
-    const m = M - n; // Number of quotient limbs
-
-    // Knuth's Algorithm D division loop
-    var j: usize = m + 1;
-    while (j > 0) {
-        j -= 1;
-
-        // Estimate quotient digit using div128by64
-        var q_hat: u64 = undefined;
-        var r_hat: u64 = undefined;
-        if (u[j + n] >= v[n - 1]) {
-            // Would overflow div128by64 precondition; q_hat = 2^64 - 1
-            q_hat = std.math.maxInt(u64);
-            r_hat = u[j + n - 1] +% v[n - 1];
-            // If r_hat overflowed (wrapped around), skip refinement
-            if (r_hat >= v[n - 1]) {
-                // r_hat didn't overflow only if r_hat >= v[n-1], but we need
-                // to check if the addition actually overflowed
-                // Overflow happened if r_hat < v[n-1] (impossible here since we're in this branch)
-                // Actually: overflow if old + v[n-1] >= 2^64, i.e. r_hat < u[j+n-1]
-                if (r_hat < u[j + n - 1]) {
-                    // Overflowed, skip refinement
-                } else if (n >= 2) {
-                    // Refine: check q_hat * v[n-2] > (r_hat << 64) | u[j+n-2]
-                    const prod_check: u128 = @as(u128, q_hat) * v[n - 2];
-                    const rhs: u128 = (@as(u128, r_hat) << 64) | u[j + n - 2];
-                    if (prod_check > rhs) {
-                        q_hat -= 1;
-                        // Could refine further but one step suffices almost always
-                    }
-                }
-            }
-        } else {
-            const dv = div128by64(u[j + n], u[j + n - 1], v[n - 1]);
-            q_hat = dv.q;
-            r_hat = dv.r;
-
-            // Refine estimate
-            if (n >= 2) {
-                while (true) {
-                    const prod_check: u128 = @as(u128, q_hat) * v[n - 2];
-                    const rhs: u128 = (@as(u128, r_hat) << 64) | u[j + n - 2];
-                    if (prod_check <= rhs) break;
-                    q_hat -= 1;
-                    const new_r = @addWithOverflow(r_hat, v[n - 1]);
-                    r_hat = new_r[0];
-                    if (new_r[1] != 0) break;
-                }
-            }
-        }
-
-        // Multiply and subtract: u[j..j+n] -= q_hat * v[0..n]
-        var carry: u128 = 0;
-        var borrow: u128 = 0;
-        for (0..n) |i| {
-            const prod: u128 = @as(u128, q_hat) * v[i] + carry;
-            carry = prod >> 64;
-            const sub_val: u128 = (prod & 0xFFFFFFFFFFFFFFFF) + borrow;
-            const diff: u128 = @as(u128, u[j + i]) + (@as(u128, 1) << 64) - sub_val;
-            u[j + i] = @truncate(diff);
-            borrow = 1 - (diff >> 64);
-        }
-
-        const sub_final: u128 = carry + borrow;
-        const diff_final: u128 = @as(u128, u[j + n]) + (@as(u128, 1) << 64) - sub_final;
-        u[j + n] = @truncate(diff_final);
-        const final_borrow: u64 = @intCast(1 - (diff_final >> 64));
-
-        // Add back if over-subtracted
-        if (final_borrow != 0) {
-            var add_carry: u64 = 0;
-            for (0..n) |i| {
-                const sum: u128 = @as(u128, u[j + i]) + v[i] + add_carry;
-                u[j + i] = @truncate(sum);
-                add_carry = @intCast(sum >> 64);
-            }
-            u[j + n] +%= add_carry;
-        }
-    }
-
-    // Denormalize remainder
-    var r_limbs = [_]u64{0} ** 4;
-    if (shift == 0) {
-        for (0..n) |i| r_limbs[i] = u[i];
-    } else {
-        for (0..n - 1) |i| {
-            r_limbs[i] = (u[i] >> shift) | (u[i + 1] << @intCast(@as(u7, 64) - shift));
-        }
-        r_limbs[n - 1] = u[n - 1] >> shift;
-    }
-
-    return r_limbs;
+    return U256.limbMod(M, a, b);
 }
 
-/// 512-bit mod 256-bit (wrapper around limbMod).
-pub fn mod512by256(a: [8]u64, b: [4]u64) primitives.U256 {
-    return fromLimbs(limbMod(8, a, b));
+pub fn mod512by256(a: [8]u64, b: [4]u64) U256 {
+    return U256.fromLimbs(U256.limbMod(8, a, b));
 }
 
-/// Square-and-multiply modular exponentiation (mod 2^256).
-pub fn expMod256(base: primitives.U256, exp: primitives.U256) primitives.U256 {
-    if (exp == 0) return 1;
-    var result: primitives.U256 = 1;
-    var b = base;
-    var e = exp;
-    while (e != 0) {
-        if (e & 1 == 1) {
-            result = result *% b;
-        }
-        e >>= 1;
-        if (e != 0) {
-            b = b *% b;
-        }
-    }
-    return result;
+pub inline fn expMod256(base: U256, exp_val: U256) U256 {
+    return U256.exp(base, exp_val);
 }
 
-/// Number of bytes needed to represent x (0 returns 0).
-pub fn byteSize(x: primitives.U256) u64 {
-    if (x == 0) return 0;
-    return (256 - @as(u64, @clz(x)) + 7) / 8;
+pub inline fn byteSize(x: U256) u64 {
+    return x.byteSize();
 }
 
-/// Signed division: a / b in two's complement.
-/// Returns 0 when b == 0 (per EVM spec).
-/// Special case: MIN / -1 = MIN (overflow wraps).
-pub fn sdiv(a: primitives.U256, b: primitives.U256) primitives.U256 {
-    if (b == 0) return 0;
-
-    const sign_bit: primitives.U256 = 1 << 255;
-    const a_negative = (a & sign_bit) != 0;
-    const b_negative = (b & sign_bit) != 0;
-
-    // Convert to absolute values
-    const abs_a = if (a_negative) (~a) +% 1 else a;
-    const abs_b = if (b_negative) (~b) +% 1 else b;
-
-    // Perform unsigned division
-    const abs_result = abs_a / abs_b;
-
-    // Apply sign: negative if signs differ
-    const result_negative = a_negative != b_negative;
-    return if (result_negative) (~abs_result) +% 1 else abs_result;
+pub inline fn sdiv(a: U256, b: U256) U256 {
+    return U256.sdiv(a, b);
 }
 
-/// Signed modulo: a % b in two's complement.
-/// Returns 0 when b == 0 (per EVM spec).
-/// Result has the same sign as dividend a.
-pub fn smod(a: primitives.U256, b: primitives.U256) primitives.U256 {
-    if (b == 0) return 0;
-
-    const sign_bit: primitives.U256 = 1 << 255;
-    const a_negative = (a & sign_bit) != 0;
-    const b_negative = (b & sign_bit) != 0;
-
-    // Convert to absolute values
-    const abs_a = if (a_negative) (~a) +% 1 else a;
-    const abs_b = if (b_negative) (~b) +% 1 else b;
-
-    // Perform unsigned modulo
-    const abs_result = abs_a % abs_b;
-
-    // Result has the sign of dividend a
-    return if (a_negative) (~abs_result) +% 1 else abs_result;
+pub inline fn smod(a: U256, b: U256) U256 {
+    return U256.smod(a, b);
 }
 
-/// Sign extend value from byte position.
-/// byte_pos: which byte (0-31) to extend from
-/// value: the value to extend
-/// If byte_pos >= 31, returns value unchanged.
-pub fn signextend(byte_pos: primitives.U256, value: primitives.U256) primitives.U256 {
-    // If byte position is out of range (>= 31), no extension needed
-    if (byte_pos >= 31) return value;
-
-    const byte_pos_usize: usize = @intCast(byte_pos);
-    const bit_pos = (byte_pos_usize * 8) + 7; // Sign bit position
-    const sign_bit: primitives.U256 = @as(primitives.U256, 1) << @intCast(bit_pos);
-
-    // Check if sign bit is set
-    if ((value & sign_bit) != 0) {
-        // Negative: set all higher bits to 1
-        const mask = (~@as(primitives.U256, 0)) << @intCast(bit_pos);
-        return value | mask;
-    } else {
-        // Positive: clear all higher bits to 0
-        const mask = (@as(primitives.U256, 1) << @intCast(bit_pos + 1)) -% 1;
-        return value & mask;
-    }
+pub inline fn signextend(byte_pos: U256, value: U256) U256 {
+    return U256.signextend(byte_pos, value);
 }
 
 test {

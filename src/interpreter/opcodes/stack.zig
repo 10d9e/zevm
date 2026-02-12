@@ -21,7 +21,7 @@ pub inline fn opPop(stack: *Stack, gas: *Gas) InstructionResult {
 pub inline fn opPush0(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasSpace(1)) return .stack_overflow;
     if (!gas.spend(GAS_BASE)) return .out_of_gas;
-    stack.pushUnsafe(0);
+    stack.pushUnsafe(primitives.U256.ZERO);
     return .continue_;
 }
 
@@ -43,11 +43,7 @@ pub inline fn opPushN(stack: *Stack, gas: *Gas, code: []const u8, pc: *usize, n:
 
     // Read four big-endian u64 limbs and assemble U256
     // (4 native-width loads + bswaps, then 3 constant shifts + ORs)
-    const U = primitives.U256;
-    const value: U = (@as(U, std.mem.readInt(u64, buf[0..8], .big)) << 192) |
-        (@as(U, std.mem.readInt(u64, buf[8..16], .big)) << 128) |
-        (@as(U, std.mem.readInt(u64, buf[16..24], .big)) << 64) |
-        @as(U, std.mem.readInt(u64, buf[24..32], .big));
+    const value = primitives.U256.fromBytes(buf);
 
     stack.pushUnsafe(value);
     pc.* += n;

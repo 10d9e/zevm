@@ -178,7 +178,7 @@ pub fn main() !void {
     // Create contract account
     const contract_address: primitives.Address = [_]u8{0x01} ** 20;
     const account_info = state.AccountInfo.new(
-        @as(primitives.U256, 0), // balance
+        primitives.U256.ZERO, // balance
         0, // nonce
         primitives.KECCAK_EMPTY, // code hash
         bytecode.Bytecode{ .legacy_analyzed = bytecode.LegacyRawBytecode.init(&CHEATCODE_BYTECODE).intoAnalyzed() },

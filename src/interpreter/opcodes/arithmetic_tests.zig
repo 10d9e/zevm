@@ -16,59 +16,59 @@ const opExp = arithmetic.opExp;
 
 const expectEqual = std.testing.expectEqual;
 const U = primitives.U256;
-const MAX = std.math.maxInt(U);
+const MAX = U.MAX;
 
 // --- ADD tests ---
 
 test "ADD: 5 + 3 = 8" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 5));
-    stack.pushUnsafe(@as(U, 3));
+    stack.pushUnsafe(U.from(5));
+    stack.pushUnsafe(U.from(3));
     const result = opAdd(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 1), stack.len());
-    try expectEqual(@as(U, 8), stack.popUnsafe());
+    try expectEqual(U.from(8), stack.popUnsafe());
     try expectEqual(@as(u64, 97), gas.getRemaining());
 }
 
 test "ADD: zero identity" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 42));
-    stack.pushUnsafe(@as(U, 0));
+    stack.pushUnsafe(U.from(42));
+    stack.pushUnsafe(U.ZERO);
     const result = opAdd(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 42), stack.popUnsafe());
+    try expectEqual(U.from(42), stack.popUnsafe());
 }
 
 test "ADD: commutative" {
     var s1 = Stack.new();
     var g1 = Gas.new(100);
-    s1.pushUnsafe(@as(U, 100));
-    s1.pushUnsafe(@as(U, 200));
+    s1.pushUnsafe(U.from(100));
+    s1.pushUnsafe(U.from(200));
     _ = opAdd(&s1, &g1);
     const r1 = s1.popUnsafe();
 
     var s2 = Stack.new();
     var g2 = Gas.new(100);
-    s2.pushUnsafe(@as(U, 200));
-    s2.pushUnsafe(@as(U, 100));
+    s2.pushUnsafe(U.from(200));
+    s2.pushUnsafe(U.from(100));
     _ = opAdd(&s2, &g2);
     const r2 = s2.popUnsafe();
 
     try expectEqual(r1, r2);
-    try expectEqual(@as(U, 300), r1);
+    try expectEqual(U.from(300), r1);
 }
 
 test "ADD: wrapping overflow MAX + 1 = 0" {
     var stack = Stack.new();
     var gas = Gas.new(100);
     stack.pushUnsafe(MAX);
-    stack.pushUnsafe(@as(U, 1));
+    stack.pushUnsafe(U.ONE);
     const result = opAdd(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
 }
 
 test "ADD: MAX + MAX = MAX - 1" {
@@ -78,7 +78,7 @@ test "ADD: MAX + MAX = MAX - 1" {
     stack.pushUnsafe(MAX);
     const result = opAdd(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(MAX -% 1, stack.popUnsafe());
+    try expectEqual(MAX.sub(U.ONE), stack.popUnsafe());
 }
 
 test "ADD: stack underflow" {
@@ -93,8 +93,8 @@ test "ADD: stack underflow" {
 test "ADD: out of gas" {
     var stack = Stack.new();
     var gas = Gas.new(2);
-    stack.pushUnsafe(@as(U, 1));
-    stack.pushUnsafe(@as(U, 2));
+    stack.pushUnsafe(U.ONE);
+    stack.pushUnsafe(U.from(2));
     const result = opAdd(&stack, &gas);
     try expectEqual(InstructionResult.out_of_gas, result);
     try expectEqual(@as(usize, 2), stack.len());
@@ -103,8 +103,8 @@ test "ADD: out of gas" {
 test "ADD: gas deduction" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 10));
-    stack.pushUnsafe(@as(U, 20));
+    stack.pushUnsafe(U.from(10));
+    stack.pushUnsafe(U.from(20));
     _ = opAdd(&stack, &gas);
     try expectEqual(@as(u64, 97), gas.getRemaining());
     try expectEqual(@as(u64, 3), gas.getSpent());
@@ -113,14 +113,14 @@ test "ADD: gas deduction" {
 test "ADD: chained 1 + 2 + 3 = 6" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 1));
-    stack.pushUnsafe(@as(U, 2));
-    stack.pushUnsafe(@as(U, 3));
+    stack.pushUnsafe(U.ONE);
+    stack.pushUnsafe(U.from(2));
+    stack.pushUnsafe(U.from(3));
     _ = opAdd(&stack, &gas); // 3 + 2 = 5
     try expectEqual(@as(usize, 2), stack.len());
     _ = opAdd(&stack, &gas); // 5 + 1 = 6
     try expectEqual(@as(usize, 1), stack.len());
-    try expectEqual(@as(U, 6), stack.popUnsafe());
+    try expectEqual(U.from(6), stack.popUnsafe());
     try expectEqual(@as(u64, 94), gas.getRemaining());
 }
 
@@ -129,49 +129,49 @@ test "ADD: chained 1 + 2 + 3 = 6" {
 test "DIV: 10 / 3 = 3" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 3)); // b (divisor)
-    stack.pushUnsafe(@as(U, 10)); // a (dividend)
+    stack.pushUnsafe(U.from(3)); // b (divisor)
+    stack.pushUnsafe(U.from(10)); // a (dividend)
     const result = opDiv(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 1), stack.len());
-    try expectEqual(@as(U, 3), stack.popUnsafe());
+    try expectEqual(U.from(3), stack.popUnsafe());
     try expectEqual(@as(u64, 95), gas.getRemaining());
 }
 
 test "DIV: division by zero returns 0" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0)); // b (divisor)
-    stack.pushUnsafe(@as(U, 42)); // a (dividend)
+    stack.pushUnsafe(U.ZERO); // b (divisor)
+    stack.pushUnsafe(U.from(42)); // a (dividend)
     const result = opDiv(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
 }
 
 test "DIV: exact division" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 25)); // b (divisor)
-    stack.pushUnsafe(@as(U, 100)); // a (dividend)
+    stack.pushUnsafe(U.from(25)); // b (divisor)
+    stack.pushUnsafe(U.from(100)); // a (dividend)
     const result = opDiv(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 4), stack.popUnsafe());
+    try expectEqual(U.from(4), stack.popUnsafe());
 }
 
 test "DIV: dividend < divisor = 0" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 10)); // b (divisor)
-    stack.pushUnsafe(@as(U, 3)); // a (dividend)
+    stack.pushUnsafe(U.from(10)); // b (divisor)
+    stack.pushUnsafe(U.from(3)); // a (dividend)
     const result = opDiv(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
 }
 
 test "DIV: MAX / 1 = MAX" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 1)); // b (divisor)
+    stack.pushUnsafe(U.ONE); // b (divisor)
     stack.pushUnsafe(MAX); // a (dividend)
     const result = opDiv(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
@@ -185,7 +185,7 @@ test "DIV: MAX / MAX = 1" {
     stack.pushUnsafe(MAX);
     const result = opDiv(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 1), stack.popUnsafe());
+    try expectEqual(U.ONE, stack.popUnsafe());
 }
 
 test "DIV: stack underflow" {
@@ -200,8 +200,8 @@ test "DIV: stack underflow" {
 test "DIV: out of gas" {
     var stack = Stack.new();
     var gas = Gas.new(4);
-    stack.pushUnsafe(@as(U, 10));
-    stack.pushUnsafe(@as(U, 2));
+    stack.pushUnsafe(U.from(10));
+    stack.pushUnsafe(U.from(2));
     const result = opDiv(&stack, &gas);
     try expectEqual(InstructionResult.out_of_gas, result);
     try expectEqual(@as(usize, 2), stack.len());
@@ -212,19 +212,19 @@ test "DIV: out of gas" {
 test "SUB: 8 - 3 = 5" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 3)); // b
-    stack.pushUnsafe(@as(U, 8)); // a
+    stack.pushUnsafe(U.from(3)); // b
+    stack.pushUnsafe(U.from(8)); // a
     const result = opSub(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 5), stack.popUnsafe());
+    try expectEqual(U.from(5), stack.popUnsafe());
     try expectEqual(@as(u64, 97), gas.getRemaining());
 }
 
 test "SUB: wrapping underflow 0 - 1 = MAX" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 1)); // b
-    stack.pushUnsafe(@as(U, 0)); // a
+    stack.pushUnsafe(U.ONE); // b
+    stack.pushUnsafe(U.ZERO); // a
     const result = opSub(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(MAX, stack.popUnsafe());
@@ -233,21 +233,21 @@ test "SUB: wrapping underflow 0 - 1 = MAX" {
 test "SUB: zero identity a - 0 = a" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0)); // b
-    stack.pushUnsafe(@as(U, 42)); // a
+    stack.pushUnsafe(U.ZERO); // b
+    stack.pushUnsafe(U.from(42)); // a
     const result = opSub(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 42), stack.popUnsafe());
+    try expectEqual(U.from(42), stack.popUnsafe());
 }
 
 test "SUB: self-sub a - a = 0" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 999)); // b
-    stack.pushUnsafe(@as(U, 999)); // a
+    stack.pushUnsafe(U.from(999)); // b
+    stack.pushUnsafe(U.from(999)); // a
     const result = opSub(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
 }
 
 test "SUB: stack underflow" {
@@ -261,8 +261,8 @@ test "SUB: stack underflow" {
 test "SUB: out of gas" {
     var stack = Stack.new();
     var gas = Gas.new(2);
-    stack.pushUnsafe(@as(U, 1));
-    stack.pushUnsafe(@as(U, 2));
+    stack.pushUnsafe(U.ONE);
+    stack.pushUnsafe(U.from(2));
     const result = opSub(&stack, &gas);
     try expectEqual(InstructionResult.out_of_gas, result);
     try expectEqual(@as(usize, 2), stack.len());
@@ -273,61 +273,61 @@ test "SUB: out of gas" {
 test "MUL: 3 * 4 = 12" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 4)); // b
-    stack.pushUnsafe(@as(U, 3)); // a
+    stack.pushUnsafe(U.from(4)); // b
+    stack.pushUnsafe(U.from(3)); // a
     const result = opMul(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 12), stack.popUnsafe());
+    try expectEqual(U.from(12), stack.popUnsafe());
     try expectEqual(@as(u64, 95), gas.getRemaining());
 }
 
 test "MUL: zero" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0));
-    stack.pushUnsafe(@as(U, 42));
+    stack.pushUnsafe(U.ZERO);
+    stack.pushUnsafe(U.from(42));
     const result = opMul(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
 }
 
 test "MUL: identity a * 1 = a" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 1));
-    stack.pushUnsafe(@as(U, 42));
+    stack.pushUnsafe(U.ONE);
+    stack.pushUnsafe(U.from(42));
     const result = opMul(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 42), stack.popUnsafe());
+    try expectEqual(U.from(42), stack.popUnsafe());
 }
 
 test "MUL: wrapping MAX * 2 = MAX - 1" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 2));
+    stack.pushUnsafe(U.from(2));
     stack.pushUnsafe(MAX);
     const result = opMul(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(MAX -% 1, stack.popUnsafe());
+    try expectEqual(MAX.sub(U.ONE), stack.popUnsafe());
 }
 
 test "MUL: commutative" {
     var s1 = Stack.new();
     var g1 = Gas.new(100);
-    s1.pushUnsafe(@as(U, 7));
-    s1.pushUnsafe(@as(U, 13));
+    s1.pushUnsafe(U.from(7));
+    s1.pushUnsafe(U.from(13));
     _ = opMul(&s1, &g1);
     const r1 = s1.popUnsafe();
 
     var s2 = Stack.new();
     var g2 = Gas.new(100);
-    s2.pushUnsafe(@as(U, 13));
-    s2.pushUnsafe(@as(U, 7));
+    s2.pushUnsafe(U.from(13));
+    s2.pushUnsafe(U.from(7));
     _ = opMul(&s2, &g2);
     const r2 = s2.popUnsafe();
 
     try expectEqual(r1, r2);
-    try expectEqual(@as(U, 91), r1);
+    try expectEqual(U.from(91), r1);
 }
 
 test "MUL: stack underflow" {
@@ -340,8 +340,8 @@ test "MUL: stack underflow" {
 test "MUL: out of gas" {
     var stack = Stack.new();
     var gas = Gas.new(4);
-    stack.pushUnsafe(@as(U, 2));
-    stack.pushUnsafe(@as(U, 3));
+    stack.pushUnsafe(U.from(2));
+    stack.pushUnsafe(U.from(3));
     const result = opMul(&stack, &gas);
     try expectEqual(InstructionResult.out_of_gas, result);
     try expectEqual(@as(usize, 2), stack.len());
@@ -352,42 +352,42 @@ test "MUL: out of gas" {
 test "MOD: 10 % 3 = 1" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 3)); // b
-    stack.pushUnsafe(@as(U, 10)); // a
+    stack.pushUnsafe(U.from(3)); // b
+    stack.pushUnsafe(U.from(10)); // a
     const result = opMod(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 1), stack.popUnsafe());
+    try expectEqual(U.ONE, stack.popUnsafe());
     try expectEqual(@as(u64, 95), gas.getRemaining());
 }
 
 test "MOD: mod by zero = 0" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0)); // b
-    stack.pushUnsafe(@as(U, 42)); // a
+    stack.pushUnsafe(U.ZERO); // b
+    stack.pushUnsafe(U.from(42)); // a
     const result = opMod(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
 }
 
 test "MOD: dividend < divisor" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 10)); // b
-    stack.pushUnsafe(@as(U, 3)); // a
+    stack.pushUnsafe(U.from(10)); // b
+    stack.pushUnsafe(U.from(3)); // a
     const result = opMod(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 3), stack.popUnsafe());
+    try expectEqual(U.from(3), stack.popUnsafe());
 }
 
 test "MOD: MAX % 2 = 1" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 2)); // b
+    stack.pushUnsafe(U.from(2)); // b
     stack.pushUnsafe(MAX); // a
     const result = opMod(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 1), stack.popUnsafe());
+    try expectEqual(U.ONE, stack.popUnsafe());
 }
 
 test "MOD: stack underflow" {
@@ -400,8 +400,8 @@ test "MOD: stack underflow" {
 test "MOD: out of gas" {
     var stack = Stack.new();
     var gas = Gas.new(4);
-    stack.pushUnsafe(@as(U, 3));
-    stack.pushUnsafe(@as(U, 10));
+    stack.pushUnsafe(U.from(3));
+    stack.pushUnsafe(U.from(10));
     const result = opMod(&stack, &gas);
     try expectEqual(InstructionResult.out_of_gas, result);
 }
@@ -411,37 +411,37 @@ test "MOD: out of gas" {
 test "ADDMOD: (10 + 7) % 3 = 2" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 3)); // N
-    stack.pushUnsafe(@as(U, 7)); // b
-    stack.pushUnsafe(@as(U, 10)); // a
+    stack.pushUnsafe(U.from(3)); // N
+    stack.pushUnsafe(U.from(7)); // b
+    stack.pushUnsafe(U.from(10)); // a
     const result = opAddmod(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 1), stack.len());
-    try expectEqual(@as(U, 2), stack.popUnsafe());
+    try expectEqual(U.from(2), stack.popUnsafe());
     try expectEqual(@as(u64, 92), gas.getRemaining());
 }
 
 test "ADDMOD: N=0 returns 0" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0)); // N
-    stack.pushUnsafe(@as(U, 7)); // b
-    stack.pushUnsafe(@as(U, 10)); // a
+    stack.pushUnsafe(U.ZERO); // N
+    stack.pushUnsafe(U.from(7)); // b
+    stack.pushUnsafe(U.from(10)); // a
     const result = opAddmod(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
 }
 
 test "ADDMOD: MAX + 1 carry" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 2)); // N
-    stack.pushUnsafe(@as(U, 1)); // b
+    stack.pushUnsafe(U.from(2)); // N
+    stack.pushUnsafe(U.ONE); // b
     stack.pushUnsafe(MAX); // a
     // (MAX + 1) % 2 = 2^256 % 2 = 0
     const result = opAddmod(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
 }
 
 test "ADDMOD: MAX + MAX" {
@@ -453,14 +453,14 @@ test "ADDMOD: MAX + MAX" {
     // (MAX + MAX) % MAX = (2*MAX) % MAX = 0
     const result = opAddmod(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
 }
 
 test "ADDMOD: stack underflow" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 1));
-    stack.pushUnsafe(@as(U, 2));
+    stack.pushUnsafe(U.ONE);
+    stack.pushUnsafe(U.from(2));
     const result = opAddmod(&stack, &gas);
     try expectEqual(InstructionResult.stack_underflow, result);
     try expectEqual(@as(usize, 2), stack.len());
@@ -469,9 +469,9 @@ test "ADDMOD: stack underflow" {
 test "ADDMOD: out of gas" {
     var stack = Stack.new();
     var gas = Gas.new(7);
-    stack.pushUnsafe(@as(U, 3));
-    stack.pushUnsafe(@as(U, 7));
-    stack.pushUnsafe(@as(U, 10));
+    stack.pushUnsafe(U.from(3));
+    stack.pushUnsafe(U.from(7));
+    stack.pushUnsafe(U.from(10));
     const result = opAddmod(&stack, &gas);
     try expectEqual(InstructionResult.out_of_gas, result);
     try expectEqual(@as(usize, 3), stack.len());
@@ -482,25 +482,25 @@ test "ADDMOD: out of gas" {
 test "MULMOD: (10 * 7) % 3 = 1" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 3)); // N
-    stack.pushUnsafe(@as(U, 7)); // b
-    stack.pushUnsafe(@as(U, 10)); // a
+    stack.pushUnsafe(U.from(3)); // N
+    stack.pushUnsafe(U.from(7)); // b
+    stack.pushUnsafe(U.from(10)); // a
     const result = opMulmod(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 1), stack.len());
-    try expectEqual(@as(U, 1), stack.popUnsafe());
+    try expectEqual(U.ONE, stack.popUnsafe());
     try expectEqual(@as(u64, 92), gas.getRemaining());
 }
 
 test "MULMOD: N=0 returns 0" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0)); // N
-    stack.pushUnsafe(@as(U, 7)); // b
-    stack.pushUnsafe(@as(U, 10)); // a
+    stack.pushUnsafe(U.ZERO); // N
+    stack.pushUnsafe(U.from(7)); // b
+    stack.pushUnsafe(U.from(10)); // a
     const result = opMulmod(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
 }
 
 test "MULMOD: MAX * MAX % MAX = 0" {
@@ -511,14 +511,14 @@ test "MULMOD: MAX * MAX % MAX = 0" {
     stack.pushUnsafe(MAX); // a
     const result = opMulmod(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
 }
 
 test "MULMOD: stack underflow" {
     var stack = Stack.new();
     var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 1));
-    stack.pushUnsafe(@as(U, 2));
+    stack.pushUnsafe(U.ONE);
+    stack.pushUnsafe(U.from(2));
     const result = opMulmod(&stack, &gas);
     try expectEqual(InstructionResult.stack_underflow, result);
 }
@@ -526,9 +526,9 @@ test "MULMOD: stack underflow" {
 test "MULMOD: out of gas" {
     var stack = Stack.new();
     var gas = Gas.new(7);
-    stack.pushUnsafe(@as(U, 3));
-    stack.pushUnsafe(@as(U, 7));
-    stack.pushUnsafe(@as(U, 10));
+    stack.pushUnsafe(U.from(3));
+    stack.pushUnsafe(U.from(7));
+    stack.pushUnsafe(U.from(10));
     const result = opMulmod(&stack, &gas);
     try expectEqual(InstructionResult.out_of_gas, result);
 }
@@ -538,11 +538,11 @@ test "MULMOD: out of gas" {
 test "EXP: 2 ^ 10 = 1024" {
     var stack = Stack.new();
     var gas = Gas.new(1000);
-    stack.pushUnsafe(@as(U, 10)); // exponent
-    stack.pushUnsafe(@as(U, 2)); // base
+    stack.pushUnsafe(U.from(10)); // exponent
+    stack.pushUnsafe(U.from(2)); // base
     const result = opExp(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 1024), stack.popUnsafe());
+    try expectEqual(U.from(1024), stack.popUnsafe());
     // gas: 10 + 50*1 = 60 (exponent 10 fits in 1 byte)
     try expectEqual(@as(u64, 940), gas.getRemaining());
 }
@@ -550,11 +550,11 @@ test "EXP: 2 ^ 10 = 1024" {
 test "EXP: a ^ 0 = 1" {
     var stack = Stack.new();
     var gas = Gas.new(1000);
-    stack.pushUnsafe(@as(U, 0)); // exponent
-    stack.pushUnsafe(@as(U, 42)); // base
+    stack.pushUnsafe(U.ZERO); // exponent
+    stack.pushUnsafe(U.from(42)); // base
     const result = opExp(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 1), stack.popUnsafe());
+    try expectEqual(U.ONE, stack.popUnsafe());
     // gas: 10 + 50*0 = 10 (exponent 0 = 0 bytes)
     try expectEqual(@as(u64, 990), gas.getRemaining());
 }
@@ -562,41 +562,41 @@ test "EXP: a ^ 0 = 1" {
 test "EXP: 0 ^ 0 = 1" {
     var stack = Stack.new();
     var gas = Gas.new(1000);
-    stack.pushUnsafe(@as(U, 0)); // exponent
-    stack.pushUnsafe(@as(U, 0)); // base
+    stack.pushUnsafe(U.ZERO); // exponent
+    stack.pushUnsafe(U.ZERO); // base
     const result = opExp(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 1), stack.popUnsafe());
+    try expectEqual(U.ONE, stack.popUnsafe());
 }
 
 test "EXP: a ^ 1 = a" {
     var stack = Stack.new();
     var gas = Gas.new(1000);
-    stack.pushUnsafe(@as(U, 1)); // exponent
-    stack.pushUnsafe(@as(U, 42)); // base
+    stack.pushUnsafe(U.ONE); // exponent
+    stack.pushUnsafe(U.from(42)); // base
     const result = opExp(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 42), stack.popUnsafe());
+    try expectEqual(U.from(42), stack.popUnsafe());
 }
 
 test "EXP: 0 ^ n = 0 (n > 0)" {
     var stack = Stack.new();
     var gas = Gas.new(1000);
-    stack.pushUnsafe(@as(U, 5)); // exponent
-    stack.pushUnsafe(@as(U, 0)); // base
+    stack.pushUnsafe(U.from(5)); // exponent
+    stack.pushUnsafe(U.ZERO); // base
     const result = opExp(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
 }
 
 test "EXP: 2 ^ 256 = 0 (wrapping)" {
     var stack = Stack.new();
     var gas = Gas.new(10000);
-    stack.pushUnsafe(@as(U, 256)); // exponent
-    stack.pushUnsafe(@as(U, 2)); // base
+    stack.pushUnsafe(U.from(256)); // exponent
+    stack.pushUnsafe(U.from(2)); // base
     const result = opExp(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expectEqual(U.ZERO, stack.popUnsafe());
     // gas: 10 + 50*2 = 110 (exponent 256 = 0x100, 2 bytes)
     try expectEqual(@as(u64, 9890), gas.getRemaining());
 }
@@ -605,7 +605,7 @@ test "EXP: gas cost with 32-byte exponent" {
     var stack = Stack.new();
     var gas = Gas.new(10000);
     stack.pushUnsafe(MAX); // exponent = MAX (32 bytes)
-    stack.pushUnsafe(@as(U, 2)); // base
+    stack.pushUnsafe(U.from(2)); // base
     const result = opExp(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
     // gas: 10 + 50*32 = 1610
@@ -624,7 +624,7 @@ test "EXP: out of gas" {
     var stack = Stack.new();
     var gas = Gas.new(50);
     stack.pushUnsafe(MAX); // exponent = MAX (32 bytes, needs 1610 gas)
-    stack.pushUnsafe(@as(U, 2));
+    stack.pushUnsafe(U.from(2));
     const result = opExp(&stack, &gas);
     try expectEqual(InstructionResult.out_of_gas, result);
     try expectEqual(@as(usize, 2), stack.len());
@@ -633,42 +633,42 @@ test "EXP: out of gas" {
 // --- Helper function tests ---
 
 test "byteSize" {
-    try expectEqual(@as(u64, 0), arithmetic.byteSize(0));
-    try expectEqual(@as(u64, 1), arithmetic.byteSize(1));
-    try expectEqual(@as(u64, 1), arithmetic.byteSize(255));
-    try expectEqual(@as(u64, 2), arithmetic.byteSize(256));
-    try expectEqual(@as(u64, 32), arithmetic.byteSize(MAX));
+    try expectEqual(@as(u64, 0), U.ZERO.byteSize());
+    try expectEqual(@as(u64, 1), U.ONE.byteSize());
+    try expectEqual(@as(u64, 1), U.from(255).byteSize());
+    try expectEqual(@as(u64, 2), U.from(256).byteSize());
+    try expectEqual(@as(u64, 32), MAX.byteSize());
 }
 
 test "addmod helper" {
-    try expectEqual(@as(U, 2), arithmetic.addmod(10, 7, 3));
-    try expectEqual(@as(U, 0), arithmetic.addmod(10, 7, 0));
+    try expectEqual(U.from(2), U.addmod(U.from(10), U.from(7), U.from(3)));
+    try expectEqual(U.ZERO, U.addmod(U.from(10), U.from(7), U.ZERO));
     // MAX + 1 = 2^256, handled by overflow detection
-    try expectEqual(@as(U, 0), arithmetic.addmod(MAX, 1, 2));
+    try expectEqual(U.ZERO, U.addmod(MAX, U.ONE, U.from(2)));
 }
 
 test "mulmod helper" {
-    try expectEqual(@as(U, 1), arithmetic.mulmod(10, 7, 3));
-    try expectEqual(@as(U, 0), arithmetic.mulmod(10, 7, 0));
-    try expectEqual(@as(U, 0), arithmetic.mulmod(MAX, MAX, MAX));
+    try expectEqual(U.ONE, U.mulmod(U.from(10), U.from(7), U.from(3)));
+    try expectEqual(U.ZERO, U.mulmod(U.from(10), U.from(7), U.ZERO));
+    try expectEqual(U.ZERO, U.mulmod(MAX, MAX, MAX));
 }
 
 // --- toLimbs / fromLimbs round-trip tests ---
 
 test "toLimbs/fromLimbs: zero" {
-    const limbs = arithmetic.toLimbs(0);
+    const limbs = U.ZERO.toLimbs();
     try expectEqual([4]u64{ 0, 0, 0, 0 }, limbs);
-    try expectEqual(@as(U, 0), arithmetic.fromLimbs(limbs));
+    try expectEqual(U.ZERO, arithmetic.fromLimbs(limbs));
 }
 
 test "toLimbs/fromLimbs: one" {
-    const limbs = arithmetic.toLimbs(1);
+    const limbs = U.ONE.toLimbs();
     try expectEqual([4]u64{ 1, 0, 0, 0 }, limbs);
-    try expectEqual(@as(U, 1), arithmetic.fromLimbs(limbs));
+    try expectEqual(U.ONE, arithmetic.fromLimbs(limbs));
 }
 
 test "toLimbs/fromLimbs: MAX" {
-    const limbs = arithmetic.toLimbs(MAX);
+    const limbs = MAX.toLimbs();
     const max64 = std.math.maxInt(u64);
     try expectEqual([4]u64{ max64, max64, max64, max64 }, limbs);
     try expectEqual(MAX, arithmetic.fromLimbs(limbs));
@@ -676,20 +676,20 @@ test "toLimbs/fromLimbs: MAX" {
 
 test "toLimbs/fromLimbs: powers of 2^64" {
     // 2^64
-    const v1: U = @as(U, 1) << 64;
-    const l1 = arithmetic.toLimbs(v1);
+    const v1 = U.fromNative(@as(u256, 1) << 64);
+    const l1 = v1.toLimbs();
     try expectEqual([4]u64{ 0, 1, 0, 0 }, l1);
     try expectEqual(v1, arithmetic.fromLimbs(l1));
 
     // 2^128
-    const v2: U = @as(U, 1) << 128;
-    const l2 = arithmetic.toLimbs(v2);
+    const v2 = U.fromNative(@as(u256, 1) << 128);
+    const l2 = v2.toLimbs();
     try expectEqual([4]u64{ 0, 0, 1, 0 }, l2);
     try expectEqual(v2, arithmetic.fromLimbs(l2));
 
     // 2^192
-    const v3: U = @as(U, 1) << 192;
-    const l3 = arithmetic.toLimbs(v3);
+    const v3 = U.fromNative(@as(u256, 1) << 192);
+    const l3 = v3.toLimbs();
     try expectEqual([4]u64{ 0, 0, 0, 1 }, l3);
     try expectEqual(v3, arithmetic.fromLimbs(l3));
 }
@@ -697,7 +697,7 @@ test "toLimbs/fromLimbs: powers of 2^64" {
 // --- mulFull tests ---
 
 test "mulFull: small values 3 * 4 = 12" {
-    const result = arithmetic.mulFull(3, 4);
+    const result = U.mulFull(U.from(3), U.from(4));
     try expectEqual(@as(u64, 12), result[0]);
     for (1..8) |i| {
         try expectEqual(@as(u64, 0), result[i]);
@@ -707,7 +707,7 @@ test "mulFull: small values 3 * 4 = 12" {
 test "mulFull: MAX * MAX" {
     // MAX * MAX = (2^256 - 1)^2 = 2^512 - 2^257 + 1
     // In 512-bit limbs: low 256 bits = 1, high 256 bits = MAX - 1
-    const result = arithmetic.mulFull(MAX, MAX);
+    const result = U.mulFull(MAX, MAX);
     // Low limbs: 0x0000...0001
     try expectEqual(@as(u64, 1), result[0]);
     try expectEqual(@as(u64, 0), result[1]);
@@ -722,8 +722,8 @@ test "mulFull: MAX * MAX" {
 }
 
 test "mulFull: MAX * 2" {
-    // MAX * 2 = 2^257 - 2 → low 256 = MAX - 1, high limbs = [1, 0, 0, 0]
-    const result = arithmetic.mulFull(MAX, 2);
+    // MAX * 2 = 2^257 - 2 -> low 256 = MAX - 1, high limbs = [1, 0, 0, 0]
+    const result = U.mulFull(MAX, U.from(2));
     const max64 = std.math.maxInt(u64);
     try expectEqual(max64 - 1, result[0]);
     try expectEqual(max64, result[1]);
@@ -739,17 +739,17 @@ test "mulFull: MAX * 2" {
 
 test "mod512by256: divisor is 1" {
     // Any value mod 1 = 0
-    const product = arithmetic.mulFull(MAX, MAX);
-    try expectEqual(@as(U, 0), arithmetic.mod512by256(product, arithmetic.toLimbs(1)));
+    const product = U.mulFull(MAX, MAX);
+    try expectEqual(U.ZERO, arithmetic.mod512by256(product, U.ONE.toLimbs()));
 }
 
 test "mod512by256: divisor is power of 2" {
     // (MAX * 2) mod (2^128) = (2^257 - 2) mod 2^128
     // low 128 bits of (2^257 - 2) = MAX_128 - 1 = 2^128 - 2
-    const product = arithmetic.mulFull(MAX, 2);
-    const mod: U = @as(U, 1) << 128;
-    const expected: U = mod - 2;
-    try expectEqual(expected, arithmetic.mod512by256(product, arithmetic.toLimbs(mod)));
+    const product = U.mulFull(MAX, U.from(2));
+    const mod = U.fromNative(@as(u256, 1) << 128);
+    const expected = mod.sub(U.from(2));
+    try expectEqual(expected, arithmetic.mod512by256(product, mod.toLimbs()));
 }
 
 // --- Additional mulmod edge cases ---
@@ -757,77 +757,77 @@ test "mod512by256: divisor is power of 2" {
 test "mulmod: (MAX-1) * (MAX-1) % MAX" {
     // (MAX-1)^2 = MAX^2 - 2*MAX + 1
     // MAX^2 mod MAX = 0, so result = (-2*MAX + 1) mod MAX = 1
-    try expectEqual(@as(U, 1), arithmetic.mulmod(MAX - 1, MAX - 1, MAX));
+    try expectEqual(U.ONE, U.mulmod(MAX.sub(U.ONE), MAX.sub(U.ONE), MAX));
 }
 
 test "mulmod: prime modulus" {
     // Use a known prime and verify against known result
     // 7 * 13 = 91; 91 mod 17 = 91 - 5*17 = 91 - 85 = 6
-    try expectEqual(@as(U, 6), arithmetic.mulmod(7, 13, 17));
+    try expectEqual(U.from(6), U.mulmod(U.from(7), U.from(13), U.from(17)));
 }
 
 test "mulmod: small * large" {
     // 2 * MAX = 2^257 - 2; mod (MAX) = (2^257 - 2) mod (2^256 - 1)
     // 2^257 - 2 = 2*(2^256 - 1) = 2*MAX, so 2*MAX mod MAX = 0
-    try expectEqual(@as(U, 0), arithmetic.mulmod(2, MAX, MAX));
+    try expectEqual(U.ZERO, U.mulmod(U.from(2), MAX, MAX));
 }
 
 test "mulmod: a=0 returns 0" {
-    try expectEqual(@as(U, 0), arithmetic.mulmod(0, MAX, 7));
+    try expectEqual(U.ZERO, U.mulmod(U.ZERO, MAX, U.from(7)));
 }
 
 test "mulmod: b=0 returns 0" {
-    try expectEqual(@as(U, 0), arithmetic.mulmod(MAX, 0, 7));
+    try expectEqual(U.ZERO, U.mulmod(MAX, U.ZERO, U.from(7)));
 }
 
 test "mulmod: n=1 returns 0" {
-    try expectEqual(@as(U, 0), arithmetic.mulmod(42, 99, 1));
+    try expectEqual(U.ZERO, U.mulmod(U.from(42), U.from(99), U.ONE));
 }
 
 test "mulmod: product fits in 256 bits" {
     // 100 * 200 = 20000; 20000 mod 7 = 2857*7 + 1 = 1
-    try expectEqual(@as(U, 1), arithmetic.mulmod(100, 200, 7));
+    try expectEqual(U.ONE, U.mulmod(U.from(100), U.from(200), U.from(7)));
 }
 
 // --- Additional addmod edge cases ---
 
 test "addmod: both inputs larger than n" {
     // (100 + 200) % 7 = 300 % 7 = 6
-    try expectEqual(@as(U, 6), arithmetic.addmod(100, 200, 7));
+    try expectEqual(U.from(6), U.addmod(U.from(100), U.from(200), U.from(7)));
 }
 
 test "addmod: carry case with large n" {
     // MAX + MAX = 2^257 - 2; mod (MAX - 1) = (2^257 - 2) mod (2^256 - 2)
     // = 2*(2^256 - 1) mod (2^256 - 2) = 2*MAX mod (MAX - 1)
     // MAX mod (MAX-1) = 1, so 2*MAX mod (MAX-1) = 2
-    const n = MAX - 1;
-    try expectEqual(@as(U, 2), arithmetic.addmod(MAX, MAX, n));
+    const n = MAX.sub(U.ONE);
+    try expectEqual(U.from(2), U.addmod(MAX, MAX, n));
 }
 
 test "addmod: n=1 always returns 0" {
-    try expectEqual(@as(U, 0), arithmetic.addmod(42, 99, 1));
-    try expectEqual(@as(U, 0), arithmetic.addmod(MAX, MAX, 1));
+    try expectEqual(U.ZERO, U.addmod(U.from(42), U.from(99), U.ONE));
+    try expectEqual(U.ZERO, U.addmod(MAX, MAX, U.ONE));
 }
 
 // --- div128by64 tests ---
 
 test "div128by64: basic small division" {
-    // 12 / (1 << 63) with hi=0 → q=0, r=12 after normalization
+    // 12 / (1 << 63) with hi=0 -> q=0, r=12 after normalization
     // Use a pre-normalized divisor (MSB set): d = 1 << 63
     const d: u64 = @as(u64, 1) << 63;
-    const result = arithmetic.div128by64(0, 12, d);
+    const result = U.div128by64(0, 12, d);
     try expectEqual(@as(u64, 0), result.q);
     try expectEqual(@as(u64, 12), result.r);
 }
 
 test "div128by64: known value" {
     // (1 << 64) / (1 << 63) = 2 remainder 0
-    // hi=1, lo=0, d=1<<63 → but precondition is hi < d
+    // hi=1, lo=0, d=1<<63 -> but precondition is hi < d
     // So use hi=0, lo=2*(1<<63)=0 with carry... let's pick a concrete example.
     // 0x0000000000000001:0000000000000000 / 0x8000000000000000 = 2, r=0
     // hi=1, lo=0, d=0x8000000000000000. hi < d? 1 < 0x80...0? Yes.
     const d: u64 = @as(u64, 1) << 63;
-    const result = arithmetic.div128by64(1, 0, d);
+    const result = U.div128by64(1, 0, d);
     try expectEqual(@as(u64, 2), result.q);
     try expectEqual(@as(u64, 0), result.r);
 }
@@ -837,7 +837,7 @@ test "div128by64: max dividend below overflow" {
     // This is (d-1)*2^64 + MAX64 divided by d
     const d: u64 = @as(u64, 1) << 63;
     const max64 = std.math.maxInt(u64);
-    const result = arithmetic.div128by64(d - 1, max64, d);
+    const result = U.div128by64(d - 1, max64, d);
     // Quotient should be MAX64 (since (d-1)*2^64 + MAX64 = d*MAX64 + (MAX64 - d + 1)... let's verify)
     // (d-1)*2^64 + (2^64-1) = d*2^64 - 2^64 + 2^64 - 1 = d*2^64 - 1
     // d*2^64 - 1 = d*(2^64-1) + d - 1, so q = 2^64-1, r = d-1
@@ -852,14 +852,14 @@ test "div128by64: divisor all ones" {
     // = (max64-1)*2^64 + max64 / max64
     // = (max64^2 - 2^64 + max64) / max64 ... let's compute directly
     // Numerator: (max64-1)*2^64 + max64 = max64*(2^64) - 2^64 + max64 = max64*(max64+1) - (max64+1) = (max64-1)*(max64+1) = max64^2 - 1
-    // max64^2 - 1 / max64 = max64 - 1 remainder max64 - 1 ... wait
+    // max64^2 - 1 / max64 = max64 - 1 remainder max64 - (max64-1)*max64 ...
     // Actually max64^2 / max64 = max64, remainder 0. max64^2 - 1 / max64 = max64 - 1 remainder max64 - (max64-1)*max64 ...
     // Let me just compute: (max64-1) * 2^64 + max64. We know 2^64 = max64 + 1.
     // = (max64-1)*(max64+1) + max64 = max64^2 - 1 + max64 = max64^2 + max64 - 1
     // Divide by max64: q = max64 + 1 = 2^64? No, that overflows. Let me reconsider.
     // hi must be < d. hi = max64-1 < max64 = d. OK.
     // Actually (max64-1)*2^64 + max64 = max64*(max64-1+1) + max64 - (max64-1) = ... let me just trust the algorithm.
-    const result = arithmetic.div128by64(max64 - 1, max64, d);
+    const result = U.div128by64(max64 - 1, max64, d);
     // Verify: q * d + r = (hi << 64) | lo
     const check: u128 = @as(u128, result.q) * d + result.r;
     const expected: u128 = (@as(u128, max64 - 1) << 64) | max64;
@@ -869,24 +869,24 @@ test "div128by64: divisor all ones" {
 // --- limbLessThan tests ---
 
 test "limbLessThan: equal values" {
-    try expectEqual(false, arithmetic.limbLessThan(.{ 1, 2, 3, 4 }, .{ 1, 2, 3, 4 }));
+    try expectEqual(false, U.limbLessThan(.{ 1, 2, 3, 4 }, .{ 1, 2, 3, 4 }));
 }
 
 test "limbLessThan: less in high limb" {
-    try expectEqual(true, arithmetic.limbLessThan(.{ 1, 2, 3, 4 }, .{ 1, 2, 3, 5 }));
+    try expectEqual(true, U.limbLessThan(.{ 1, 2, 3, 4 }, .{ 1, 2, 3, 5 }));
 }
 
 test "limbLessThan: greater in high limb" {
-    try expectEqual(false, arithmetic.limbLessThan(.{ 1, 2, 3, 5 }, .{ 1, 2, 3, 4 }));
+    try expectEqual(false, U.limbLessThan(.{ 1, 2, 3, 5 }, .{ 1, 2, 3, 4 }));
 }
 
 test "limbLessThan: less in low limb" {
-    try expectEqual(true, arithmetic.limbLessThan(.{ 0, 0, 0, 0 }, .{ 1, 0, 0, 0 }));
+    try expectEqual(true, U.limbLessThan(.{ 0, 0, 0, 0 }, .{ 1, 0, 0, 0 }));
 }
 
 test "expMod256 helper" {
-    try expectEqual(@as(U, 1), arithmetic.expMod256(2, 0));
-    try expectEqual(@as(U, 1024), arithmetic.expMod256(2, 10));
-    try expectEqual(@as(U, 0), arithmetic.expMod256(2, 256));
-    try expectEqual(@as(U, 1), arithmetic.expMod256(1, MAX));
+    try expectEqual(U.ONE, U.exp(U.from(2), U.ZERO));
+    try expectEqual(U.from(1024), U.exp(U.from(2), U.from(10)));
+    try expectEqual(U.ZERO, U.exp(U.from(2), U.from(256)));
+    try expectEqual(U.ONE, U.exp(U.ONE, MAX));
 }

@@ -47,7 +47,7 @@ pub fn main() !void {
     // Set up the contract account
     const contract_address: primitives.Address = [_]u8{0x01} ** 20;
     const account = state.AccountInfo.new(
-        @as(primitives.U256, 0), // balance
+        primitives.U256.ZERO, // balance
         0, // nonce
         primitives.KECCAK_EMPTY, // code hash
         bytecode_obj,
@@ -71,7 +71,7 @@ pub fn main() !void {
     const inputs = interpreter.InputsImpl.new(
         tx.caller,
         contract_address,
-        @as(primitives.U256, 0), // value
+        primitives.U256.ZERO, // value
         &[_]u8{}, // input data
         tx.gas_limit,
         interpreter.CallScheme.call,

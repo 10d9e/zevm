@@ -446,7 +446,7 @@ pub const testing = struct {
     fn testFrameData() !void {
         const caller = [_]u8{0x01} ** 20;
         const target = [_]u8{0x02} ** 20;
-        const value = @as(primitives.U256, 100);
+        const value = primitives.U256.from(100);
         const input = "Hello, World!";
         const gas_limit: u64 = 10000;
 
@@ -462,7 +462,7 @@ pub const testing = struct {
 
         std.debug.assert(std.mem.eql(u8, &frame_data.caller, &caller));
         std.debug.assert(std.mem.eql(u8, &frame_data.target, &target));
-        std.debug.assert(frame_data.value == value);
+        std.debug.assert(frame_data.value.eql(value));
         std.debug.assert(std.mem.eql(u8, frame_data.input, input));
         std.debug.assert(frame_data.gas_limit == gas_limit);
         std.debug.assert(frame_data.is_static == false);
@@ -478,7 +478,7 @@ pub const testing = struct {
         const frame_data = FrameData.new(
             [_]u8{0x01} ** 20,
             [_]u8{0x02} ** 20,
-            @as(primitives.U256, 100),
+            primitives.U256.from(100),
             "test",
             1000,
             false,

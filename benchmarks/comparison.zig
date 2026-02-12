@@ -4,7 +4,7 @@ const bytecode = @import("bytecode");
 const m = @import("main.zig");
 
 const U256 = @import("primitives").U256;
-const MAX = std.math.maxInt(U256);
+const MAX = U256.MAX;
 
 // ---------------------------------------------------------------------------
 // Reset functions

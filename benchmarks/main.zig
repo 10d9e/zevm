@@ -7,7 +7,7 @@ const zbench = @import("zbench");
 const InstructionTable = interpreter.instruction_table.InstructionTable;
 
 const U256 = primitives.U256;
-const MAX = std.math.maxInt(U256);
+const MAX = U256.MAX;
 
 // Category modules
 const arithmetic_bench = @import("arithmetic.zig");
@@ -56,7 +56,7 @@ fn xorshift64() u64 {
 fn randomU256() U256 {
     const lo: u128 = @as(u128, xorshift64()) | (@as(u128, xorshift64()) << 64);
     const hi: u128 = @as(u128, xorshift64()) | (@as(u128, xorshift64()) << 64);
-    return @as(U256, hi) << 128 | lo;
+    return U256.fromNative(@as(u256, hi) << 128 | lo);
 }
 
 pub var g_values: [NUM_VALUES]U256 = undefined; // random 256-bit values
@@ -69,9 +69,9 @@ fn initValues() void {
     prng_state = 42;
     for (&g_values) |*v| v.* = randomU256();
     const lo: u128 = @as(u128, xorshift64() | 1) | (@as(u128, xorshift64()) << 64);
-    g_divisor_128 = @as(U256, lo);
-    g_divisor_64 = @as(U256, xorshift64() | 1);
-    for (&g_small_exp) |*v| v.* = @as(U256, (xorshift64() & 0xFF) | 1);
+    g_divisor_128 = U256.fromU128(lo);
+    g_divisor_64 = U256.from(xorshift64() | 1);
+    for (&g_small_exp) |*v| v.* = U256.from((xorshift64() & 0xFF) | 1);
     for (&g_bytecode) |*b| b.* = @truncate(xorshift64());
     g_initialized = true;
 }
@@ -112,7 +112,7 @@ pub fn fillPairs(count: usize, b: U256) void {
 /// Push `count` [a, b] pairs: both random from pool, b guaranteed non-zero.
 pub fn fillRandomPairs(count: usize) void {
     for (0..count) |i| {
-        g_stack.pushUnsafe(g_values[(i + 512) & (NUM_VALUES - 1)] | 1);
+        g_stack.pushUnsafe(g_values[(i + 512) & (NUM_VALUES - 1)].bitOr(U256.ONE));
         g_stack.pushUnsafe(g_values[i & (NUM_VALUES - 1)]);
     }
 }
@@ -129,7 +129,7 @@ pub fn fillConstantPairs(count: usize, a: U256, b: U256) void {
 pub fn fillRandomTriples(count: usize) void {
     var i: usize = 0;
     while (i + 2 < count) : (i += 3) {
-        g_stack.pushUnsafe(g_values[(i + 2) & (NUM_VALUES - 1)] | 1);
+        g_stack.pushUnsafe(g_values[(i + 2) & (NUM_VALUES - 1)].bitOr(U256.ONE));
         g_stack.pushUnsafe(g_values[(i + 1) & (NUM_VALUES - 1)]);
         g_stack.pushUnsafe(g_values[i & (NUM_VALUES - 1)]);
     }
@@ -139,7 +139,7 @@ pub fn fillRandomTriples(count: usize) void {
 pub fn fillFixedTriples(count: usize, a: U256, b: U256) void {
     var i: usize = 0;
     while (i + 2 < count) : (i += 3) {
-        g_stack.pushUnsafe(g_values[(i + 2) & (NUM_VALUES - 1)] | 1);
+        g_stack.pushUnsafe(g_values[(i + 2) & (NUM_VALUES - 1)].bitOr(U256.ONE));
         g_stack.pushUnsafe(b);
         g_stack.pushUnsafe(a);
     }
@@ -163,19 +163,19 @@ pub fn fillExpLarge(count: usize) void {
 
 /// Push [a, b] pairs where a has sign bit set (negative in two's complement).
 pub fn fillNegativePairs(count: usize, b: U256) void {
-    const sign_bit: U256 = 1 << 255;
+    const sign_bit = U256.ONE.shlBy(255);
     for (0..count) |i| {
         g_stack.pushUnsafe(b);
-        g_stack.pushUnsafe(g_values[i & (NUM_VALUES - 1)] | sign_bit);
+        g_stack.pushUnsafe(g_values[i & (NUM_VALUES - 1)].bitOr(sign_bit));
     }
 }
 
 /// Push [a, b] pairs where both have sign bit set.
 pub fn fillBothNegPairs(count: usize, b: U256) void {
-    const sign_bit: U256 = 1 << 255;
+    const sign_bit = U256.ONE.shlBy(255);
     for (0..count) |i| {
-        g_stack.pushUnsafe(b | sign_bit);
-        g_stack.pushUnsafe(g_values[i & (NUM_VALUES - 1)] | sign_bit);
+        g_stack.pushUnsafe(b.bitOr(sign_bit));
+        g_stack.pushUnsafe(g_values[i & (NUM_VALUES - 1)].bitOr(sign_bit));
     }
 }
 
@@ -183,7 +183,7 @@ pub fn fillBothNegPairs(count: usize, b: U256) void {
 pub fn fillSignextendPairs(count: usize, mask: usize) void {
     for (0..count) |i| {
         g_stack.pushUnsafe(g_values[i & (NUM_VALUES - 1)]);
-        g_stack.pushUnsafe(@as(U256, i & mask));
+        g_stack.pushUnsafe(U256.from(i & mask));
     }
 }
 
@@ -191,26 +191,26 @@ pub fn fillSignextendPairs(count: usize, mask: usize) void {
 pub fn fillShiftPairs(count: usize, mask: usize) void {
     for (0..count) |i| {
         g_stack.pushUnsafe(g_values[i & (NUM_VALUES - 1)]);
-        g_stack.pushUnsafe(@as(U256, (i * 7) & mask));
+        g_stack.pushUnsafe(U256.from((i * 7) & mask));
     }
 }
 
 /// Push [shift, value] pairs where value has sign bit set (for SAR negative).
 pub fn fillShiftNegPairs(count: usize, mask: usize) void {
-    const sign_bit: U256 = 1 << 255;
+    const sign_bit = U256.ONE.shlBy(255);
     for (0..count) |i| {
-        g_stack.pushUnsafe(g_values[i & (NUM_VALUES - 1)] | sign_bit);
-        g_stack.pushUnsafe(@as(U256, (i * 7) & mask));
+        g_stack.pushUnsafe(g_values[i & (NUM_VALUES - 1)].bitOr(sign_bit));
+        g_stack.pushUnsafe(U256.from((i * 7) & mask));
     }
 }
 
 /// Push [shift, value] pairs alternating pos/neg for SAR.
 pub fn fillShiftMixedPairs(count: usize, mask: usize) void {
-    const sign_bit: U256 = 1 << 255;
+    const sign_bit = U256.ONE.shlBy(255);
     for (0..count) |i| {
         const val = g_values[i & (NUM_VALUES - 1)];
-        g_stack.pushUnsafe(if (i & 1 == 0) val else val | sign_bit);
-        g_stack.pushUnsafe(@as(U256, (i * 7) & mask));
+        g_stack.pushUnsafe(if (i & 1 == 0) val else val.bitOr(sign_bit));
+        g_stack.pushUnsafe(U256.from((i * 7) & mask));
     }
 }
 
@@ -218,7 +218,7 @@ pub fn fillShiftMixedPairs(count: usize, mask: usize) void {
 pub fn fillBytePairs(count: usize) void {
     for (0..count) |i| {
         g_stack.pushUnsafe(g_values[i & (NUM_VALUES - 1)]);
-        g_stack.pushUnsafe(@as(U256, i & 31));
+        g_stack.pushUnsafe(U256.from(i & 31));
     }
 }
 
@@ -254,8 +254,8 @@ pub fn KeccakRunner(comptime data_size: usize) type {
         pub fn run(_: std.mem.Allocator) void {
             const opcodes = interpreter.opcodes;
             for (0..OPS_PER_BATCH) |_| {
-                g_stack.pushUnsafe(@as(U256, data_size)); // length
-                g_stack.pushUnsafe(@as(U256, 0)); // offset
+                g_stack.pushUnsafe(U256.from(data_size)); // length
+                g_stack.pushUnsafe(U256.ZERO); // offset
                 _ = opcodes.opKeccak256(&g_stack, &g_gas, &g_memory);
             }
             std.mem.doNotOptimizeAway(&g_stack);

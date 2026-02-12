@@ -15,6 +15,7 @@ const opPc = control.opPc;
 const opGas = control.opGas;
 
 const expectEqual = std.testing.expectEqual;
+const expect = std.testing.expect;
 const U = primitives.U256;
 
 // --- STOP tests ---
@@ -55,7 +56,7 @@ test "PC: push program counter" {
     const pc: usize = 42;
     const result = opPc(&stack, &gas, pc);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 42), stack.popUnsafe());
+    try expect(stack.popUnsafe().eql(U.from(42)));
     try expectEqual(@as(u64, 98), gas.getRemaining());
 }
 
@@ -65,7 +66,7 @@ test "PC: zero" {
     const pc: usize = 0;
     const result = opPc(&stack, &gas, pc);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expect(stack.popUnsafe().eql(U.ZERO));
 }
 
 test "PC: large value" {
@@ -74,7 +75,7 @@ test "PC: large value" {
     const pc: usize = 12345;
     const result = opPc(&stack, &gas, pc);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 12345), stack.popUnsafe());
+    try expect(stack.popUnsafe().eql(U.from(12345)));
 }
 
 test "PC: stack overflow" {
@@ -83,7 +84,7 @@ test "PC: stack overflow" {
     // Fill stack to max capacity
     var i: usize = 0;
     while (i < 1024) : (i += 1) {
-        stack.pushUnsafe(@as(U, i));
+        stack.pushUnsafe(U.from(i));
     }
     const result = opPc(&stack, &gas, 0);
     try expectEqual(InstructionResult.stack_overflow, result);
@@ -97,7 +98,7 @@ test "GAS: push remaining gas" {
     const result = opGas(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
     // After spending GAS_BASE (2), remaining should be 998
-    try expectEqual(@as(U, 998), stack.popUnsafe());
+    try expect(stack.popUnsafe().eql(U.from(998)));
     try expectEqual(@as(u64, 998), gas.getRemaining());
 }
 
@@ -106,7 +107,7 @@ test "GAS: zero gas remaining" {
     var gas = Gas.new(2); // Exactly enough for GAS opcode
     const result = opGas(&stack, &gas);
     try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    try expect(stack.popUnsafe().eql(U.ZERO));
 }
 
 test "GAS: out of gas" {
@@ -127,7 +128,7 @@ test "JUMP: valid jump to JUMPDEST" {
     const code = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x5B }; // 0x5B = JUMPDEST
     const bytecode = Bytecode.new_raw(&code);
 
-    stack.pushUnsafe(@as(U, 5)); // Jump to position 5
+    stack.pushUnsafe(U.from(5)); // Jump to position 5
     const result = opJump(&stack, &gas, bytecode, &pc);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 5), pc);
@@ -143,7 +144,7 @@ test "JUMP: invalid destination (no JUMPDEST)" {
     const code = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
     const bytecode = Bytecode.new_raw(&code);
 
-    stack.pushUnsafe(@as(U, 5));
+    stack.pushUnsafe(U.from(5));
     const result = opJump(&stack, &gas, bytecode, &pc);
     try expectEqual(InstructionResult.invalid_jump, result);
 }
@@ -156,7 +157,7 @@ test "JUMP: out of bounds" {
     const code = [_]u8{ 0x00, 0x00 };
     const bytecode = Bytecode.new_raw(&code);
 
-    stack.pushUnsafe(@as(U, 100)); // Beyond bytecode length
+    stack.pushUnsafe(U.from(100)); // Beyond bytecode length
     const result = opJump(&stack, &gas, bytecode, &pc);
     try expectEqual(InstructionResult.invalid_jump, result);
 }
@@ -184,8 +185,8 @@ test "JUMPI: conditional jump (condition true)" {
     const code = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x5B };
     const bytecode = Bytecode.new_raw(&code);
 
-    stack.pushUnsafe(@as(U, 1)); // Condition (non-zero = true)
-    stack.pushUnsafe(@as(U, 5)); // Destination
+    stack.pushUnsafe(U.ONE); // Condition (non-zero = true)
+    stack.pushUnsafe(U.from(5)); // Destination
     const result = opJumpi(&stack, &gas, bytecode, &pc);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 5), pc); // Should jump
@@ -199,8 +200,8 @@ test "JUMPI: conditional jump (condition false)" {
     const code = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x5B };
     const bytecode = Bytecode.new_raw(&code);
 
-    stack.pushUnsafe(@as(U, 0)); // Condition (zero = false)
-    stack.pushUnsafe(@as(U, 5)); // Destination
+    stack.pushUnsafe(U.ZERO); // Condition (zero = false)
+    stack.pushUnsafe(U.from(5)); // Destination
     const result = opJumpi(&stack, &gas, bytecode, &pc);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 10), pc); // Should NOT jump
@@ -215,8 +216,8 @@ test "JUMPI: condition true but invalid destination" {
     const code = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
     const bytecode = Bytecode.new_raw(&code);
 
-    stack.pushUnsafe(@as(U, 1)); // Condition true
-    stack.pushUnsafe(@as(U, 5)); // Invalid destination
+    stack.pushUnsafe(U.ONE); // Condition true
+    stack.pushUnsafe(U.from(5)); // Invalid destination
     const result = opJumpi(&stack, &gas, bytecode, &pc);
     try expectEqual(InstructionResult.invalid_jump, result);
 }
@@ -229,8 +230,8 @@ test "JUMPI: MAX value is true condition" {
     const code = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x5B };
     const bytecode = Bytecode.new_raw(&code);
 
-    stack.pushUnsafe(std.math.maxInt(U)); // MAX is non-zero = true
-    stack.pushUnsafe(@as(U, 5));
+    stack.pushUnsafe(U.MAX); // MAX is non-zero = true
+    stack.pushUnsafe(U.from(5));
     const result = opJumpi(&stack, &gas, bytecode, &pc);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 5), pc); // Should jump
@@ -244,7 +245,7 @@ test "JUMPI: stack underflow" {
     const code = [_]u8{0x5B};
     const bytecode = Bytecode.new_raw(&code);
 
-    stack.pushUnsafe(@as(U, 1)); // Only 1 value, need 2
+    stack.pushUnsafe(U.ONE); // Only 1 value, need 2
     const result = opJumpi(&stack, &gas, bytecode, &pc);
     try expectEqual(InstructionResult.stack_underflow, result);
 }

@@ -76,7 +76,7 @@ pub fn main() !void {
 
     // Create account info for the pool contract
     const account_info = state.AccountInfo.new(
-        @as(primitives.U256, 0), // balance
+        primitives.U256.ZERO, // balance
         0, // nonce
         primitives.KECCAK_EMPTY, // code hash
         bytecode.Bytecode{ .legacy_analyzed = bytecode.LegacyRawBytecode.init(&GET_RESERVES_BYTECODE).intoAnalyzed() },
@@ -85,8 +85,8 @@ pub fn main() !void {
     try db.insertAccount(pool_address, account_info);
 
     // Set up storage slot 8 with mock reserves data
-    const storage_slot: primitives.StorageKey = 8;
-    const mock_reserves: primitives.StorageValue = 0x0000000000000000000000000000000000000000000000000000000000000001;
+    const storage_slot = primitives.U256.from(8);
+    const mock_reserves = primitives.U256.ONE;
     try db.insertStorage(pool_address, storage_slot, mock_reserves);
 
     std.log.info("Pool address: {any}", .{pool_address});

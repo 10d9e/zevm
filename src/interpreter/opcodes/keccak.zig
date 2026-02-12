@@ -21,12 +21,10 @@ pub inline fn opKeccak256(stack: *Stack, gas: *Gas, memory: *Memory) Instruction
     const length = stack.peekUnsafe(1);
 
     // Check if values are too large
-    if (offset > std.math.maxInt(usize) or length > std.math.maxInt(usize)) {
-        return .memory_limit_oog;
-    }
-
-    const offset_usize: usize = @intCast(offset);
-    const length_usize: usize = @intCast(length);
+    const offset_u64 = offset.toU64() orelse return .memory_limit_oog;
+    const length_u64 = length.toU64() orelse return .memory_limit_oog;
+    const offset_usize: usize = @intCast(offset_u64);
+    const length_usize: usize = @intCast(length_u64);
 
     // Calculate gas cost
     const num_words = toWordSize(length_usize);
@@ -48,12 +46,8 @@ pub inline fn opKeccak256(stack: *Stack, gas: *Gas, memory: *Memory) Instruction
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha3.Keccak256.hash(data, &hash, .{});
 
-    // Convert hash to U256 (big-endian, 4 bulk u64 reads)
-    const U = primitives.U256;
-    const value: U = (@as(U, std.mem.readInt(u64, hash[0..8], .big)) << 192) |
-        (@as(U, std.mem.readInt(u64, hash[8..16], .big)) << 128) |
-        (@as(U, std.mem.readInt(u64, hash[16..24], .big)) << 64) |
-        @as(U, std.mem.readInt(u64, hash[24..32], .big));
+    // Convert hash to U256 (big-endian)
+    const value = primitives.U256.fromBytes(hash);
 
     // Replace top 2 stack items with hash result
     stack.shrinkUnsafe(1);

@@ -132,7 +132,7 @@ pub const Stack = struct {
         var bytes: [32]u8 = [_]u8{0} ** 32;
         @memcpy(bytes[32 - slice.len ..], slice);
 
-        try self.push(@bitCast(bytes));
+        try self.push(primitives.U256.fromBytes(bytes));
     }
 
     /// Set a value at a specific position
@@ -209,7 +209,7 @@ pub const Stack = struct {
             if (i > 0) {
                 try writer.writeAll(", ");
             }
-            try std.fmt.format(writer, "{}", .{item});
+            try std.fmt.format(writer, "{any}", .{item});
         }
         try writer.writeAll("]");
     }
@@ -225,20 +225,20 @@ test "push and pop" {
     var stack = Stack.new();
     try expectEqual(@as(usize, 0), stack.len());
 
-    try stack.push(@as(U, 1));
+    try stack.push(U.ONE);
     try expectEqual(@as(usize, 1), stack.len());
 
     const value = stack.pop() orelse return error.StackEmpty;
-    try expectEqual(@as(U, 1), value);
+    try expect(value.eql(U.ONE));
 }
 
 test "push overflow" {
     var stack = Stack.new();
     for (0..STACK_LIMIT) |i| {
-        try stack.push(@as(U, @intCast(i)));
+        try stack.push(U.from(@intCast(i)));
     }
     try expectEqual(@as(usize, STACK_LIMIT), stack.len());
-    try std.testing.expectError(error.StackOverflow, stack.push(@as(U, 9999)));
+    try std.testing.expectError(error.StackOverflow, stack.push(U.from(9999)));
 }
 
 test "pop underflow" {
@@ -248,8 +248,8 @@ test "pop underflow" {
 
 test "peek" {
     var stack = Stack.new();
-    try stack.push(@as(U, 42));
-    try expectEqual(@as(U, 42), stack.peek().?);
+    try stack.push(U.from(42));
+    try expect(stack.peek().?.eql(U.from(42)));
     try expectEqual(@as(usize, 1), stack.len());
 }
 
@@ -260,96 +260,96 @@ test "peek empty" {
 
 test "peekAt" {
     var stack = Stack.new();
-    try stack.push(@as(U, 10));
-    try stack.push(@as(U, 20));
-    try stack.push(@as(U, 30));
-    try expectEqual(@as(U, 30), stack.peekAt(0).?);
-    try expectEqual(@as(U, 20), stack.peekAt(1).?);
-    try expectEqual(@as(U, 10), stack.peekAt(2).?);
+    try stack.push(U.from(10));
+    try stack.push(U.from(20));
+    try stack.push(U.from(30));
+    try expect(stack.peekAt(0).?.eql(U.from(30)));
+    try expect(stack.peekAt(1).?.eql(U.from(20)));
+    try expect(stack.peekAt(2).?.eql(U.from(10)));
 }
 
 test "peekAt out of bounds" {
     var stack = Stack.new();
-    try stack.push(@as(U, 1));
+    try stack.push(U.ONE);
     try expectEqual(@as(?U, null), stack.peekAt(1));
     try expectEqual(@as(?U, null), stack.peekAt(100));
 }
 
 test "popN" {
     var stack = Stack.new();
-    try stack.push(@as(U, 10));
-    try stack.push(@as(U, 20));
-    try stack.push(@as(U, 30));
+    try stack.push(U.from(10));
+    try stack.push(U.from(20));
+    try stack.push(U.from(30));
     const popped = stack.popN(2) orelse return error.UnexpectedNull;
     try expectEqual(@as(usize, 1), stack.len());
-    try expectEqual(@as(U, 20), popped[0]);
-    try expectEqual(@as(U, 30), popped[1]);
+    try expect(popped[0].eql(U.from(20)));
+    try expect(popped[1].eql(U.from(30)));
 }
 
 test "popN underflow" {
     var stack = Stack.new();
-    try stack.push(@as(U, 1));
-    try stack.push(@as(U, 2));
-    try stack.push(@as(U, 3));
+    try stack.push(U.ONE);
+    try stack.push(U.from(2));
+    try stack.push(U.from(3));
     try expect(stack.popN(5) == null);
     try expectEqual(@as(usize, 3), stack.len());
 }
 
 test "exchange" {
     var stack = Stack.new();
-    try stack.push(@as(U, 10));
-    try stack.push(@as(U, 20));
-    try stack.push(@as(U, 30));
+    try stack.push(U.from(10));
+    try stack.push(U.from(20));
+    try stack.push(U.from(30));
     try expect(stack.exchange(0, 2));
-    try expectEqual(@as(U, 10), stack.peekAt(0).?);
-    try expectEqual(@as(U, 30), stack.peekAt(2).?);
-    try expectEqual(@as(U, 20), stack.peekAt(1).?);
+    try expect(stack.peekAt(0).?.eql(U.from(10)));
+    try expect(stack.peekAt(2).?.eql(U.from(30)));
+    try expect(stack.peekAt(1).?.eql(U.from(20)));
 }
 
 test "exchange out of bounds" {
     var stack = Stack.new();
-    try stack.push(@as(U, 1));
+    try stack.push(U.ONE);
     try expect(!stack.exchange(0, 1));
     try expect(!stack.exchange(5, 0));
 }
 
 test "dup" {
     var stack = Stack.new();
-    try stack.push(@as(U, 100));
-    try stack.push(@as(U, 200));
+    try stack.push(U.from(100));
+    try stack.push(U.from(200));
     try stack.dup(1);
     try expectEqual(@as(usize, 3), stack.len());
-    try expectEqual(@as(U, 200), stack.peekAt(0).?);
-    try expectEqual(@as(U, 200), stack.peekAt(1).?);
-    try expectEqual(@as(U, 100), stack.peekAt(2).?);
+    try expect(stack.peekAt(0).?.eql(U.from(200)));
+    try expect(stack.peekAt(1).?.eql(U.from(200)));
+    try expect(stack.peekAt(2).?.eql(U.from(100)));
 }
 
 test "dup invalid index" {
     var stack = Stack.new();
-    try stack.push(@as(U, 1));
+    try stack.push(U.ONE);
     try std.testing.expectError(error.InvalidDupIndex, stack.dup(0));
     try std.testing.expectError(error.InvalidDupIndex, stack.dup(2));
 }
 
 test "set and get" {
     var stack = Stack.new();
-    try stack.push(@as(U, 10));
-    try stack.push(@as(U, 20));
-    try stack.push(@as(U, 30));
-    try expectEqual(@as(U, 30), stack.get(0).?);
-    try expectEqual(@as(U, 20), stack.get(1).?);
-    try expectEqual(@as(U, 10), stack.get(2).?);
-    try expect(stack.set(0, @as(U, 99)));
-    try expectEqual(@as(U, 99), stack.get(0).?);
-    try expectEqual(@as(U, 20), stack.get(1).?);
+    try stack.push(U.from(10));
+    try stack.push(U.from(20));
+    try stack.push(U.from(30));
+    try expect(stack.get(0).?.eql(U.from(30)));
+    try expect(stack.get(1).?.eql(U.from(20)));
+    try expect(stack.get(2).?.eql(U.from(10)));
+    try expect(stack.set(0, U.from(99)));
+    try expect(stack.get(0).?.eql(U.from(99)));
+    try expect(stack.get(1).?.eql(U.from(20)));
 }
 
 test "set and get out of bounds" {
     var stack = Stack.new();
-    try stack.push(@as(U, 1));
+    try stack.push(U.ONE);
     try expectEqual(@as(?U, null), stack.get(1));
     try expectEqual(@as(?U, null), stack.get(100));
-    try expect(!stack.set(1, @as(U, 0)));
+    try expect(!stack.set(1, U.ZERO));
 }
 
 test "pushSlice" {
@@ -358,7 +358,7 @@ test "pushSlice" {
     try stack.pushSlice(&slice);
     try expectEqual(@as(usize, 1), stack.len());
     const val = stack.pop().?;
-    const bytes: [32]u8 = @bitCast(val);
+    const bytes: [32]u8 = val.toBytes();
     for (bytes[0..28]) |b| {
         try expectEqual(@as(u8, 0), b);
     }
@@ -377,9 +377,9 @@ test "pushSlice too long" {
 
 test "clear" {
     var stack = Stack.new();
-    try stack.push(@as(U, 1));
-    try stack.push(@as(U, 2));
-    try stack.push(@as(U, 3));
+    try stack.push(U.ONE);
+    try stack.push(U.from(2));
+    try stack.push(U.from(3));
     try expectEqual(@as(usize, 3), stack.len());
     stack.clear();
     try expectEqual(@as(usize, 0), stack.len());
@@ -387,21 +387,21 @@ test "clear" {
 
 test "getData" {
     var stack = Stack.new();
-    try stack.push(@as(U, 10));
-    try stack.push(@as(U, 20));
-    try stack.push(@as(U, 30));
+    try stack.push(U.from(10));
+    try stack.push(U.from(20));
+    try stack.push(U.from(30));
     const data = stack.getData();
     try expectEqual(@as(usize, 3), data.len);
-    try expectEqual(@as(U, 10), data[0]);
-    try expectEqual(@as(U, 20), data[1]);
-    try expectEqual(@as(U, 30), data[2]);
+    try expect(data[0].eql(U.from(10)));
+    try expect(data[1].eql(U.from(20)));
+    try expect(data[2].eql(U.from(30)));
 }
 
 test "hasItems" {
     var stack = Stack.new();
     try expect(stack.hasItems(0));
     try expect(!stack.hasItems(1));
-    try stack.push(@as(U, 1));
+    try stack.push(U.ONE);
     try expect(stack.hasItems(1));
     try expect(!stack.hasItems(2));
 }
@@ -410,107 +410,107 @@ test "hasSpace" {
     var stack = Stack.new();
     try expect(stack.hasSpace(STACK_LIMIT));
     try expect(!stack.hasSpace(STACK_LIMIT + 1));
-    try stack.push(@as(U, 1));
+    try stack.push(U.ONE);
     try expect(stack.hasSpace(STACK_LIMIT - 1));
     try expect(!stack.hasSpace(STACK_LIMIT));
 }
 
 test "pushUnsafe and popUnsafe LIFO" {
     var stack = Stack.new();
-    stack.pushUnsafe(@as(U, 10));
-    stack.pushUnsafe(@as(U, 20));
-    stack.pushUnsafe(@as(U, 30));
+    stack.pushUnsafe(U.from(10));
+    stack.pushUnsafe(U.from(20));
+    stack.pushUnsafe(U.from(30));
     try expectEqual(@as(usize, 3), stack.len());
-    try expectEqual(@as(U, 30), stack.popUnsafe());
-    try expectEqual(@as(U, 20), stack.popUnsafe());
-    try expectEqual(@as(U, 10), stack.popUnsafe());
+    try expect(stack.popUnsafe().eql(U.from(30)));
+    try expect(stack.popUnsafe().eql(U.from(20)));
+    try expect(stack.popUnsafe().eql(U.from(10)));
     try expectEqual(@as(usize, 0), stack.len());
 }
 
 test "peekUnsafe" {
     var stack = Stack.new();
-    stack.pushUnsafe(@as(U, 100));
-    stack.pushUnsafe(@as(U, 200));
-    stack.pushUnsafe(@as(U, 300));
-    try expectEqual(@as(U, 300), stack.peekUnsafe(0));
-    try expectEqual(@as(U, 200), stack.peekUnsafe(1));
-    try expectEqual(@as(U, 100), stack.peekUnsafe(2));
+    stack.pushUnsafe(U.from(100));
+    stack.pushUnsafe(U.from(200));
+    stack.pushUnsafe(U.from(300));
+    try expect(stack.peekUnsafe(0).eql(U.from(300)));
+    try expect(stack.peekUnsafe(1).eql(U.from(200)));
+    try expect(stack.peekUnsafe(2).eql(U.from(100)));
 }
 
 test "setTopUnsafe" {
     var stack = Stack.new();
-    stack.pushUnsafe(@as(U, 42));
+    stack.pushUnsafe(U.from(42));
     const ptr = stack.setTopUnsafe();
-    try expectEqual(@as(U, 42), ptr.*);
-    ptr.* = @as(U, 99);
-    try expectEqual(@as(U, 99), stack.popUnsafe());
+    try expect(ptr.*.eql(U.from(42)));
+    ptr.* = U.from(99);
+    try expect(stack.popUnsafe().eql(U.from(99)));
 }
 
 test "dupUnsafe" {
     var stack = Stack.new();
-    stack.pushUnsafe(@as(U, 100));
-    stack.pushUnsafe(@as(U, 200));
+    stack.pushUnsafe(U.from(100));
+    stack.pushUnsafe(U.from(200));
     stack.dupUnsafe(1);
     try expectEqual(@as(usize, 3), stack.len());
-    try expectEqual(@as(U, 200), stack.peekUnsafe(0));
-    try expectEqual(@as(U, 200), stack.peekUnsafe(1));
-    try expectEqual(@as(U, 100), stack.peekUnsafe(2));
+    try expect(stack.peekUnsafe(0).eql(U.from(200)));
+    try expect(stack.peekUnsafe(1).eql(U.from(200)));
+    try expect(stack.peekUnsafe(2).eql(U.from(100)));
 }
 
 test "swapUnsafe" {
     var stack = Stack.new();
-    stack.pushUnsafe(@as(U, 10));
-    stack.pushUnsafe(@as(U, 20));
-    stack.pushUnsafe(@as(U, 30));
+    stack.pushUnsafe(U.from(10));
+    stack.pushUnsafe(U.from(20));
+    stack.pushUnsafe(U.from(30));
     stack.swapUnsafe(2);
-    try expectEqual(@as(U, 10), stack.peekUnsafe(0));
-    try expectEqual(@as(U, 20), stack.peekUnsafe(1));
-    try expectEqual(@as(U, 30), stack.peekUnsafe(2));
+    try expect(stack.peekUnsafe(0).eql(U.from(10)));
+    try expect(stack.peekUnsafe(1).eql(U.from(20)));
+    try expect(stack.peekUnsafe(2).eql(U.from(30)));
 }
 
 test "shrinkUnsafe" {
     var stack = Stack.new();
-    stack.pushUnsafe(@as(U, 10));
-    stack.pushUnsafe(@as(U, 20));
-    stack.pushUnsafe(@as(U, 30));
+    stack.pushUnsafe(U.from(10));
+    stack.pushUnsafe(U.from(20));
+    stack.pushUnsafe(U.from(30));
     try expectEqual(@as(usize, 3), stack.len());
     stack.shrinkUnsafe(2);
     try expectEqual(@as(usize, 1), stack.len());
-    try expectEqual(@as(U, 10), stack.peekUnsafe(0));
+    try expect(stack.peekUnsafe(0).eql(U.from(10)));
 }
 
 test "ADD pattern: peek-peek-shrink-overwrite" {
     var stack = Stack.new();
-    stack.pushUnsafe(@as(U, 5));
-    stack.pushUnsafe(@as(U, 3));
+    stack.pushUnsafe(U.from(5));
+    stack.pushUnsafe(U.from(3));
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = a +% b;
+    stack.setTopUnsafe().* = a.add(b);
     try expectEqual(@as(usize, 1), stack.len());
-    try expectEqual(@as(U, 8), stack.popUnsafe());
+    try expect(stack.popUnsafe().eql(U.from(8)));
 }
 
 test "ADDMOD pattern: peek-peek-peek-shrink-overwrite" {
     var stack = Stack.new();
-    stack.pushUnsafe(@as(U, 10));
-    stack.pushUnsafe(@as(U, 7));
-    stack.pushUnsafe(@as(U, 3));
+    stack.pushUnsafe(U.from(10));
+    stack.pushUnsafe(U.from(7));
+    stack.pushUnsafe(U.from(3));
     const n = stack.peekUnsafe(0); // 3
     const b = stack.peekUnsafe(1); // 7
     const a = stack.peekUnsafe(2); // 10
     stack.shrinkUnsafe(2);
     // ADDMOD: (a + b) % N = (10 + 7) % 3 = 2
-    stack.setTopUnsafe().* = if (n != @as(U, 0)) (a +% b) % n else @as(U, 0);
+    stack.setTopUnsafe().* = if (!n.isZero()) a.add(b).umod(n) else U.ZERO;
     try expectEqual(@as(usize, 1), stack.len());
-    try expectEqual(@as(U, 2), stack.popUnsafe());
+    try expect(stack.popUnsafe().eql(U.from(2)));
 }
 
 test "NOT pattern: setTopUnsafe in-place" {
     var stack = Stack.new();
-    stack.pushUnsafe(@as(U, 0));
+    stack.pushUnsafe(U.ZERO);
     const ptr = stack.setTopUnsafe();
-    ptr.* = ~ptr.*;
+    ptr.* = ptr.*.bitNot();
     try expectEqual(@as(usize, 1), stack.len());
-    try expectEqual(std.math.maxInt(U), stack.popUnsafe());
+    try expect(stack.popUnsafe().eql(U.MAX));
 }

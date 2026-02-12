@@ -5,7 +5,7 @@ const m = @import("main.zig");
 
 const gas_costs = interpreter.gas_costs;
 const U256 = @import("primitives").U256;
-const MAX = std.math.maxInt(U256);
+const MAX = U256.MAX;
 
 // ---------------------------------------------------------------------------
 // Reset functions
@@ -22,7 +22,7 @@ fn resetSub() void {
 }
 fn resetSubBorrow() void {
     m.setup(m.gasFor(bytecode.SUB));
-    m.fillConstantPairs(m.PREFILL / 2, 0, 1);
+    m.fillConstantPairs(m.PREFILL / 2, U256.ZERO, U256.ONE);
 }
 
 fn resetMul() void {
@@ -48,7 +48,7 @@ fn resetDivSmall() void {
 }
 fn resetDivZero() void {
     m.setup(m.gasFor(bytecode.DIV));
-    m.fillPairs(m.PREFILL / 2, 0);
+    m.fillPairs(m.PREFILL / 2, U256.ZERO);
 }
 
 fn resetSdiv() void {
@@ -74,7 +74,7 @@ fn resetModSmall() void {
 }
 fn resetModZero() void {
     m.setup(m.gasFor(bytecode.MOD));
-    m.fillPairs(m.PREFILL / 2, 0);
+    m.fillPairs(m.PREFILL / 2, U256.ZERO);
 }
 
 fn resetSmod() void {
@@ -101,7 +101,7 @@ fn resetSignextendHigh() void {
     m.g_gas = interpreter.Gas.new(m.OPS_PER_BATCH * gas_cost + 1000);
     for (0..m.PREFILL / 2) |i| {
         m.g_stack.pushUnsafe(m.g_values[i & (m.NUM_VALUES - 1)]);
-        m.g_stack.pushUnsafe(@as(U256, 28 + (i & 3)));
+        m.g_stack.pushUnsafe(U256.from(28 + (i & 3)));
     }
 }
 

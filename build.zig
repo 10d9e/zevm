@@ -548,4 +548,17 @@ pub fn build(b: *std.Build) void {
     cheatcode_inspector_exe.root_module.addImport("handler", handler_module);
     cheatcode_inspector_exe.root_module.addImport("inspector", inspector_module);
     b.installArtifact(cheatcode_inspector_exe);
+
+    // --- Shared library: libzevm_uint256 ---
+    const ffi_lib = b.addLibrary(.{
+        .name = "zevm_uint256",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/ffi.zig" } },
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    ffi_lib.root_module.addImport("primitives", primitives_module);
+    b.installArtifact(ffi_lib);
 }

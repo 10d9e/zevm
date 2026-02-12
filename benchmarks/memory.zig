@@ -18,20 +18,20 @@ fn fillMloadChain() void {
         bytes[30] = @truncate(next_offset >> 8);
         @memcpy(m.g_memory.buffer.items[i * 32 ..][0..32], &bytes);
     }
-    m.g_stack.pushUnsafe(@as(U256, 0));
+    m.g_stack.pushUnsafe(U256.ZERO);
 }
 
 fn fillMstoreOffsets(count: usize) void {
     for (0..count) |i| {
         m.g_stack.pushUnsafe(m.g_values[i & (m.NUM_VALUES - 1)]);
-        m.g_stack.pushUnsafe(@as(U256, (i * 32) % (m.MEM_SIZE - 32)));
+        m.g_stack.pushUnsafe(U256.from((i * 32) % (m.MEM_SIZE - 32)));
     }
 }
 
 fn fillMstore8Offsets(count: usize) void {
     for (0..count) |i| {
         m.g_stack.pushUnsafe(m.g_values[i & (m.NUM_VALUES - 1)]);
-        m.g_stack.pushUnsafe(@as(U256, i % m.MEM_SIZE));
+        m.g_stack.pushUnsafe(U256.from(i % m.MEM_SIZE));
     }
 }
 

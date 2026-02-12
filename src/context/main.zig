@@ -25,12 +25,12 @@ pub const testing = struct {
         std.debug.print("Testing BlockEnv...\n", .{});
 
         var block_env = BlockEnv.default();
-        std.debug.assert(block_env.number == @as(primitives.U256, 0));
+        std.debug.assert(block_env.number.eql(primitives.U256.ZERO));
         std.debug.assert(std.mem.eql(u8, &block_env.beneficiary, &([_]u8{0} ** 20)));
-        std.debug.assert(block_env.timestamp == @as(primitives.U256, 1));
+        std.debug.assert(block_env.timestamp.eql(primitives.U256.ONE));
         std.debug.assert(block_env.gas_limit == std.math.maxInt(u64));
         std.debug.assert(block_env.basefee == 0);
-        std.debug.assert(block_env.difficulty == @as(primitives.U256, 0));
+        std.debug.assert(block_env.difficulty.eql(primitives.U256.ZERO));
         std.debug.assert(block_env.prevrandao != null);
         std.debug.assert(block_env.blob_excess_gas_and_price != null);
 
@@ -45,7 +45,7 @@ pub const testing = struct {
         std.debug.assert(std.mem.eql(u8, &tx_env.caller, &([_]u8{0} ** 20)));
         std.debug.assert(tx_env.gas_limit == 30000000); // EIP-7825 cap
         std.debug.assert(tx_env.gas_price == 0);
-        std.debug.assert(tx_env.value == @as(primitives.U256, 0));
+        std.debug.assert(tx_env.value.eql(primitives.U256.ZERO));
         std.debug.assert(tx_env.nonce == 0);
         std.debug.assert(tx_env.chain_id == 1);
         std.debug.assert(tx_env.access_list.len() == 0);
@@ -99,7 +99,7 @@ pub const testing = struct {
         defer db.deinit();
 
         const ctx = Context.new(db, primitives.SpecId.prague);
-        std.debug.assert(ctx.block.number == @as(primitives.U256, 0));
+        std.debug.assert(ctx.block.number.eql(primitives.U256.ZERO));
         std.debug.assert(ctx.tx.tx_type == 0);
         std.debug.assert(ctx.cfg.spec == primitives.SpecId.prague);
         std.debug.assert(ctx.local.shared_memory_buffer == null);
@@ -121,7 +121,7 @@ pub const testing = struct {
         const ctx = Context.new(db, primitives.SpecId.prague);
         const evm = Evm.new(ctx, {}, {});
 
-        std.debug.assert(evm.ctx.block.number == @as(primitives.U256, 0));
+        std.debug.assert(evm.ctx.block.number.eql(primitives.U256.ZERO));
         std.debug.assert(evm.ctx.tx.tx_type == 0);
         std.debug.assert(evm.ctx.cfg.spec == primitives.SpecId.prague);
         std.debug.assert(evm.ctx.local.shared_memory_buffer == null);

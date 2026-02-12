@@ -102,7 +102,7 @@ pub const TrackingDB = struct {
         try self.operations.append(self.allocator, Operation{
             .op_type = .block_hash_insert,
             .address = [_]u8{0} ** 20, // Not applicable
-            .key = @as(primitives.StorageKey, number),
+            .key = primitives.U256.from(number),
             .value = null,
             .timestamp = @as(u64, @intCast(std.time.timestamp())),
         });
@@ -112,7 +112,7 @@ pub const TrackingDB = struct {
         try self.operations.append(self.allocator, Operation{
             .op_type = .block_hash_get,
             .address = [_]u8{0} ** 20, // Not applicable
-            .key = @as(primitives.StorageKey, number),
+            .key = primitives.U256.from(number),
             .value = null,
             .timestamp = @as(u64, @intCast(std.time.timestamp())),
         });
@@ -124,10 +124,10 @@ pub const TrackingDB = struct {
         for (self.operations.items, 0..) |op, i| {
             std.log.info("Operation {}: {} at {any}", .{ i, op.op_type, op.address });
             if (op.key) |key| {
-                std.log.info("  Key: {}", .{key});
+                std.log.info("  Key: {any}", .{key});
             }
             if (op.value) |value| {
-                std.log.info("  Value: {}", .{value});
+                std.log.info("  Value: {any}", .{value});
             }
             std.log.info("  Timestamp: {}", .{op.timestamp});
         }
@@ -172,14 +172,14 @@ fn demonstrateAccountOperations(tracking_db: *TrackingDB) !void {
 
     // Create account info
     const account1 = state.AccountInfo.new(
-        @as(primitives.U256, 1000), // balance
+        primitives.U256.from(1000), // balance
         5, // nonce
         primitives.KECCAK_EMPTY, // code hash
         bytecode.Bytecode.new(),
     );
 
     const account2 = state.AccountInfo.new(
-        @as(primitives.U256, 2000), // balance
+        primitives.U256.from(2000), // balance
         10, // nonce
         primitives.KECCAK_EMPTY, // code hash
         bytecode.Bytecode.new(),
@@ -194,11 +194,11 @@ fn demonstrateAccountOperations(tracking_db: *TrackingDB) !void {
     const retrieved_account2 = try tracking_db.getAccount(address2);
 
     if (retrieved_account1) |acc1| {
-        std.log.info("Account 1 - Balance: {}, Nonce: {}", .{ acc1.balance, acc1.nonce });
+        std.log.info("Account 1 - Balance: {any}, Nonce: {}", .{ acc1.balance, acc1.nonce });
     }
 
     if (retrieved_account2) |acc2| {
-        std.log.info("Account 2 - Balance: {}, Nonce: {}", .{ acc2.balance, acc2.nonce });
+        std.log.info("Account 2 - Balance: {any}, Nonce: {}", .{ acc2.balance, acc2.nonce });
     }
 }
 
@@ -209,7 +209,7 @@ fn demonstrateStorageOperations(tracking_db: *TrackingDB) !void {
 
     // Create contract account
     const contract_account = state.AccountInfo.new(
-        @as(primitives.U256, 0), // balance
+        primitives.U256.ZERO, // balance
         0, // nonce
         primitives.KECCAK_EMPTY, // code hash
         bytecode.Bytecode.new(),
@@ -218,22 +218,22 @@ fn demonstrateStorageOperations(tracking_db: *TrackingDB) !void {
     try tracking_db.insertAccount(contract_address, contract_account);
 
     // Set storage values
-    const storage_key1: primitives.StorageKey = 0;
-    const storage_key2: primitives.StorageKey = 1;
-    const storage_key3: primitives.StorageKey = 0x123456789ABCDEF0;
+    const storage_key1 = primitives.U256.ZERO;
+    const storage_key2 = primitives.U256.ONE;
+    const storage_key3 = primitives.U256.from(0x123456789ABCDEF0);
 
-    try tracking_db.insertStorage(contract_address, storage_key1, @as(primitives.StorageValue, 0x1111));
-    try tracking_db.insertStorage(contract_address, storage_key2, @as(primitives.StorageValue, 0x2222));
-    try tracking_db.insertStorage(contract_address, storage_key3, @as(primitives.StorageValue, 0x3333));
+    try tracking_db.insertStorage(contract_address, storage_key1, primitives.U256.from(0x1111));
+    try tracking_db.insertStorage(contract_address, storage_key2, primitives.U256.from(0x2222));
+    try tracking_db.insertStorage(contract_address, storage_key3, primitives.U256.from(0x3333));
 
     // Retrieve storage values
     const value1 = try tracking_db.getStorage(contract_address, storage_key1);
     const value2 = try tracking_db.getStorage(contract_address, storage_key2);
     const value3 = try tracking_db.getStorage(contract_address, storage_key3);
 
-    std.log.info("Storage slot 0: 0x{x}", .{value1});
-    std.log.info("Storage slot 1: 0x{x}", .{value2});
-    std.log.info("Storage slot 0x123456789ABCDEF0: 0x{x}", .{value3});
+    std.log.info("Storage slot 0: 0x{x}", .{value1.toNative()});
+    std.log.info("Storage slot 1: 0x{x}", .{value2.toNative()});
+    std.log.info("Storage slot 0x123456789ABCDEF0: 0x{x}", .{value3.toNative()});
 }
 
 fn demonstrateBlockHashOperations(tracking_db: *TrackingDB) !void {
@@ -266,14 +266,14 @@ fn demonstrateStateTransitions(tracking_db: *TrackingDB) !void {
 
     // Create initial accounts
     const sender_account = state.AccountInfo.new(
-        @as(primitives.U256, 10000), // balance
+        primitives.U256.from(10000), // balance
         0, // nonce
         primitives.KECCAK_EMPTY, // code hash
         bytecode.Bytecode.new(),
     );
 
     const receiver_account = state.AccountInfo.new(
-        @as(primitives.U256, 0), // balance
+        primitives.U256.ZERO, // balance
         0, // nonce
         primitives.KECCAK_EMPTY, // code hash
         bytecode.Bytecode.new(),
@@ -283,15 +283,15 @@ fn demonstrateStateTransitions(tracking_db: *TrackingDB) !void {
     try tracking_db.insertAccount(receiver, receiver_account);
 
     std.log.info("Initial state:", .{});
-    std.log.info("  Sender balance: {}", .{(try tracking_db.getAccount(sender) orelse return).balance});
-    std.log.info("  Receiver balance: {}", .{(try tracking_db.getAccount(receiver) orelse return).balance});
+    std.log.info("  Sender balance: {any}", .{(try tracking_db.getAccount(sender) orelse return).balance});
+    std.log.info("  Receiver balance: {any}", .{(try tracking_db.getAccount(receiver) orelse return).balance});
 
     // Simulate a transfer transaction
-    const transfer_amount: primitives.U256 = 1000;
+    const transfer_amount = primitives.U256.from(1000);
 
     // Update sender account (decrease balance, increase nonce)
     const updated_sender = state.AccountInfo.new(
-        @as(primitives.U256, 9000), // balance - transfer_amount
+        primitives.U256.from(9000), // balance - transfer_amount
         1, // nonce + 1
         primitives.KECCAK_EMPTY, // code hash
         bytecode.Bytecode.new(),
@@ -309,7 +309,7 @@ fn demonstrateStateTransitions(tracking_db: *TrackingDB) !void {
     try tracking_db.insertAccount(receiver, updated_receiver);
 
     std.log.info("After transfer:", .{});
-    std.log.info("  Sender balance: {}", .{(try tracking_db.getAccount(sender) orelse return).balance});
-    std.log.info("  Receiver balance: {}", .{(try tracking_db.getAccount(receiver) orelse return).balance});
+    std.log.info("  Sender balance: {any}", .{(try tracking_db.getAccount(sender) orelse return).balance});
+    std.log.info("  Receiver balance: {any}", .{(try tracking_db.getAccount(receiver) orelse return).balance});
     std.log.info("  Sender nonce: {}", .{(try tracking_db.getAccount(sender) orelse return).nonce});
 }
