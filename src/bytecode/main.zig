@@ -512,9 +512,9 @@ pub const Bytecode = union(enum) {
     }
 
     /// Returns jump table if bytecode is analyzed.
-    pub fn legacyJumpTable(self: Self) ?*JumpTable {
-        return switch (self) {
-            .legacy_analyzed => |analyzed| analyzed.jumpTable(),
+    pub fn legacyJumpTable(self: *const Self) ?*const JumpTable {
+        return switch (self.*) {
+            .legacy_analyzed => &self.legacy_analyzed.jump_table,
             else => null,
         };
     }
@@ -595,10 +595,6 @@ pub const LegacyAnalyzedBytecode = struct {
             .original_len = 1,
             .jump_table = JumpTable.fromBytes(&[_]u8{0}, 1),
         };
-    }
-
-    pub fn jumpTable(self: Self) *JumpTable {
-        return &self.jump_table;
     }
 
     pub fn getBytecode(self: Self) []const u8 {

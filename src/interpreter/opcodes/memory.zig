@@ -18,13 +18,14 @@ fn memoryExpansionCost(current_words: usize, new_words: usize) u64 {
 }
 
 fn memoryCost(num_words: usize) u64 {
-    const linear = num_words * GAS_MEMORY;
-    const quadratic = (num_words * num_words) / 512;
-    return @intCast(linear + quadratic);
+    const linear = std.math.mul(u64, @intCast(num_words), GAS_MEMORY) catch return std.math.maxInt(u64);
+    const sq = std.math.mul(u64, @intCast(num_words), @intCast(num_words)) catch return std.math.maxInt(u64);
+    const quadratic = sq / 512;
+    return std.math.add(u64, linear, quadratic) catch std.math.maxInt(u64);
 }
 
 fn toWordSize(size: usize) usize {
-    return (size + 31) / 32;
+    return (std.math.add(usize, size, 31) catch return std.math.maxInt(usize)) / 32;
 }
 
 /// MLOAD opcode (0x51): Load word from memory
@@ -156,12 +157,12 @@ pub inline fn opMcopy(stack: *Stack, gas: *Gas, memory: *Memory) InstructionResu
 
     // Calculate copy cost: 3 gas per word
     const num_words = toWordSize(length_usize);
-    const copy_cost = 3 * num_words;
-    if (!gas.spend(@intCast(copy_cost))) return .out_of_gas;
+    const copy_cost = std.math.mul(u64, 3, @as(u64, @intCast(num_words))) catch return .memory_limit_oog;
+    if (!gas.spend(copy_cost)) return .out_of_gas;
 
     // Calculate memory expansion cost
-    const dest_end = dest_usize + length_usize;
-    const src_end = src_usize + length_usize;
+    const dest_end = std.math.add(usize, dest_usize, length_usize) catch return .memory_limit_oog;
+    const src_end = std.math.add(usize, src_usize, length_usize) catch return .memory_limit_oog;
     const max_end = @max(dest_end, src_end);
     const current_words = toWordSize(memory.size());
     const new_words = toWordSize(max_end);

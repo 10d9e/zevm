@@ -97,7 +97,7 @@ pub inline fn opPc(stack: *Stack, gas: *Gas, pc: usize) InstructionResult {
 pub inline fn opGas(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasSpace(1)) return .stack_overflow;
     if (!gas.spend(GAS_BASE)) return .out_of_gas;
-    stack.pushUnsafe(gas.remaining);
+    stack.pushUnsafe(primitives.U256.from(gas.remaining));
     return .continue_;
 }
 
