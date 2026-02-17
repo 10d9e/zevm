@@ -53,12 +53,17 @@ pub fn build(b: *std.Build) void {
     //
     // NOTE: This hardcodes the OpenSSL rpath path. For non-Homebrew installations or different
     // OpenSSL versions, you may need to adjust the path or add additional rpath cleanup steps.
+    //
+    // TODO: Remove this workaround when Zig addresses the root cause upstream in v0.16.0+
     const removeDuplicateRpaths = struct {
         fn remove(
             b_ctx: *std.Build,
             exe: *std.Build.Step.Compile,
             run_step: ?*std.Build.Step.Run,
         ) void {
+            // Output warning about workaround in yellow
+            std.debug.print("\x1b[33mWarning: Removing duplicate rpaths as a workaround for a known Zig issue (https://github.com/ziglang/zig/issues/24349). This will be removed when Zig addresses the root cause upstream in v0.16.0+\x1b[0m\n", .{});
+
             const exe_target = exe.root_module.resolved_target orelse return;
             if (exe_target.result.os.tag != .macos) return;
 
@@ -68,17 +73,24 @@ pub fn build(b: *std.Build) void {
             const rpath = "/opt/homebrew/Cellar/openssl@3/3.6.0/lib";
 
             // Remove first instance (ignore errors if it doesn't exist)
-            const remove1 = b_ctx.addSystemCommand(&.{ "install_name_tool", "-delete_rpath", rpath });
+            // Use sh -c to wrap the command so we can ignore errors with || true
+            // Redirect stderr to /dev/null to suppress error messages
+            // Add a dummy arg so the file path becomes $1 (first arg after -c script becomes $0)
+            const remove1_cmd = std.fmt.allocPrint(b_ctx.allocator, "install_name_tool -delete_rpath '{s}' \"$1\" 2>/dev/null || true", .{rpath}) catch @panic("OOM");
+            const remove1 = b_ctx.addSystemCommand(&.{ "sh", "-c", remove1_cmd, "dummy" });
             remove1.addFileArg(bin_file);
             remove1.step.dependOn(&exe.step);
 
-            // Remove second instance
-            const remove2 = b_ctx.addSystemCommand(&.{ "install_name_tool", "-delete_rpath", rpath });
+            // Remove second instance (ignore errors if it doesn't exist)
+            const remove2_cmd = std.fmt.allocPrint(b_ctx.allocator, "install_name_tool -delete_rpath '{s}' \"$1\" 2>/dev/null || true", .{rpath}) catch @panic("OOM");
+            const remove2 = b_ctx.addSystemCommand(&.{ "sh", "-c", remove2_cmd, "dummy" });
             remove2.addFileArg(bin_file);
             remove2.step.dependOn(&remove1.step);
 
-            // Add it back once
-            const add_back = b_ctx.addSystemCommand(&.{ "install_name_tool", "-add_rpath", rpath });
+            // Add it back once (only if it doesn't already exist after removal)
+            // This ensures we have exactly one rpath if any existed before
+            const add_back_cmd = std.fmt.allocPrint(b_ctx.allocator, "otool -l \"$1\" | grep -q \"path {s}\" || (install_name_tool -add_rpath '{s}' \"$1\" 2>/dev/null || true)", .{ rpath, rpath }) catch @panic("OOM");
+            const add_back = b_ctx.addSystemCommand(&.{ "sh", "-c", add_back_cmd, "dummy" });
             add_back.addFileArg(bin_file);
             add_back.step.dependOn(&remove2.step);
 
@@ -88,8 +100,36 @@ pub fn build(b: *std.Build) void {
             }
 
             // Also add to install step so installed binaries are clean
+            // Since we clean the build binary before install, the installed copy should be clean
+            // But we also clean the installed binary after installation to be safe
             const install_step = b_ctx.getInstallStep();
             install_step.dependOn(&add_back.step);
+
+            // Also clean the installed binary after it's copied
+            // Get the installed binary path - use absolute path from build root
+            const exe_name = exe.name;
+            // Construct absolute path: build_root/zig-out/bin/exe_name
+            const installed_bin_path = std.fmt.allocPrint(b_ctx.allocator, "zig-out/bin/{s}", .{exe_name}) catch @panic("OOM");
+
+            const install_remove1_cmd = std.fmt.allocPrint(b_ctx.allocator, "install_name_tool -delete_rpath '{s}' \"$1\" 2>/dev/null || true", .{rpath}) catch @panic("OOM");
+            const install_remove1 = b_ctx.addSystemCommand(&.{ "sh", "-c", install_remove1_cmd, "dummy" });
+            install_remove1.addArg(installed_bin_path);
+            install_remove1.step.dependOn(install_step);
+
+            const install_remove2_cmd = std.fmt.allocPrint(b_ctx.allocator, "install_name_tool -delete_rpath '{s}' \"$1\" 2>/dev/null || true", .{rpath}) catch @panic("OOM");
+            const install_remove2 = b_ctx.addSystemCommand(&.{ "sh", "-c", install_remove2_cmd, "dummy" });
+            install_remove2.addArg(installed_bin_path);
+            install_remove2.step.dependOn(&install_remove1.step);
+
+            const install_add_back_cmd = std.fmt.allocPrint(b_ctx.allocator, "otool -l \"$1\" | grep -q \"path {s}\" || (install_name_tool -add_rpath '{s}' \"$1\" 2>/dev/null || true)", .{ rpath, rpath }) catch @panic("OOM");
+            const install_add_back = b_ctx.addSystemCommand(&.{ "sh", "-c", install_add_back_cmd, "dummy" });
+            install_add_back.addArg(installed_bin_path);
+            install_add_back.step.dependOn(&install_remove2.step);
+
+            // Make run step also depend on installed binary cleanup
+            if (run_step) |run| {
+                run.step.dependOn(&install_add_back.step);
+            }
         }
     }.remove;
 
@@ -356,13 +396,13 @@ pub fn build(b: *std.Build) void {
     test_exe.root_module.addImport("handler", handler_module);
     test_exe.root_module.addImport("inspector", inspector_module);
 
-    b.installArtifact(test_exe);
-
     // Run tests
     const run_tests = b.addRunArtifact(test_exe);
 
-    // Remove duplicate rpaths on macOS before running tests
+    // Remove duplicate rpaths on macOS before installation and running tests
     removeDuplicateRpaths(b, test_exe, run_tests);
+
+    b.installArtifact(test_exe);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
