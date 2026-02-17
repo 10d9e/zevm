@@ -34,6 +34,65 @@ pub fn build(b: *std.Build) void {
     lib_options.addOption(bool, "enable_mcl", enable_mcl);
     const lib_options_module = lib_options.createModule();
 
+    // Helper function to remove duplicate rpaths on macOS
+    //
+    // ROOT CAUSE:
+    // Zig's build system automatically adds an LC_RPATH entry for each library linked via
+    // linkSystemLibrary(). When multiple libraries are in the same directory (e.g., libssl.3.dylib
+    // and libcrypto.3.dylib both in /opt/homebrew/Cellar/openssl@3/3.6.0/lib), Zig adds the same
+    // rpath multiple times, causing duplicate LC_RPATH entries that dyld rejects.
+    //
+    // This is a known Zig issue: https://github.com/ziglang/zig/issues/24349
+    // System libraries shouldn't need rpaths at all since they're in standard search paths.
+    //
+    // WORKAROUND:
+    // We remove duplicate rpaths using install_name_tool. Since Zig's addFileArg doesn't work
+    // reliably with shell scripts, we use individual install_name_tool commands. We remove the
+    // duplicate rpath twice (to handle the common case of 2 duplicates) and add it back once.
+    // This is a temporary fix until Zig addresses the root cause upstream.
+    //
+    // NOTE: This hardcodes the OpenSSL rpath path. For non-Homebrew installations or different
+    // OpenSSL versions, you may need to adjust the path or add additional rpath cleanup steps.
+    const removeDuplicateRpaths = struct {
+        fn remove(
+            b_ctx: *std.Build,
+            exe: *std.Build.Step.Compile,
+            run_step: ?*std.Build.Step.Run,
+        ) void {
+            const exe_target = exe.root_module.resolved_target orelse return;
+            if (exe_target.result.os.tag != .macos) return;
+
+            const bin_file = exe.getEmittedBin();
+            // Common OpenSSL rpath for Homebrew installations
+            // Adjust this if your OpenSSL is installed elsewhere
+            const rpath = "/opt/homebrew/Cellar/openssl@3/3.6.0/lib";
+
+            // Remove first instance (ignore errors if it doesn't exist)
+            const remove1 = b_ctx.addSystemCommand(&.{ "install_name_tool", "-delete_rpath", rpath });
+            remove1.addFileArg(bin_file);
+            remove1.step.dependOn(&exe.step);
+
+            // Remove second instance
+            const remove2 = b_ctx.addSystemCommand(&.{ "install_name_tool", "-delete_rpath", rpath });
+            remove2.addFileArg(bin_file);
+            remove2.step.dependOn(&remove1.step);
+
+            // Add it back once
+            const add_back = b_ctx.addSystemCommand(&.{ "install_name_tool", "-add_rpath", rpath });
+            add_back.addFileArg(bin_file);
+            add_back.step.dependOn(&remove2.step);
+
+            // Make the run step depend on cleaning rpaths so it runs before execution
+            if (run_step) |run| {
+                run.step.dependOn(&add_back.step);
+            }
+
+            // Also add to install step so installed binaries are clean
+            const install_step = b_ctx.getInstallStep();
+            install_step.dependOn(&add_back.step);
+        }
+    }.remove;
+
     // Helper function to add crypto library linking to a step
     const addCryptoLibraries = struct {
         fn add(
@@ -299,6 +358,15 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(test_exe);
 
+    // Run tests
+    const run_tests = b.addRunArtifact(test_exe);
+
+    // Remove duplicate rpaths on macOS before running tests
+    removeDuplicateRpaths(b, test_exe, run_tests);
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_tests.step);
+
     // Benchmark executable
     const bench_exe = b.addExecutable(.{
         .name = "zevm-bench",
@@ -322,11 +390,6 @@ pub fn build(b: *std.Build) void {
     bench_exe.root_module.addImport("inspector", inspector_module);
 
     b.installArtifact(bench_exe);
-
-    // Run tests
-    const run_tests = b.addRunArtifact(test_exe);
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_tests.step);
 
     // Inline zig tests for interpreter module (discovers tests in all imported files)
     const interpreter_tests = b.addTest(.{
