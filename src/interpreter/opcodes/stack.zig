@@ -3,15 +3,13 @@ const primitives = @import("primitives");
 const Stack = @import("../stack.zig").Stack;
 const Gas = @import("../gas.zig").Gas;
 const InstructionResult = @import("../instruction_result.zig").InstructionResult;
-
-pub const GAS_BASE: u64 = 2;
-pub const GAS_VERYLOW: u64 = 3;
+const gas_costs = @import("../gas_costs.zig");
 
 /// POP opcode (0x50): Remove top item from stack
 /// Stack: [a] -> []   Gas: 2 (BASE)
 pub inline fn opPop(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(1)) return .stack_underflow;
-    if (!gas.spend(GAS_BASE)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_BASE)) return .out_of_gas;
     stack.shrinkUnsafe(1);
     return .continue_;
 }
@@ -20,7 +18,7 @@ pub inline fn opPop(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [] -> [0]   Gas: 2 (BASE)
 pub inline fn opPush0(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasSpace(1)) return .stack_overflow;
-    if (!gas.spend(GAS_BASE)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_BASE)) return .out_of_gas;
     stack.pushUnsafe(0);
     return .continue_;
 }
@@ -29,7 +27,7 @@ pub inline fn opPush0(stack: *Stack, gas: *Gas) InstructionResult {
 /// Reads N bytes from bytecode and pushes as U256
 pub inline fn opPushN(stack: *Stack, gas: *Gas, code: []const u8, pc: *usize, n: u8) InstructionResult {
     if (!stack.hasSpace(1)) return .stack_overflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
 
     const start = pc.* + 1;
     const available = if (start < code.len) code.len - start else 0;
@@ -59,7 +57,7 @@ pub inline fn opPushN(stack: *Stack, gas: *Gas, code: []const u8, pc: *usize, n:
 pub inline fn opDupN(stack: *Stack, gas: *Gas, n: u8) InstructionResult {
     if (!stack.hasItems(n)) return .stack_underflow;
     if (!stack.hasSpace(1)) return .stack_overflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
     stack.dupUnsafe(n);
     return .continue_;
 }
@@ -69,7 +67,7 @@ pub inline fn opDupN(stack: *Stack, gas: *Gas, n: u8) InstructionResult {
 pub inline fn opSwapN(stack: *Stack, gas: *Gas, n: u8) InstructionResult {
     const items_needed = n + 1;
     if (!stack.hasItems(items_needed)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
     stack.swapUnsafe(n);
     return .continue_;
 }

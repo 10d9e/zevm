@@ -4,13 +4,7 @@ const Stack = @import("../stack.zig").Stack;
 const Gas = @import("../gas.zig").Gas;
 const Memory = @import("../memory.zig").Memory;
 const InstructionResult = @import("../instruction_result.zig").InstructionResult;
-
-pub const GAS_KECCAK256: u64 = 30;
-pub const GAS_KECCAK256WORD: u64 = 6;
-
-fn toWordSize(size: usize) usize {
-    return (size + 31) / 32;
-}
+const gas_costs = @import("../gas_costs.zig");
 
 /// KECCAK256 opcode (0x20): Compute Keccak-256 hash
 /// Stack: [offset, length] -> [hash]   Gas: 30 + 6 * num_words
@@ -29,8 +23,8 @@ pub inline fn opKeccak256(stack: *Stack, gas: *Gas, memory: *Memory) Instruction
     const length_usize: usize = @intCast(length);
 
     // Calculate gas cost
-    const num_words = toWordSize(length_usize);
-    const hash_cost = GAS_KECCAK256 + (GAS_KECCAK256WORD * num_words);
+    const num_words = gas_costs.toWordSize(length_usize);
+    const hash_cost = gas_costs.G_KECCAK256 + (gas_costs.G_KECCAK256WORD * num_words);
     if (!gas.spend(@intCast(hash_cost))) return .out_of_gas;
 
     // Check memory expansion

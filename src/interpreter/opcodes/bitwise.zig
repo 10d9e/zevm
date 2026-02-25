@@ -3,14 +3,13 @@ const primitives = @import("primitives");
 const Stack = @import("../stack.zig").Stack;
 const Gas = @import("../gas.zig").Gas;
 const InstructionResult = @import("../instruction_result.zig").InstructionResult;
-
-pub const GAS_VERYLOW: u64 = 3;
+const gas_costs = @import("../gas_costs.zig");
 
 /// AND opcode (0x16): a & b
 /// Stack: [a, b] -> [a & b]   Gas: 3 (VERYLOW)
 pub inline fn opAnd(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -22,7 +21,7 @@ pub inline fn opAnd(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [a, b] -> [a | b]   Gas: 3 (VERYLOW)
 pub inline fn opOr(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -34,7 +33,7 @@ pub inline fn opOr(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [a, b] -> [a ^ b]   Gas: 3 (VERYLOW)
 pub inline fn opXor(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -46,7 +45,7 @@ pub inline fn opXor(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [a] -> [~a]   Gas: 3 (VERYLOW)
 pub inline fn opNot(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(1)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
     const ptr = stack.setTopUnsafe();
     ptr.* = ~ptr.*;
     return .continue_;
@@ -57,7 +56,7 @@ pub inline fn opNot(stack: *Stack, gas: *Gas) InstructionResult {
 /// Extracts the i-th byte (0 = most significant) from x
 pub inline fn opByte(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
     const i = stack.peekUnsafe(0);
     const x = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -76,7 +75,7 @@ pub inline fn opByte(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [shift, value] -> [value << shift]   Gas: 3 (VERYLOW)
 pub inline fn opShl(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
     const shift = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -94,7 +93,7 @@ pub inline fn opShl(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [shift, value] -> [value >> shift]   Gas: 3 (VERYLOW)
 pub inline fn opShr(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
     const shift = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -112,7 +111,7 @@ pub inline fn opShr(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [shift, value] -> [value >> shift (signed)]   Gas: 3 (VERYLOW)
 pub inline fn opSar(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
     const shift = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);

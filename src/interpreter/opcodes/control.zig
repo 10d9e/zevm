@@ -4,11 +4,7 @@ const Stack = @import("../stack.zig").Stack;
 const Gas = @import("../gas.zig").Gas;
 const InstructionResult = @import("../instruction_result.zig").InstructionResult;
 const bytecode_mod = @import("bytecode");
-
-pub const GAS_BASE: u64 = 2;
-pub const GAS_MID: u64 = 8;
-pub const GAS_HIGH: u64 = 10;
-pub const GAS_JUMPDEST: u64 = 1;
+const gas_costs = @import("../gas_costs.zig");
 
 /// STOP opcode (0x00): Halt execution
 /// Stack: [] -> []   Gas: 0
@@ -23,7 +19,7 @@ pub inline fn opStop(stack: *Stack, gas: *Gas) InstructionResult {
 /// Jumps to destination if it's a valid JUMPDEST
 pub inline fn opJump(stack: *Stack, gas: *Gas, code: []const u8, jump_table: ?*const bytecode_mod.JumpTable, pc: *usize) InstructionResult {
     if (!stack.hasItems(1)) return .stack_underflow;
-    if (!gas.spend(GAS_MID)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_MID)) return .out_of_gas;
 
     const dest = stack.popUnsafe();
     const dest_u64 = std.math.cast(u64, dest) orelse return .invalid_jump;
@@ -46,7 +42,7 @@ pub inline fn opJump(stack: *Stack, gas: *Gas, code: []const u8, jump_table: ?*c
 /// Jumps to destination if condition is non-zero and dest is valid JUMPDEST
 pub inline fn opJumpi(stack: *Stack, gas: *Gas, code: []const u8, jump_table: ?*const bytecode_mod.JumpTable, pc: *usize) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_HIGH)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_HIGH)) return .out_of_gas;
 
     const dest = stack.peekUnsafe(0);
     const cond = stack.peekUnsafe(1);
@@ -75,7 +71,7 @@ pub inline fn opJumpi(stack: *Stack, gas: *Gas, code: []const u8, jump_table: ?*
 /// Stack: [] -> []   Gas: 1 (JUMPDEST)
 pub inline fn opJumpdest(stack: *Stack, gas: *Gas) InstructionResult {
     _ = stack;
-    if (!gas.spend(GAS_JUMPDEST)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_JUMPDEST)) return .out_of_gas;
     return .continue_;
 }
 
@@ -83,8 +79,8 @@ pub inline fn opJumpdest(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [] -> [pc]   Gas: 2 (BASE)
 pub inline fn opPc(stack: *Stack, gas: *Gas, pc: usize) InstructionResult {
     if (!stack.hasSpace(1)) return .stack_overflow;
-    if (!gas.spend(GAS_BASE)) return .out_of_gas;
-    stack.pushUnsafe(@as(primitives.U256, @intCast(pc)));
+    if (!gas.spend(gas_costs.G_BASE)) return .out_of_gas;
+    stack.pushUnsafe(pc);
     return .continue_;
 }
 
@@ -92,8 +88,8 @@ pub inline fn opPc(stack: *Stack, gas: *Gas, pc: usize) InstructionResult {
 /// Stack: [] -> [gas]   Gas: 2 (BASE)
 pub inline fn opGas(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasSpace(1)) return .stack_overflow;
-    if (!gas.spend(GAS_BASE)) return .out_of_gas;
-    stack.pushUnsafe(@as(primitives.U256, gas.remaining));
+    if (!gas.spend(gas_costs.G_BASE)) return .out_of_gas;
+    stack.pushUnsafe(gas.remaining);
     return .continue_;
 }
 

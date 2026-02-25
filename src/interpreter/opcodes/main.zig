@@ -61,15 +61,16 @@ pub const opMcopy = memory.opMcopy;
 pub const keccak = @import("keccak.zig");
 pub const opKeccak256 = keccak.opKeccak256;
 
-// Gas constants
-pub const GAS_BASE = stack.GAS_BASE;
-pub const GAS_VERYLOW = arithmetic.GAS_VERYLOW;
-pub const GAS_LOW = arithmetic.GAS_LOW;
-pub const GAS_MID = arithmetic.GAS_MID;
-pub const GAS_HIGH = control.GAS_HIGH;
-pub const GAS_JUMPDEST = control.GAS_JUMPDEST;
-pub const GAS_EXP = arithmetic.GAS_EXP;
-pub const GAS_EXP_BYTE = arithmetic.GAS_EXP_BYTE;
-pub const GAS_KECCAK256 = keccak.GAS_KECCAK256;
-pub const GAS_KECCAK256WORD = keccak.GAS_KECCAK256WORD;
-pub const GAS_MEMORY = memory.GAS_MEMORY;
+// Gas constants re-exported from the single source of truth
+const gas_costs = @import("../gas_costs.zig");
+pub const GAS_BASE = gas_costs.G_BASE;
+pub const GAS_VERYLOW = gas_costs.G_VERYLOW;
+pub const GAS_LOW = gas_costs.G_LOW;
+pub const GAS_MID = gas_costs.G_MID;
+pub const GAS_HIGH = gas_costs.G_HIGH;
+pub const GAS_JUMPDEST = gas_costs.G_JUMPDEST;
+pub const GAS_EXP = gas_costs.G_EXP;
+pub const GAS_EXP_BYTE = gas_costs.G_EXPBYTE;
+pub const GAS_KECCAK256 = gas_costs.G_KECCAK256;
+pub const GAS_KECCAK256WORD = gas_costs.G_KECCAK256WORD;
+pub const GAS_MEMORY = gas_costs.G_MEMORY;

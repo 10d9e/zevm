@@ -3,18 +3,13 @@ const primitives = @import("primitives");
 const Stack = @import("../stack.zig").Stack;
 const Gas = @import("../gas.zig").Gas;
 const InstructionResult = @import("../instruction_result.zig").InstructionResult;
-
-pub const GAS_VERYLOW: u64 = 3;
-pub const GAS_LOW: u64 = 5;
-pub const GAS_MID: u64 = 8;
-pub const GAS_EXP: u64 = 10;
-pub const GAS_EXP_BYTE: u64 = 50;
+const gas_costs = @import("../gas_costs.zig");
 
 /// ADD opcode (0x01): a + b (wrapping mod 2^256)
 /// Stack: [a, b] -> [a + b]   Gas: 3 (VERYLOW)
 pub inline fn opAdd(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -26,7 +21,7 @@ pub inline fn opAdd(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [a, b] -> [a / b]   Gas: 5 (LOW)
 pub inline fn opDiv(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_LOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_LOW)) return .out_of_gas;
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -38,7 +33,7 @@ pub inline fn opDiv(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [a, b] -> [a - b]   Gas: 3 (VERYLOW)
 pub inline fn opSub(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -50,7 +45,7 @@ pub inline fn opSub(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [a, b] -> [a * b]   Gas: 5 (LOW)
 pub inline fn opMul(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_LOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_LOW)) return .out_of_gas;
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -62,7 +57,7 @@ pub inline fn opMul(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [a, b] -> [a % b]   Gas: 5 (LOW)
 pub inline fn opMod(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_LOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_LOW)) return .out_of_gas;
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -74,7 +69,7 @@ pub inline fn opMod(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [a, b, N] -> [(a + b) % N]   Gas: 8 (MID)
 pub inline fn opAddmod(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(3)) return .stack_underflow;
-    if (!gas.spend(GAS_MID)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_MID)) return .out_of_gas;
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     const n = stack.peekUnsafe(2);
@@ -87,7 +82,7 @@ pub inline fn opAddmod(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [a, b, N] -> [(a * b) % N]   Gas: 8 (MID)
 pub inline fn opMulmod(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(3)) return .stack_underflow;
-    if (!gas.spend(GAS_MID)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_MID)) return .out_of_gas;
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     const n = stack.peekUnsafe(2);
@@ -102,7 +97,7 @@ pub inline fn opMulmod(stack: *Stack, gas: *Gas) InstructionResult {
 pub inline fn opExp(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
     const exponent = stack.peekUnsafe(1);
-    const gas_cost = GAS_EXP + GAS_EXP_BYTE * byteSize(exponent);
+    const gas_cost = gas_costs.G_EXP + gas_costs.G_EXPBYTE * byteSize(exponent);
     if (!gas.spend(gas_cost)) return .out_of_gas;
     const base = stack.peekUnsafe(0);
     stack.shrinkUnsafe(1);
@@ -114,7 +109,7 @@ pub inline fn opExp(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [a, b] -> [a / b]   Gas: 5 (LOW)
 pub inline fn opSdiv(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_LOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_LOW)) return .out_of_gas;
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -126,7 +121,7 @@ pub inline fn opSdiv(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [a, b] -> [a % b]   Gas: 5 (LOW)
 pub inline fn opSmod(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_LOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_LOW)) return .out_of_gas;
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -138,7 +133,7 @@ pub inline fn opSmod(stack: *Stack, gas: *Gas) InstructionResult {
 /// Stack: [byte_pos, value] -> [extended_value]   Gas: 5 (LOW)
 pub inline fn opSignextend(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_LOW)) return .out_of_gas;
+    if (!gas.spend(gas_costs.G_LOW)) return .out_of_gas;
     const byte_pos = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
