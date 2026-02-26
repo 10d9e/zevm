@@ -285,8 +285,7 @@ pub const Frame = struct {
             .run_sub_call = interpreter.protocol_schedule.runSubCallDefault,
         };
 
-        const result = interpreter.protocol_schedule.runWithHost(
-            &self.interpreter,
+        const result = self.interpreter.runWithHost(
             &schedule.instructions,
             &host,
         );

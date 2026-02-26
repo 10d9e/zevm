@@ -8,20 +8,9 @@ const Memory = @import("memory.zig").Memory;
 const InstructionResult = @import("instruction_result.zig").InstructionResult;
 const InterpreterAction = @import("interpreter_action.zig").InterpreterAction;
 const CallScheme = @import("interpreter_action.zig").CallScheme;
+// Lazy imports for dispatch types — pointer-only usage prevents circular dependency issues.
 const InstructionContext = @import("instruction_context.zig").InstructionContext;
 const Host = @import("host.zig").Host;
-
-/// Opcode handler function type
-pub const InstructionFn = *const fn (*InstructionContext) void;
-
-/// Entry in the instruction dispatch table: handler + static gas cost
-pub const InstructionEntry = struct {
-    handler: InstructionFn,
-    static_gas: u64,
-};
-
-/// Full 256-entry dispatch table
-pub const InstructionTable = [256]InstructionEntry;
 
 /// Input data for current execution context
 pub const InputsImpl = struct {
@@ -332,6 +321,35 @@ pub const EofSection = struct {
     }
 };
 
+// ---------------------------------------------------------------------------
+// Dispatch table types
+// ---------------------------------------------------------------------------
+
+/// Function pointer type for opcode handlers (re-exported from instruction_context.zig).
+pub const InstructionFn = @import("instruction_context.zig").InstructionFn;
+
+/// One entry in the dispatch table: a handler function and its static gas cost.
+pub const InstructionEntry = struct {
+    func: InstructionFn,
+    static_gas: u64,
+
+    pub fn unknown() InstructionEntry {
+        return .{ .func = opUnknown, .static_gas = 0 };
+    }
+};
+
+/// 256-entry dispatch table indexed by opcode byte.
+pub const InstructionTable = [256]InstructionEntry;
+
+/// Handler for unknown/disabled opcodes.
+fn opUnknown(ctx: *InstructionContext) void {
+    ctx.interpreter.halt(.invalid_opcode);
+}
+
+// ---------------------------------------------------------------------------
+// Main interpreter
+// ---------------------------------------------------------------------------
+
 /// Main interpreter structure that contains all components
 pub const Interpreter = struct {
     bytecode: ExtBytecode,
@@ -421,52 +439,6 @@ pub const Interpreter = struct {
     }
 
     // -----------------------------------------------------------------------
-    // New InstructionContext-based dispatch
-    // -----------------------------------------------------------------------
-
-    /// Execute one instruction (no host — for pure computation)
-    pub fn step(self: *Interpreter, table: *const InstructionTable) void {
-        if (!self.bytecode.continue_execution) return;
-        const op = self.bytecode.opcode();
-        self.bytecode.relativeJump(1);
-        const entry = &table[op];
-        if (!self.gas.spend(entry.static_gas)) {
-            self.halt(.out_of_gas);
-            return;
-        }
-        var ctx = InstructionContext{ .interpreter = self, .host = null };
-        entry.handler(&ctx);
-    }
-
-    /// Execute one instruction with host access
-    pub fn stepWithHost(self: *Interpreter, table: *const InstructionTable, host: *Host) void {
-        if (!self.bytecode.continue_execution) return;
-        const op = self.bytecode.opcode();
-        self.bytecode.relativeJump(1);
-        const entry = &table[op];
-        if (!self.gas.spend(entry.static_gas)) {
-            self.halt(.out_of_gas);
-            return;
-        }
-        var ctx = InstructionContext{ .interpreter = self, .host = host };
-        entry.handler(&ctx);
-    }
-
-    /// Run until halt (no host)
-    pub fn run(self: *Interpreter, table: *const InstructionTable) void {
-        while (self.bytecode.continue_execution) {
-            self.step(table);
-        }
-    }
-
-    /// Run until halt with host access
-    pub fn runWithHost(self: *Interpreter, table: *const InstructionTable, host: *Host) void {
-        while (self.bytecode.continue_execution) {
-            self.stepWithHost(table, host);
-        }
-    }
-
-    // -----------------------------------------------------------------------
     // Getters / setters (kept for backwards compatibility)
     // -----------------------------------------------------------------------
 
@@ -528,6 +500,52 @@ pub const Interpreter = struct {
 
     pub fn getExtendMut(self: *Interpreter) *void {
         return &self.extend;
+    }
+
+    // -----------------------------------------------------------------------
+    // Dispatch methods
+    // -----------------------------------------------------------------------
+
+    /// Execute one opcode: read opcode at PC, advance PC, charge static gas, call handler.
+    pub fn step(self: *Interpreter, table: *const InstructionTable) void {
+        const op = self.bytecode.opcode();
+        self.bytecode.relativeJump(1);
+        const ins = table[op];
+        if (!self.gas.spend(ins.static_gas)) {
+            self.halt(.out_of_gas);
+            return;
+        }
+        var ctx = InstructionContext{ .interpreter = self };
+        ins.func(&ctx);
+    }
+
+    /// Run the interpreter until execution halts (no host).
+    pub fn run(self: *Interpreter, table: *const InstructionTable) InstructionResult {
+        while (self.bytecode.isNotEnd()) {
+            self.step(table);
+        }
+        return self.result;
+    }
+
+    /// Execute one opcode with a host for state access.
+    pub fn stepWithHost(self: *Interpreter, table: *const InstructionTable, host: *Host) void {
+        const op = self.bytecode.opcode();
+        self.bytecode.relativeJump(1);
+        const ins = table[op];
+        if (!self.gas.spend(ins.static_gas)) {
+            self.halt(.out_of_gas);
+            return;
+        }
+        var ctx = InstructionContext{ .interpreter = self, .host = host };
+        ins.func(&ctx);
+    }
+
+    /// Run the interpreter until execution halts, with full host access.
+    pub fn runWithHost(self: *Interpreter, table: *const InstructionTable, host: *Host) InstructionResult {
+        while (self.bytecode.isNotEnd()) {
+            self.stepWithHost(table, host);
+        }
+        return self.result;
     }
 };
 

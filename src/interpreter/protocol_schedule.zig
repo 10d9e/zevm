@@ -3,25 +3,16 @@ const primitives = @import("primitives");
 const bytecode_mod = @import("bytecode");
 const precompile = @import("precompile");
 const gas_costs = @import("gas_costs.zig");
-const InstructionContext = @import("instruction_context.zig").InstructionContext;
-const InstructionFn = @import("instruction_context.zig").InstructionFn;
-const Interpreter = @import("interpreter.zig").Interpreter;
-const InstructionResult = @import("instruction_result.zig").InstructionResult;
+const interpreter_mod = @import("interpreter.zig");
+const Interpreter = interpreter_mod.Interpreter;
+const InstructionFn = interpreter_mod.InstructionFn;
 const Host = @import("host.zig").Host;
 const opcodes = @import("opcodes/main.zig");
 
-/// One entry in the dispatch table: a handler function and its static gas cost.
-pub const InstructionEntry = struct {
-    func: InstructionFn,
-    static_gas: u64,
-
-    pub fn unknown() InstructionEntry {
-        return .{ .func = opUnknown, .static_gas = 0 };
-    }
-};
-
-/// 256-entry dispatch table indexed by opcode byte.
-pub const InstructionTable = [256]InstructionEntry;
+// Re-export dispatch table types so callers that previously used
+// `protocol_schedule.InstructionTable` continue to compile unchanged.
+pub const InstructionEntry = interpreter_mod.InstructionEntry;
+pub const InstructionTable = interpreter_mod.InstructionTable;
 
 /// Full protocol configuration for one hardfork: dispatch table + precompile set.
 pub const ProtocolSchedule = struct {
@@ -38,60 +29,13 @@ pub const ProtocolSchedule = struct {
     }
 };
 
-/// Execute one opcode: read opcode at PC, advance PC, charge static gas, call handler.
-pub fn step(interp: *Interpreter, table: *const InstructionTable) void {
-    const op = interp.bytecode.opcode();
-    interp.bytecode.relativeJump(1);
-    const ins = table[op];
-    if (!interp.gas.spend(ins.static_gas)) {
-        interp.halt(.out_of_gas);
-        return;
-    }
-    var ctx = InstructionContext{ .interpreter = interp };
-    ins.func(&ctx);
-}
-
-/// Run the interpreter until execution halts.
-pub fn run(interp: *Interpreter, table: *const InstructionTable) InstructionResult {
-    while (interp.bytecode.isNotEnd()) {
-        step(interp, table);
-    }
-    return interp.result;
-}
-
-/// Execute one opcode with a host for state access.
-pub fn stepWithHost(interp: *Interpreter, table: *const InstructionTable, host: *Host) void {
-    const op = interp.bytecode.opcode();
-    interp.bytecode.relativeJump(1);
-    const ins = table[op];
-    if (!interp.gas.spend(ins.static_gas)) {
-        interp.halt(.out_of_gas);
-        return;
-    }
-    var ctx = InstructionContext{ .interpreter = interp, .host = host };
-    ins.func(&ctx);
-}
-
-/// Run the interpreter until execution halts, with full host access.
-pub fn runWithHost(interp: *Interpreter, table: *const InstructionTable, host: *Host) InstructionResult {
-    while (interp.bytecode.isNotEnd()) {
-        stepWithHost(interp, table, host);
-    }
-    return interp.result;
-}
-
-/// Default sub-call runner stored in Host. Derives the instruction table from the
-/// sub-interpreter's spec so there is no circular dependency between host.zig and
-/// protocol_schedule.zig.
+/// Default sub-call runner stored in Host.run_sub_call.
+/// Derives the instruction table from the sub-interpreter's spec and delegates
+/// to Interpreter.runWithHost, keeping protocol_schedule.zig free of dispatch logic.
 pub fn runSubCallDefault(host: *Host, sub_interp: *Interpreter) void {
     const spec = sub_interp.runtime_flags.spec_id;
     const table = makeInstructionTable(spec);
-    _ = runWithHost(sub_interp, &table, host);
-}
-
-/// Handler for unknown/disabled opcodes.
-fn opUnknown(ctx: *InstructionContext) void {
-    ctx.interpreter.halt(.invalid_opcode);
+    _ = sub_interp.runWithHost(&table, host);
 }
 
 // ---------------------------------------------------------------------------
