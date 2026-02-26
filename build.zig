@@ -351,19 +351,24 @@ pub fn build(b: *std.Build) void {
     const run_interpreter_tests = b.addRunArtifact(interpreter_tests);
     test_step.dependOn(&run_interpreter_tests.step);
 
-    // Execute tests (Interpreter.execute + Host vtable)
-    const execute_tests = b.addTest(.{
+    // Inline zig tests for handler module (validation, gas calculation, etc.)
+    const handler_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/interpreter/execute_tests.zig" } },
+            .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/handler/main.zig" } },
             .target = target,
             .optimize = optimize,
         }),
     });
-    execute_tests.root_module.addImport("primitives", primitives_module);
-    execute_tests.root_module.addImport("bytecode", bytecode_module);
-    execute_tests.root_module.addImport("context", context_module);
-    const run_execute_tests = b.addRunArtifact(execute_tests);
-    test_step.dependOn(&run_execute_tests.step);
+    handler_tests.root_module.addImport("primitives", primitives_module);
+    handler_tests.root_module.addImport("bytecode", bytecode_module);
+    handler_tests.root_module.addImport("context", context_module);
+    handler_tests.root_module.addImport("database", database_module);
+    handler_tests.root_module.addImport("state", state_module);
+    handler_tests.root_module.addImport("interpreter", interpreter_module);
+    handler_tests.root_module.addImport("precompile", precompile_module);
+    addCryptoLibraries(b, handler_tests, enable_blst, enable_mcl, blst_include_path, mcl_include_path, is_windows, target_info.os.tag == .macos);
+    const run_handler_tests = b.addRunArtifact(handler_tests);
+    test_step.dependOn(&run_handler_tests.step);
 
     // Precompile unit tests - these are run via zig test command in CI
     // The command needs to link libc and include all modules

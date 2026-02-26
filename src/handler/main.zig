@@ -434,9 +434,6 @@ pub const testing = struct {
         // Test execution
         try execution.testing.testExecution();
 
-        // Test validation
-        try validation.testing.testValidation();
-
         std.log.info("Handler module test passed!", .{});
     }
 
@@ -503,3 +500,9 @@ pub const testing = struct {
         std.debug.assert(stack.len() == 0);
     }
 };
+
+// Pull in tests from submodules
+test {
+    _ = @import("validation.zig");
+    _ = @import("validation_tests.zig");
+}

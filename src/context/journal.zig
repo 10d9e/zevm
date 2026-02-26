@@ -412,7 +412,7 @@ pub const JournalInner = struct {
     ///
     /// `commit_tx` is used even for discarding transactions so transaction_id will be incremented.
     pub fn commitTx(self: *JournalInner) void {
-        self.transient_storage.clear();
+        self.transient_storage.clearRetainingCapacity();
         self.depth = 0;
         self.journal.clearRetainingCapacity();
         self.warm_addresses.clearCoinbaseAndAccessList();
@@ -432,7 +432,7 @@ pub const JournalInner = struct {
             entry.revert(&self.evm_state, &self.transient_storage, is_spurious_dragon_enabled);
         }
 
-        self.transient_storage.clear();
+        self.transient_storage.clearRetainingCapacity();
         self.depth = 0;
         self.logs.clearRetainingCapacity();
         self.transaction_id += 1;
@@ -449,7 +449,7 @@ pub const JournalInner = struct {
         const evm_state = self.evm_state;
         self.evm_state = state.EvmState.init(std.heap.page_allocator);
         self.logs.clearRetainingCapacity();
-        self.transient_storage.clear();
+        self.transient_storage.clearRetainingCapacity();
         self.journal.clearRetainingCapacity();
         self.depth = 0;
         self.transaction_id = 0;

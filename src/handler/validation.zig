@@ -1,11 +1,20 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const context = @import("context");
+const state = @import("state");
 const main = @import("main.zig");
+
+// Gas constants for intrinsic gas calculation
+const TX_BASE_COST: u64 = 21000;
+const TX_CREATE_COST: u64 = 32000;
+const CALLDATA_ZERO_BYTE_COST: u64 = 4;
+const CALLDATA_NONZERO_BYTE_COST: u64 = 16;
+const ACCESS_LIST_ADDRESS_COST: u64 = 2400;
+const ACCESS_LIST_STORAGE_KEY_COST: u64 = 1900;
 
 /// Validation utilities
 pub const Validation = struct {
-    /// Validate environment
+    /// Validate environment (block, tx, cfg) — no DB access needed.
     pub fn validateEnv(evm: *main.Evm) !void {
         const ctx = evm.getContext();
 
@@ -13,7 +22,7 @@ pub const Validation = struct {
         try validateBlockEnv(&ctx.block);
 
         // Validate transaction environment
-        try validateTxEnv(&ctx.tx);
+        try validateTxEnv(&ctx.tx, &ctx.cfg);
 
         // Validate configuration environment
         try validateCfgEnv(&ctx.cfg);
@@ -21,82 +30,60 @@ pub const Validation = struct {
 
     /// Validate block environment
     pub fn validateBlockEnv(block: *context.BlockEnv) !void {
-        // Validate block number
-        if (block.number < 0) {
-            return error.InvalidBlockNumber;
-        }
-
-        // Validate timestamp
-        if (block.timestamp < 0) {
-            return error.InvalidTimestamp;
-        }
-
-        // Validate gas limit
-        if (block.gas_limit == 0) {
-            return error.InvalidGasLimit;
-        }
-
-        // Validate base fee (EIP-1559)
-        if (block.basefee < 0) {
-            return error.InvalidBaseFee;
-        }
+        _ = block;
+        // Block fields are unsigned — no negative checks needed.
+        // gas_limit == 0 is technically valid (empty block), so we skip it.
     }
 
-    /// Validate transaction environment
-    pub fn validateTxEnv(tx: *context.TxEnv) !void {
-        // Validate gas limit
-        if (tx.gas_limit == 0) {
-            return error.InvalidGasLimit;
-        }
-
-        // Validate gas price (for EIP-1559 this represents max_gas_fee)
-        if (tx.gas_price < 0) {
-            return error.InvalidGasPrice;
-        }
-
-        // Validate priority fee per gas (EIP-1559)
-        if (tx.gas_priority_fee) |priority_fee| {
-            if (priority_fee < 0) {
-                return error.InvalidMaxPriorityFeePerGas;
+    /// Validate transaction environment (no DB access — just field checks)
+    pub fn validateTxEnv(tx: *context.TxEnv, cfg: *context.CfgEnv) !void {
+        // EIP-155: Validate chain ID matches if present in the tx
+        if (cfg.tx_chain_id_check) {
+            if (tx.chain_id) |tx_chain_id| {
+                if (tx_chain_id != cfg.chain_id) {
+                    return ValidationError.InvalidChainId;
+                }
             }
         }
 
-        // Validate value
-        if (tx.value < 0) {
-            return error.InvalidValue;
+        // EIP-7825: Transaction gas limit cap (30,000,000 by default)
+        const gas_cap = cfg.tx_gas_limit_cap orelse primitives.TX_GAS_LIMIT_CAP;
+        if (tx.gas_limit > gas_cap) {
+            return ValidationError.GasLimitExceedsCap;
         }
 
-        // Validate nonce
-        if (tx.nonce < 0) {
-            return error.InvalidNonce;
+        // EIP-1559: priority fee must not exceed max fee per gas
+        if (tx.gas_priority_fee) |priority_fee| {
+            if (priority_fee > tx.gas_price) {
+                return ValidationError.PriorityFeeGreaterThanMaxFee;
+            }
         }
     }
 
     /// Validate configuration environment
     pub fn validateCfgEnv(cfg: *context.CfgEnv) !void {
-        // Validate chain ID
         if (cfg.chain_id == 0) {
-            return error.InvalidChainId;
+            return ValidationError.InvalidChainId;
         }
-
-        // Validate spec ID
-        // Spec ID validation is handled by the enum type
     }
 
-    /// Validate initial transaction gas
+    /// Calculate the initial (intrinsic) gas and EIP-7623 floor gas for a transaction.
+    ///
+    /// Returns `InsufficientGas` if gas_limit < initial_gas.
     pub fn validateInitialTxGas(evm: *main.Evm) !InitialAndFloorGas {
         const ctx = evm.getContext();
         const tx = &ctx.tx;
+        const spec = ctx.cfg.spec;
 
         // Calculate initial gas cost
-        const initial_gas = calculateInitialGas(tx);
+        const initial_gas = calculateInitialGas(tx, spec);
 
-        // Calculate floor gas (EIP-7623)
-        const floor_gas = calculateFloorGas(tx);
+        // Calculate floor gas (EIP-7623: tokens * 10)
+        const floor_gas = calculateFloorGas(tx, spec);
 
-        // Validate gas limit covers initial gas
+        // Validate gas limit covers intrinsic gas
         if (tx.gas_limit < initial_gas) {
-            return error.InsufficientGas;
+            return ValidationError.InsufficientGas;
         }
 
         return InitialAndFloorGas{
@@ -105,134 +92,159 @@ pub const Validation = struct {
         };
     }
 
-    /// Validate against state and deduct caller
-    pub fn validateAgainstStateAndDeductCaller(evm: *main.Evm) !void {
+    /// Validate caller account state and deduct the maximum gas fee + value.
+    ///
+    /// - Loads caller from the DB (cold load, records journal warming entry)
+    /// - Validates EIP-3607 (reject if caller has code)
+    /// - Validates nonce matches tx.nonce (unless disabled)
+    /// - Validates caller balance >= gas_limit * gas_price + value
+    /// - Deducts maximum fee from caller and bumps nonce (journaled, revertable)
+    pub fn validateAgainstStateAndDeductCaller(evm: *main.Evm, initial_gas: u64) !void {
         const ctx = evm.getContext();
         const tx = &ctx.tx;
+        const cfg = &ctx.cfg;
+        const js = &ctx.journaled_state;
 
-        // Get caller account
-        const caller_account = try ctx.db.basic(tx.caller);
+        // Load caller account (marks it warm, creates journal entry)
+        const load_result = try js.loadAccountMutOptionalCode(tx.caller, true, false);
+        const journaled_account = load_result.data;
+        const account_info = &journaled_account.account.info;
 
-        // Validate caller exists
-        if (caller_account == null) {
-            return error.CallerAccountNotFound;
+        // EIP-3607: Reject transactions from senders with deployed code
+        if (!cfg.disable_eip3607) {
+            if (!std.mem.eql(u8, &account_info.code_hash, &primitives.KECCAK_EMPTY)) {
+                return ValidationError.SenderHasCode;
+            }
         }
 
         // Validate nonce
-        if (caller_account.?.nonce != tx.nonce) {
-            return error.InvalidNonce;
+        if (!cfg.disable_nonce_check) {
+            if (account_info.nonce != tx.nonce) {
+                return ValidationError.NonceMismatch;
+            }
         }
 
-        // Calculate total cost
-        const total_cost = calculateTotalCost(tx);
+        // Calculate maximum cost: gas_limit * gas_price + value
+        // Use u256 arithmetic to avoid overflow
+        const max_gas_fee: primitives.U256 = @as(primitives.U256, tx.gas_limit) * @as(primitives.U256, tx.gas_price);
+        const max_cost = std.math.add(primitives.U256, max_gas_fee, tx.value) catch {
+            return ValidationError.BalanceOverflow;
+        };
 
-        // Validate sufficient balance
-        if (caller_account.?.balance < total_cost) {
-            return error.InsufficientBalance;
+        // Validate balance covers cost
+        if (account_info.balance < max_cost) {
+            return ValidationError.InsufficientBalance;
         }
 
-        // Deduct cost from caller
-        // In a real implementation, would update account balance
+        // Validate base fee if enabled (EIP-1559)
+        if (!cfg.disable_base_fee) {
+            const base_fee = ctx.block.basefee;
+            if (@as(u128, tx.gas_price) < @as(u128, base_fee)) {
+                return ValidationError.GasPriceLessThanBaseFee;
+            }
+        }
+
+        _ = initial_gas; // used in Phase 3 for floor gas check
+
+        // Record journal entries BEFORE mutating (so revert can restore old state)
+        const old_balance = account_info.balance;
+        js.callerAccountingJournalEntry(tx.caller, old_balance, true);
+
+        // Deduct maximum fee from caller balance
+        account_info.balance = old_balance - max_cost;
+
+        // Bump nonce
+        account_info.nonce += 1;
     }
 
-    /// Calculate initial gas cost
-    fn calculateInitialGas(tx: *context.TxEnv) u64 {
-        var gas: u64 = 0;
+    // -------------------------------------------------------------------------
+    // Internal helpers
+    // -------------------------------------------------------------------------
 
-        // Base gas cost
-        gas += 21000;
+    /// Calculates the intrinsic gas for a transaction.
+    ///
+    /// Breakdown:
+    ///   21,000 base (always)
+    /// + 32,000 for CREATE transactions
+    /// + 4 per zero calldata byte, 16 per non-zero calldata byte
+    /// + 2,400 per access-list address, 1,900 per access-list storage slot
+    pub fn calculateInitialGas(tx: *const context.TxEnv, spec: primitives.SpecId) u64 {
+        _ = spec; // future: spec-dependent costs (e.g. EIP-2028 reduced calldata costs)
+        var gas: u64 = TX_BASE_COST;
 
-        // Data gas cost
-        if (tx.data) |data| {
-            gas += data.len * 16; // 16 gas per byte for non-zero bytes
-            // In a real implementation, would also count zero bytes at 4 gas each
+        // CREATE adds extra base cost
+        if (tx.kind == .Create) {
+            gas += TX_CREATE_COST;
         }
 
-        // Access list gas cost (EIP-2929)
-        if (tx.access_list) |access_list| {
-            gas += access_list.len * 2400; // 2400 gas per access list entry
+        // Calldata costs: 4 per zero byte, 16 per non-zero byte
+        if (tx.data) |data| {
+            for (data.items) |byte| {
+                if (byte == 0) {
+                    gas += CALLDATA_ZERO_BYTE_COST;
+                } else {
+                    gas += CALLDATA_NONZERO_BYTE_COST;
+                }
+            }
+        }
+
+        // EIP-2930 / EIP-2929: Access list gas
+        if (tx.access_list.items) |items| {
+            for (items.items) |item| {
+                gas += ACCESS_LIST_ADDRESS_COST;
+                gas += @as(u64, item.storage_keys.items.len) * ACCESS_LIST_STORAGE_KEY_COST;
+            }
         }
 
         return gas;
     }
 
-    /// Calculate floor gas (EIP-7623)
-    fn calculateFloorGas(tx: *context.TxEnv) u64 {
-        _ = tx;
+    /// Calculates the EIP-7623 floor gas (tokens * 10).
+    ///
+    /// Floor gas ensures a minimum amount of gas is spent on calldata-heavy txs.
+    pub fn calculateFloorGas(tx: *const context.TxEnv, spec: primitives.SpecId) u64 {
+        if (!primitives.isEnabledIn(spec, .prague)) {
+            return 0;
+        }
 
-        // Floor gas calculation
-        // In a real implementation, would calculate based on transaction type
-        return 0;
-    }
-
-    /// Calculate total cost
-    fn calculateTotalCost(tx: *context.TxEnv) primitives.U256 {
-        var cost = tx.value;
-
-        // Add gas cost
-        const gas_cost = calculateInitialGas(tx);
-        const gas_price = tx.gas_price orelse @as(primitives.U256, 0);
-        cost += gas_cost * gas_price;
-
-        return cost;
+        // EIP-7623: token_cost * 10 where token_cost is calldata tokens
+        // (same zero/nonzero byte distinction)
+        var tokens: u64 = 0;
+        if (tx.data) |data| {
+            for (data.items) |byte| {
+                if (byte == 0) {
+                    tokens += CALLDATA_ZERO_BYTE_COST;
+                } else {
+                    tokens += CALLDATA_NONZERO_BYTE_COST;
+                }
+            }
+        }
+        return tokens * 10;
     }
 };
 
-/// Initial and floor gas structure
+/// Initial and floor gas result
 pub const InitialAndFloorGas = struct {
-    /// Initial gas cost
+    /// Intrinsic gas required before execution begins
     initial_gas: u64,
-    /// Floor gas requirement
+    /// EIP-7623 floor gas requirement
     floor_gas: u64,
 };
 
 /// Validation errors
 pub const ValidationError = error{
-    InvalidBlockNumber,
-    InvalidTimestamp,
-    InvalidGasLimit,
-    InvalidBaseFee,
-    InvalidGasPrice,
-    InvalidMaxFeePerGas,
-    InvalidMaxPriorityFeePerGas,
-    InvalidValue,
-    InvalidNonce,
     InvalidChainId,
+    GasLimitExceedsCap,
+    PriorityFeeGreaterThanMaxFee,
     InsufficientGas,
-    CallerAccountNotFound,
+    SenderHasCode,
+    NonceMismatch,
+    BalanceOverflow,
     InsufficientBalance,
+    GasPriceLessThanBaseFee,
+    CallerLoadFailed,
 };
 
-// Placeholder for testing
-pub const testing = struct {
-    pub fn testValidation() !void {
-        std.log.info("Testing validation module...", .{});
-
-        // Test block environment validation
-        var block = context.BlockEnv.default();
-
-        try Validation.validateBlockEnv(&block);
-
-        // Test transaction environment validation
-        var tx = context.TxEnv.default();
-        defer tx.deinit();
-
-        try Validation.validateTxEnv(&tx);
-
-        // Test configuration environment validation
-        var cfg = context.CfgEnv.default();
-
-        try Validation.validateCfgEnv(&cfg);
-
-        // Test initial and floor gas
-        const initial_and_floor = InitialAndFloorGas{
-            .initial_gas = 21000,
-            .floor_gas = 0,
-        };
-
-        std.debug.assert(initial_and_floor.initial_gas == 21000);
-        std.debug.assert(initial_and_floor.floor_gas == 0);
-
-        std.log.info("Validation module test passed!", .{});
-    }
-};
+test {
+    _ = @import("validation_tests.zig");
+}
