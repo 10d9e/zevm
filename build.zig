@@ -253,6 +253,8 @@ pub fn build(b: *std.Build) void {
     interpreter_module.addImport("primitives", primitives_module);
     interpreter_module.addImport("bytecode", bytecode_module);
     interpreter_module.addImport("context", context_module);
+    interpreter_module.addImport("database", database_module);
+    interpreter_module.addImport("state", state_module);
     precompile_module.addImport("build_options", lib_options_module);
     precompile_module.addImport("primitives", primitives_module);
     handler_module.addImport("primitives", primitives_module);
@@ -344,6 +346,8 @@ pub fn build(b: *std.Build) void {
     interpreter_tests.root_module.addImport("primitives", primitives_module);
     interpreter_tests.root_module.addImport("bytecode", bytecode_module);
     interpreter_tests.root_module.addImport("context", context_module);
+    interpreter_tests.root_module.addImport("database", database_module);
+    interpreter_tests.root_module.addImport("state", state_module);
     const run_interpreter_tests = b.addRunArtifact(interpreter_tests);
     test_step.dependOn(&run_interpreter_tests.step);
 

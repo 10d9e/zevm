@@ -30,17 +30,17 @@ const c = if (build_options.enable_blst) blk: {
     pub fn blst_fp_from_bendian(_: *blst_fp, _: *const [48]u8) void {}
     pub fn blst_bendian_from_fp(_: *[48]u8, _: *const blst_fp) void {}
     pub fn blst_scalar_from_bendian(_: *blst_scalar, _: *const [32]u8) void {}
-    pub fn blst_p1_affine_on_curve(_: *const blst_p1_affine) i32 {
-        return 0;
+    pub fn blst_p1_affine_on_curve(_: *const blst_p1_affine) bool {
+        return false;
     }
-    pub fn blst_p1_affine_in_g1(_: *const blst_p1_affine) i32 {
-        return 0;
+    pub fn blst_p1_affine_in_g1(_: *const blst_p1_affine) bool {
+        return false;
     }
-    pub fn blst_p2_affine_on_curve(_: *const blst_p2_affine) i32 {
-        return 0;
+    pub fn blst_p2_affine_on_curve(_: *const blst_p2_affine) bool {
+        return false;
     }
-    pub fn blst_p2_affine_in_g2(_: *const blst_p2_affine) i32 {
-        return 0;
+    pub fn blst_p2_affine_in_g2(_: *const blst_p2_affine) bool {
+        return false;
     }
     pub fn blst_p1_from_affine(_: *blst_p1, _: *const blst_p1_affine) void {}
     pub fn blst_p1_to_affine(_: *blst_p1_affine, _: *const blst_p1) void {}

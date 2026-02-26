@@ -92,7 +92,9 @@ pub fn opExtcodesize(ctx: *InstructionContext) void {
         if (!ctx.interpreter.gas.spend(dyn_gas)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
 
-    stack.setTopUnsafe().* = @intCast(info.bytecode.bytecode().len);
+    // Use originalBytes().len: the analyzed bytecode may include a STOP-padding byte
+    // that is NOT part of the on-chain code, so EXTCODESIZE must return the original length.
+    stack.setTopUnsafe().* = @intCast(info.bytecode.originalBytes().len);
 }
 
 /// EXTCODECOPY (0x3C): Copy external account code to memory.
@@ -360,12 +362,20 @@ pub fn makeLogFn(comptime n: u8) *const fn (ctx: *InstructionContext) void {
                 if (!expandMemory(ctx, offset_u + size_u)) { ctx.interpreter.halt(.out_of_gas); return; }
             }
 
-            // Collect topics
-            var topics: [n]primitives.Hash = undefined;
-            inline for (0..n) |i| {
-                const topic_val = stack.peekUnsafe(2 + i);
-                topics[i] = host_module.u256ToHash(topic_val);
-            }
+            // Collect topics into a heap-allocated slice so the pointer remains
+            // valid after this function returns (stack-local arrays would dangle).
+            const topics: []primitives.Hash = if (comptime n == 0)
+                &[_]primitives.Hash{}
+            else blk: {
+                const t = std.heap.page_allocator.alloc(primitives.Hash, n) catch {
+                    ctx.interpreter.halt(.out_of_gas); return;
+                };
+                inline for (0..n) |i| {
+                    const topic_val = stack.peekUnsafe(2 + i);
+                    t[i] = host_module.u256ToHash(topic_val);
+                }
+                break :blk t;
+            };
 
             stack.shrinkUnsafe(2 + n);
 
@@ -378,7 +388,7 @@ pub fn makeLogFn(comptime n: u8) *const fn (ctx: *InstructionContext) void {
             // Emit the log
             const log_entry = primitives.Log{
                 .address = ctx.interpreter.input.target,
-                .topics = &topics,
+                .topics = topics,
                 .data = log_data,
             };
             h.emitLog(log_entry);

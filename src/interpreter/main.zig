@@ -47,7 +47,7 @@ test {
     _ = @import("stack.zig");
     _ = @import("opcodes/arithmetic.zig");
     _ = @import("opcodes/arithmetic_tests.zig");
-    _ = @import("execute_tests.zig");
+    _ = @import("opcodes/host_ops_tests.zig");
 }
 
 /// Main interpreter module for EVM bytecode execution
