@@ -4,7 +4,8 @@ const interpreter = @import("interpreter");
 const bytecode = @import("bytecode");
 const zbench = @import("zbench");
 
-const InstructionTable = interpreter.instruction_table.InstructionTable;
+const InstructionTable = interpreter.protocol_schedule.InstructionTable;
+const InstructionContext = interpreter.InstructionContext;
 
 const U256 = primitives.U256;
 const MAX = std.math.maxInt(U256);
@@ -37,6 +38,7 @@ var g_spec: primitives.SpecId = .osaka; // Default to latest fork
 pub var g_instruction_table: InstructionTable = undefined;
 pub var g_bytecode: [32 * 1024]u8 = undefined;
 pub var g_pc: usize = 0;
+pub var g_interp: interpreter.Interpreter = undefined;
 
 // ---------------------------------------------------------------------------
 // Reproducible test data
@@ -226,13 +228,26 @@ pub fn fillBytePairs(count: usize) void {
 // Benchmark runners (generates the inner loop for any opcode via comptime)
 // ---------------------------------------------------------------------------
 
+fn makeCtx() InstructionContext {
+    g_interp.stack = g_stack;
+    g_interp.gas = g_gas;
+    return InstructionContext{ .interpreter = &g_interp };
+}
+
+fn syncFromCtx() void {
+    g_stack = g_interp.stack;
+    g_gas = g_interp.gas;
+}
+
 pub fn OpRunner(comptime opFn: anytype) type {
     return struct {
         pub fn run(_: std.mem.Allocator) void {
+            var ctx = makeCtx();
             for (0..OPS_PER_BATCH) |_| {
-                _ = opFn(&g_stack, &g_gas);
+                opFn(&ctx);
             }
-            std.mem.doNotOptimizeAway(&g_stack);
+            syncFromCtx();
+            std.mem.doNotOptimizeAway(&g_interp.stack);
         }
     };
 }
@@ -240,11 +255,15 @@ pub fn OpRunner(comptime opFn: anytype) type {
 pub fn MemOpRunner(comptime opFn: anytype) type {
     return struct {
         pub fn run(_: std.mem.Allocator) void {
+            g_interp.memory = g_memory;
+            var ctx = makeCtx();
             for (0..OPS_PER_BATCH) |_| {
-                _ = opFn(&g_stack, &g_gas, &g_memory);
+                opFn(&ctx);
             }
-            std.mem.doNotOptimizeAway(&g_stack);
-            std.mem.doNotOptimizeAway(&g_memory);
+            syncFromCtx();
+            g_memory = g_interp.memory;
+            std.mem.doNotOptimizeAway(&g_interp.stack);
+            std.mem.doNotOptimizeAway(&g_interp.memory);
         }
     };
 }
@@ -253,12 +272,15 @@ pub fn KeccakRunner(comptime data_size: usize) type {
     return struct {
         pub fn run(_: std.mem.Allocator) void {
             const opcodes = interpreter.opcodes;
+            g_interp.memory = g_memory;
+            var ctx = makeCtx();
             for (0..OPS_PER_BATCH) |_| {
-                g_stack.pushUnsafe(@as(U256, data_size)); // length
-                g_stack.pushUnsafe(@as(U256, 0)); // offset
-                _ = opcodes.opKeccak256(&g_stack, &g_gas, &g_memory);
+                g_interp.stack.pushUnsafe(@as(U256, data_size)); // length
+                g_interp.stack.pushUnsafe(@as(U256, 0)); // offset
+                opcodes.opKeccak256(&ctx);
             }
-            std.mem.doNotOptimizeAway(&g_stack);
+            syncFromCtx();
+            std.mem.doNotOptimizeAway(&g_interp.stack);
         }
     };
 }
@@ -266,11 +288,13 @@ pub fn KeccakRunner(comptime data_size: usize) type {
 pub fn DupRunner(comptime n: u8) type {
     return struct {
         pub fn run(_: std.mem.Allocator) void {
-            const opcodes = interpreter.opcodes;
+            const opDupN = interpreter.opcodes.makeDupFn(n);
+            var ctx = makeCtx();
             for (0..OPS_PER_BATCH) |_| {
-                _ = opcodes.opDupN(&g_stack, &g_gas, n);
+                opDupN(&ctx);
             }
-            std.mem.doNotOptimizeAway(&g_stack);
+            syncFromCtx();
+            std.mem.doNotOptimizeAway(&g_interp.stack);
         }
     };
 }
@@ -278,11 +302,13 @@ pub fn DupRunner(comptime n: u8) type {
 pub fn SwapRunner(comptime n: u8) type {
     return struct {
         pub fn run(_: std.mem.Allocator) void {
-            const opcodes = interpreter.opcodes;
+            const opSwapN = interpreter.opcodes.makeSwapFn(n);
+            var ctx = makeCtx();
             for (0..OPS_PER_BATCH) |_| {
-                _ = opcodes.opSwapN(&g_stack, &g_gas, n);
+                opSwapN(&ctx);
             }
-            std.mem.doNotOptimizeAway(&g_stack);
+            syncFromCtx();
+            std.mem.doNotOptimizeAway(&g_interp.stack);
         }
     };
 }
@@ -290,11 +316,17 @@ pub fn SwapRunner(comptime n: u8) type {
 pub fn PushRunner(comptime n: u8) type {
     return struct {
         pub fn run(_: std.mem.Allocator) void {
-            const opcodes = interpreter.opcodes;
+            const opPushN = interpreter.opcodes.makePushFn(n);
+            var ctx = makeCtx();
+            // Point interpreter bytecode at g_bytecode
+            ctx.interpreter.bytecode.pc = 0;
             for (0..OPS_PER_BATCH) |_| {
-                _ = opcodes.opPushN(&g_stack, &g_gas, &g_bytecode, &g_pc, n);
+                opPushN(&ctx);
+                // Reset PC so each push reads from same position
+                ctx.interpreter.bytecode.pc = 0;
             }
-            std.mem.doNotOptimizeAway(&g_stack);
+            syncFromCtx();
+            std.mem.doNotOptimizeAway(&g_interp.stack);
         }
     };
 }
@@ -304,7 +336,7 @@ pub fn PushRunner(comptime n: u8) type {
 // ---------------------------------------------------------------------------
 
 pub fn gasFor(comptime opcode: u8) u64 {
-    return g_instruction_table[opcode].base_gas;
+    return g_instruction_table[opcode].static_gas;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,8 +453,9 @@ pub fn main() !void {
         }
     }
 
-    // Initialize instruction table for the selected fork
-    g_instruction_table = interpreter.instruction_table.makeInstructionTable(g_spec);
+    // Initialize instruction table and interpreter for the selected fork
+    g_instruction_table = interpreter.protocol_schedule.makeInstructionTable(g_spec);
+    g_interp = interpreter.Interpreter.defaultExt();
 
     try writer.print("\n=== ZEVM Opcode Benchmark (zBench) ===\n", .{});
     try writer.print("Fork: {s}\n", .{@tagName(g_spec)});

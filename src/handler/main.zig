@@ -273,54 +273,61 @@ pub const Frame = struct {
         };
     }
 
-    /// Execute frame
-    pub fn execute(self: *Frame, _: *context.Context) !FrameResult {
-        // Execute the interpreter
-        _ = self.interpreter.execute();
-
-        // Create frame result
-        var frame_result = FrameResult.new(
-            ExecutionResult.new(.Success, self.data.gas_limit - self.interpreter.gas.getLimit()),
-            self.interpreter.gas.getLimit(),
+    /// Execute frame with host access for full EVM semantics.
+    pub fn execute(self: *Frame, ctx: *context.Context) !FrameResult {
+        const schedule = interpreter.protocol_schedule.ProtocolSchedule.forSpec(
+            self.interpreter.runtime_flags.spec_id,
         );
 
-        // Copy logs
-        for (self.interpreter.logs.items) |log| {
-            try frame_result.result.logs.append(log);
-        }
+        // Build a Host that delegates to the context, and set the sub-call runner.
+        var host = interpreter.Host{
+            .ctx = ctx,
+            .run_sub_call = interpreter.protocol_schedule.runSubCallDefault,
+        };
 
-        return frame_result;
+        const result = interpreter.protocol_schedule.runWithHost(
+            &self.interpreter,
+            &schedule.instructions,
+            &host,
+        );
+
+        const gas_used = self.interpreter.gas.getSpent();
+        const status: ExecutionStatus = switch (result) {
+            .stop, .@"return", .selfdestruct => .Success,
+            .revert => .Revert,
+            else => .Halt,
+        };
+
+        return FrameResult.new(
+            ExecutionResult.new(status, gas_used),
+            self.interpreter.gas.remaining,
+        );
     }
 };
 
 /// Instructions provider for EVM execution
 pub const Instructions = struct {
     /// Instruction table for the configured spec
-    table: interpreter.instruction_table.InstructionTable,
+    table: interpreter.protocol_schedule.InstructionTable,
     /// Hardfork specification
     spec: primitives.SpecId,
 
     /// Create instructions provider for a specific hardfork spec
     pub fn new(spec: primitives.SpecId) Instructions {
         return Instructions{
-            .table = interpreter.instruction_table.makeInstructionTable(spec),
+            .table = interpreter.protocol_schedule.makeInstructionTable(spec),
             .spec = spec,
         };
     }
 
     /// Get instruction entry for an opcode
-    pub fn getInstruction(self: *const Instructions, opcode: u8) interpreter.instruction_table.InstructionEntry {
+    pub fn getInstruction(self: *const Instructions, opcode: u8) interpreter.protocol_schedule.InstructionEntry {
         return self.table[opcode];
     }
 
-    /// Check if opcode is enabled for this spec
-    pub fn isEnabled(self: *const Instructions, opcode: u8) bool {
-        return self.table[opcode].enabled;
-    }
-
-    /// Get base gas cost for an opcode
-    pub fn getBaseGas(self: *const Instructions, opcode: u8) u64 {
-        return self.table[opcode].base_gas;
+    /// Get static gas cost for an opcode
+    pub fn getStaticGas(self: *const Instructions, opcode: u8) u64 {
+        return self.table[opcode].static_gas;
     }
 };
 

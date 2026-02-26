@@ -23,6 +23,26 @@ pub const Secp256k1 = struct {
         self.ctx = undefined;
     }
 
+    /// Sign a 32-byte message hash with a private key.
+    /// Returns the compact 64-byte signature and recovery ID, or null on failure.
+    pub fn sign(self: Secp256k1, msg: [32]u8, seckey: [32]u8) ?struct { sig: [64]u8, recid: u8 } {
+        var rec_sig: c.secp256k1_ecdsa_recoverable_signature = undefined;
+        if (c.secp256k1_ecdsa_sign_recoverable(
+            self.ctx,
+            &rec_sig,
+            &msg,
+            &seckey,
+            null,
+            null,
+        ) == 0) return null;
+
+        var sig_bytes: [64]u8 = undefined;
+        var recid: c_int = undefined;
+        _ = c.secp256k1_ecdsa_recoverable_signature_serialize_compact(self.ctx, &sig_bytes, &recid, &rec_sig);
+
+        return .{ .sig = sig_bytes, .recid = @intCast(recid) };
+    }
+
     /// Recover public key from signature and message
     /// Returns the Ethereum address (last 20 bytes of Keccak256 hash of public key)
     /// Returns null if recovery fails

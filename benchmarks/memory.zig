@@ -71,9 +71,9 @@ pub fn register(bench: anytype, filter: []const u8) !void {
 }
 
 pub fn gasCost(name: []const u8) ?f64 {
-    if (std.mem.startsWith(u8, name, "OP_MSTORE8")) return @floatFromInt(m.g_instruction_table[bytecode.MSTORE8].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_MSTORE")) return @floatFromInt(m.g_instruction_table[bytecode.MSTORE].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_MLOAD")) return @floatFromInt(m.g_instruction_table[bytecode.MLOAD].base_gas);
+    if (std.mem.startsWith(u8, name, "OP_MSTORE8")) return @floatFromInt(m.g_instruction_table[bytecode.MSTORE8].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_MSTORE")) return @floatFromInt(m.g_instruction_table[bytecode.MSTORE].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_MLOAD")) return @floatFromInt(m.g_instruction_table[bytecode.MLOAD].static_gas);
     return null;
 }
 

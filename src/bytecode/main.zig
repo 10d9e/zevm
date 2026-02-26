@@ -579,6 +579,19 @@ pub const Bytecode = union(enum) {
     pub fn isEmpty(self: Self) bool {
         return self.len() == 0;
     }
+
+    /// Returns true if the given position is a valid JUMPDEST.
+    pub fn isValidJump(self: Self, dest: usize) bool {
+        return switch (self) {
+            .legacy_analyzed => |analyzed| analyzed.jump_table.isValid(dest),
+            .eip7702 => false,
+        };
+    }
+
+    /// Creates a new legacy Bytecode from raw bytes (alias for newLegacy).
+    pub fn newRaw(raw: []const u8) Self {
+        return Self.newLegacy(raw);
+    }
 };
 
 /// Legacy analyzed bytecode with jump table
@@ -690,10 +703,7 @@ pub const JumpTable = struct {
 };
 
 /// Analyzes the bytecode for use in LegacyAnalyzedBytecode.
-/// The bytecode may be padded with up to 33 zero bytes to ensure it ends with STOP
-/// and there are no incomplete immediates.
-/// Note: This is a simplified version that doesn't handle padding.
-/// For full padding support, the caller should manage memory allocation.
+/// The jump table bit vector is heap-allocated to avoid dangling stack pointers.
 fn analyzeLegacy(bytecode: []const u8) LegacyAnalyzedBytecode {
     if (bytecode.len == 0) {
         return LegacyAnalyzedBytecode{
@@ -703,13 +713,17 @@ fn analyzeLegacy(bytecode: []const u8) LegacyAnalyzedBytecode {
         };
     }
 
-    // Allocate bit vector (one bit per bytecode position)
+    // Allocate bit vector on heap (one bit per bytecode position) to avoid dangling pointer
     const bit_vec_len = (bytecode.len + 7) / 8;
-    var bit_vec_buf: [256]u8 = undefined; // Stack buffer for small bytecode
-    var bit_vec: []u8 = if (bit_vec_len <= bit_vec_buf.len) bit_vec_buf[0..bit_vec_len] else &[_]u8{};
-    if (bit_vec.len > 0) {
-        @memset(bit_vec, 0);
-    }
+    const bit_vec = std.heap.c_allocator.alloc(u8, bit_vec_len) catch {
+        // Allocation failed: return bytecode with empty jump table
+        return LegacyAnalyzedBytecode{
+            .bytecode = bytecode,
+            .original_len = bytecode.len,
+            .jump_table = JumpTable.init(),
+        };
+    };
+    @memset(bit_vec, 0);
 
     var i: usize = 0;
 
@@ -718,14 +732,9 @@ fn analyzeLegacy(bytecode: []const u8) LegacyAnalyzedBytecode {
         const opcode = bytecode[i];
 
         if (opcode == JUMPDEST) {
-            // Set bit at position i
-            if (i < bytecode.len) {
-                const byte_idx = i >> 3;
-                const bit_idx = i & 7;
-                if (byte_idx < bit_vec.len) {
-                    bit_vec[byte_idx] |= @as(u8, 1) << @intCast(bit_idx);
-                }
-            }
+            const byte_idx = i >> 3;
+            const bit_idx = i & 7;
+            bit_vec[byte_idx] |= @as(u8, 1) << @intCast(bit_idx);
             i += 1;
         } else {
             // Check if it's a PUSH instruction
@@ -740,14 +749,10 @@ fn analyzeLegacy(bytecode: []const u8) LegacyAnalyzedBytecode {
         }
     }
 
-    // For now, use the original bytecode without padding
-    // Full padding support would require proper memory management
-    const jump_table = if (bit_vec.len > 0) JumpTable.fromBytes(bit_vec, bytecode.len) else JumpTable.init();
-
     return LegacyAnalyzedBytecode{
         .bytecode = bytecode,
         .original_len = bytecode.len,
-        .jump_table = jump_table,
+        .jump_table = JumpTable.fromBytes(bit_vec, bytecode.len),
     };
 }
 

@@ -26,9 +26,17 @@ pub const InstructionResult = @import("instruction_result.zig").InstructionResul
 pub const InterpreterAction = @import("interpreter_action.zig").InterpreterAction;
 pub const CallScheme = @import("interpreter_action.zig").CallScheme;
 pub const InstructionContext = @import("instruction_context.zig").InstructionContext;
-pub const Host = @import("host.zig").Host;
+pub const InstructionFn = @import("interpreter.zig").InstructionFn;
+pub const InstructionEntry = @import("interpreter.zig").InstructionEntry;
+pub const InstructionTable = @import("interpreter.zig").InstructionTable;
+pub const host_module = @import("host.zig");
+pub const Host = host_module.Host;
+pub const CallInputs = host_module.CallInputs;
+pub const CallResult = host_module.CallResult;
 pub const opcodes = @import("opcodes/main.zig");
 pub const instruction_table = @import("instruction_table.zig");
+pub const protocol_schedule = @import("protocol_schedule.zig");
+pub const ProtocolSchedule = protocol_schedule.ProtocolSchedule;
 pub const gas_costs = @import("gas_costs.zig");
 
 // Constants

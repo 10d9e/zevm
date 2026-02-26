@@ -1,96 +1,65 @@
 const std = @import("std");
 const primitives = @import("primitives");
-const Stack = @import("../stack.zig").Stack;
-const Gas = @import("../gas.zig").Gas;
-const InstructionResult = @import("../instruction_result.zig").InstructionResult;
-const bytecode_mod = @import("bytecode");
-const gas_costs = @import("../gas_costs.zig");
+const InstructionContext = @import("../instruction_context.zig").InstructionContext;
 
 /// STOP opcode (0x00): Halt execution
-/// Stack: [] -> []   Gas: 0
-pub inline fn opStop(stack: *Stack, gas: *Gas) InstructionResult {
-    _ = stack;
-    _ = gas;
-    return .stop;
+/// Stack: [] -> []   Gas: 0 (G_ZERO, charged by dispatch)
+pub fn opStop(ctx: *InstructionContext) void {
+    ctx.interpreter.halt(.stop);
 }
 
 /// JUMP opcode (0x56): Unconditional jump
-/// Stack: [dest] -> []   Gas: 8 (MID)
-/// Jumps to destination if it's a valid JUMPDEST
-pub inline fn opJump(stack: *Stack, gas: *Gas, code: []const u8, jump_table: ?*const bytecode_mod.JumpTable, pc: *usize) InstructionResult {
-    if (!stack.hasItems(1)) return .stack_underflow;
-    if (!gas.spend(gas_costs.G_MID)) return .out_of_gas;
-
+/// Stack: [dest] -> []   Gas: 8 (G_MID, charged by dispatch)
+pub fn opJump(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
     const dest = stack.popUnsafe();
-    const dest_u64 = std.math.cast(u64, dest) orelse return .invalid_jump;
-    const dest_usize: usize = @intCast(dest_u64);
-
-    if (dest_usize >= code.len) return .invalid_jump;
-
-    if (jump_table) |jt| {
-        if (!jt.isValid(dest_usize)) return .invalid_jump;
-    } else {
-        if (code[dest_usize] != bytecode_mod.JUMPDEST) return .invalid_jump;
+    if (dest > std.math.maxInt(usize)) { ctx.interpreter.halt(.invalid_jump); return; }
+    const dest_usize: usize = @intCast(dest);
+    if (!ctx.interpreter.bytecode.isValidJump(dest_usize)) {
+        ctx.interpreter.halt(.invalid_jump); return;
     }
-
-    pc.* = dest_usize;
-    return .continue_;
+    ctx.interpreter.bytecode.absoluteJump(dest_usize);
 }
 
 /// JUMPI opcode (0x57): Conditional jump
-/// Stack: [dest, cond] -> []   Gas: 10 (HIGH)
-/// Jumps to destination if condition is non-zero and dest is valid JUMPDEST
-pub inline fn opJumpi(stack: *Stack, gas: *Gas, code: []const u8, jump_table: ?*const bytecode_mod.JumpTable, pc: *usize) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(gas_costs.G_HIGH)) return .out_of_gas;
-
+/// Stack: [dest, cond] -> []   Gas: 10 (G_HIGH, charged by dispatch)
+pub fn opJumpi(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
     const dest = stack.peekUnsafe(0);
     const cond = stack.peekUnsafe(1);
     stack.shrinkUnsafe(2);
-
-    if (cond == 0) {
-        return .continue_;
+    if (cond == 0) return;
+    if (dest > std.math.maxInt(usize)) { ctx.interpreter.halt(.invalid_jump); return; }
+    const dest_usize: usize = @intCast(dest);
+    if (!ctx.interpreter.bytecode.isValidJump(dest_usize)) {
+        ctx.interpreter.halt(.invalid_jump); return;
     }
-
-    const dest_u64 = std.math.cast(u64, dest) orelse return .invalid_jump;
-    const dest_usize: usize = @intCast(dest_u64);
-
-    if (dest_usize >= code.len) return .invalid_jump;
-
-    if (jump_table) |jt| {
-        if (!jt.isValid(dest_usize)) return .invalid_jump;
-    } else {
-        if (code[dest_usize] != bytecode_mod.JUMPDEST) return .invalid_jump;
-    }
-
-    pc.* = dest_usize;
-    return .continue_;
+    ctx.interpreter.bytecode.absoluteJump(dest_usize);
 }
 
-/// JUMPDEST opcode (0x5B): Mark valid jump destination
-/// Stack: [] -> []   Gas: 1 (JUMPDEST)
-pub inline fn opJumpdest(stack: *Stack, gas: *Gas) InstructionResult {
-    _ = stack;
-    if (!gas.spend(gas_costs.G_JUMPDEST)) return .out_of_gas;
-    return .continue_;
+/// JUMPDEST opcode (0x5B): Mark valid jump destination — no-op at runtime
+/// Stack: [] -> []   Gas: 1 (G_JUMPDEST, charged by dispatch)
+pub fn opJumpdest(ctx: *InstructionContext) void {
+    _ = ctx;
 }
 
-/// PC opcode (0x58): Get program counter
-/// Stack: [] -> [pc]   Gas: 2 (BASE)
-pub inline fn opPc(stack: *Stack, gas: *Gas, pc: usize) InstructionResult {
-    if (!stack.hasSpace(1)) return .stack_overflow;
-    if (!gas.spend(gas_costs.G_BASE)) return .out_of_gas;
-    stack.pushUnsafe(pc);
-    return .continue_;
+/// PC opcode (0x58): Push program counter of this instruction
+/// Stack: [] -> [pc]   Gas: 2 (G_BASE, charged by dispatch)
+/// Note: step() advances PC by 1 before calling handler; pc-1 is the opcode address.
+pub fn opPc(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    stack.pushUnsafe(@intCast(ctx.interpreter.bytecode.pc - 1));
 }
 
-/// GAS opcode (0x5A): Get remaining gas
-/// Stack: [] -> [gas]   Gas: 2 (BASE)
-pub inline fn opGas(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasSpace(1)) return .stack_overflow;
-    if (!gas.spend(gas_costs.G_BASE)) return .out_of_gas;
-    stack.pushUnsafe(gas.remaining);
-    return .continue_;
+/// GAS opcode (0x5A): Push remaining gas after this instruction's static cost
+/// Stack: [] -> [gas]   Gas: 2 (G_BASE, charged by dispatch before handler is called)
+pub fn opGas(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    stack.pushUnsafe(ctx.interpreter.gas.remaining);
 }
 
 test {

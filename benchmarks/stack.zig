@@ -83,17 +83,17 @@ pub fn register(bench: anytype, filter: []const u8) !void {
 }
 
 pub fn gasCost(name: []const u8) ?f64 {
-    if (std.mem.startsWith(u8, name, "OP_POP")) return @floatFromInt(m.g_instruction_table[bytecode.POP].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_PUSH0")) return @floatFromInt(m.g_instruction_table[bytecode.PUSH0].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_PUSH32")) return @floatFromInt(m.g_instruction_table[bytecode.PUSH32].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_PUSH24")) return @floatFromInt(m.g_instruction_table[bytecode.PUSH24].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_PUSH16")) return @floatFromInt(m.g_instruction_table[bytecode.PUSH16].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_PUSH8")) return @floatFromInt(m.g_instruction_table[bytecode.PUSH8].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_PUSH1")) return @floatFromInt(m.g_instruction_table[bytecode.PUSH1].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_DUP1")) return @floatFromInt(m.g_instruction_table[bytecode.DUP1].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_DUP16")) return @floatFromInt(m.g_instruction_table[bytecode.DUP16].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_SWAP1")) return @floatFromInt(m.g_instruction_table[bytecode.SWAP1].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_SWAP16")) return @floatFromInt(m.g_instruction_table[bytecode.SWAP16].base_gas);
+    if (std.mem.startsWith(u8, name, "OP_POP")) return @floatFromInt(m.g_instruction_table[bytecode.POP].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_PUSH0")) return @floatFromInt(m.g_instruction_table[bytecode.PUSH0].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_PUSH32")) return @floatFromInt(m.g_instruction_table[bytecode.PUSH32].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_PUSH24")) return @floatFromInt(m.g_instruction_table[bytecode.PUSH24].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_PUSH16")) return @floatFromInt(m.g_instruction_table[bytecode.PUSH16].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_PUSH8")) return @floatFromInt(m.g_instruction_table[bytecode.PUSH8].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_PUSH1")) return @floatFromInt(m.g_instruction_table[bytecode.PUSH1].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_DUP1")) return @floatFromInt(m.g_instruction_table[bytecode.DUP1].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_DUP16")) return @floatFromInt(m.g_instruction_table[bytecode.DUP16].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_SWAP1")) return @floatFromInt(m.g_instruction_table[bytecode.SWAP1].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_SWAP16")) return @floatFromInt(m.g_instruction_table[bytecode.SWAP16].static_gas);
     return null;
 }
 

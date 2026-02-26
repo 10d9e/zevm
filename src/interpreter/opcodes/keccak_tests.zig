@@ -1,253 +1,141 @@
 const std = @import("std");
 const primitives = @import("primitives");
-const Stack = @import("../stack.zig").Stack;
+const Interpreter = @import("../interpreter.zig").Interpreter;
+const InstructionContext = @import("../instruction_context.zig").InstructionContext;
 const Gas = @import("../gas.zig").Gas;
-const Memory = @import("../memory.zig").Memory;
-const InstructionResult = @import("../instruction_result.zig").InstructionResult;
 const keccak_ops = @import("keccak.zig");
 
 const opKeccak256 = keccak_ops.opKeccak256;
 
 const expectEqual = std.testing.expectEqual;
+const expect = std.testing.expect;
 const U = primitives.U256;
 
 // --- KECCAK256 tests ---
 
 test "KECCAK256: empty input" {
-    var stack = Stack.new();
-    var gas = Gas.new(1000);
-    var memory = Memory.new();
-    defer memory.deinit();
-
-    stack.pushUnsafe(@as(U, 0)); // Length 0
-    stack.pushUnsafe(@as(U, 0)); // Offset 0
-    const result = opKeccak256(&stack, &gas, &memory);
-    try expectEqual(InstructionResult.continue_, result);
-
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 0)); // length 0
+    interp.stack.pushUnsafe(@as(U, 0)); // offset 0
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opKeccak256(&ctx);
+    try expect(interp.bytecode.continue_execution);
     // Keccak256("") = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470
     const expected: U = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
-    const hash = stack.popUnsafe();
-    try expectEqual(expected, hash);
+    try expectEqual(expected, interp.stack.popUnsafe());
 }
 
 test "KECCAK256: single byte" {
-    var stack = Stack.new();
-    var gas = Gas.new(1000);
-    var memory = Memory.new();
-    defer memory.deinit();
-
-    // Store 0x00 at offset 0
-    try memory.buffer.resize(std.heap.c_allocator, 32);
-    memory.buffer.items[0] = 0x00;
-
-    stack.pushUnsafe(@as(U, 1)); // Length 1
-    stack.pushUnsafe(@as(U, 0)); // Offset 0
-    const result = opKeccak256(&stack, &gas, &memory);
-    try expectEqual(InstructionResult.continue_, result);
-
+    var interp = Interpreter.defaultExt();
+    // Pre-fill memory with 0x00 at offset 0
+    try interp.memory.buffer.resize(std.heap.c_allocator, 32);
+    interp.memory.buffer.items[0] = 0x00;
+    interp.stack.pushUnsafe(@as(U, 1)); // length 1
+    interp.stack.pushUnsafe(@as(U, 0)); // offset 0
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opKeccak256(&ctx);
+    try expect(interp.bytecode.continue_execution);
     // Keccak256(0x00) = 0xbc36789e7a1e281436464229828f817d6612f7b477d66591ff96a9e064bcc98a
     const expected: U = 0xbc36789e7a1e281436464229828f817d6612f7b477d66591ff96a9e064bcc98a;
-    const hash = stack.popUnsafe();
-    try expectEqual(expected, hash);
+    try expectEqual(expected, interp.stack.popUnsafe());
 }
 
-test "KECCAK256: multiple bytes" {
-    var stack = Stack.new();
-    var gas = Gas.new(1000);
-    var memory = Memory.new();
-    defer memory.deinit();
-
-    // Store "hello" in memory
-    try memory.buffer.resize(std.heap.c_allocator, 32);
+test "KECCAK256: hello" {
+    var interp = Interpreter.defaultExt();
+    try interp.memory.buffer.resize(std.heap.c_allocator, 32);
     const hello = "hello";
-    @memcpy(memory.buffer.items[0..hello.len], hello);
-
-    stack.pushUnsafe(@as(U, 5)); // Length 5
-    stack.pushUnsafe(@as(U, 0)); // Offset 0
-    const result = opKeccak256(&stack, &gas, &memory);
-    try expectEqual(InstructionResult.continue_, result);
-
+    @memcpy(interp.memory.buffer.items[0..hello.len], hello);
+    interp.stack.pushUnsafe(@as(U, 5)); // length 5
+    interp.stack.pushUnsafe(@as(U, 0)); // offset 0
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opKeccak256(&ctx);
     // Keccak256("hello") = 0x1c8aff950685c2ed4bc3174f3472287b56d9517b9c948127319a09a7a36deac8
     const expected: U = 0x1c8aff950685c2ed4bc3174f3472287b56d9517b9c948127319a09a7a36deac8;
-    const hash = stack.popUnsafe();
-    try expectEqual(expected, hash);
+    try expectEqual(expected, interp.stack.popUnsafe());
 }
 
-test "KECCAK256: 32 bytes (one word)" {
-    var stack = Stack.new();
-    var gas = Gas.new(1000);
-    var memory = Memory.new();
-    defer memory.deinit();
-
-    // Fill 32 bytes with 0xFF
-    try memory.buffer.resize(std.heap.c_allocator, 32);
-    @memset(memory.buffer.items[0..32], 0xFF);
-
-    stack.pushUnsafe(@as(U, 32)); // Length 32
-    stack.pushUnsafe(@as(U, 0)); // Offset 0
-    const result = opKeccak256(&stack, &gas, &memory);
-    try expectEqual(InstructionResult.continue_, result);
-
-    // Should produce some hash (exact value not critical, just verify it runs)
-    const hash = stack.popUnsafe();
-    try std.testing.expect(hash != 0);
-}
-
-test "KECCAK256: 64 bytes (two words)" {
-    var stack = Stack.new();
-    var gas = Gas.new(1000);
-    var memory = Memory.new();
-    defer memory.deinit();
-
-    // Fill 64 bytes
-    try memory.buffer.resize(std.heap.c_allocator, 64);
+test "KECCAK256: dynamic word gas (64 bytes = 2 words = 12 gas)" {
+    // Handler charges G_KECCAK256WORD * num_words = 6 * 2 = 12
+    // Static G_KECCAK256 = 30 is charged by dispatch, not here
+    var interp = Interpreter.defaultExt();
+    interp.gas = Gas.new(1000);
+    try interp.memory.buffer.resize(std.heap.c_allocator, 64);
     var i: usize = 0;
-    while (i < 64) : (i += 1) {
-        memory.buffer.items[i] = @as(u8, @intCast(i));
-    }
-
-    stack.pushUnsafe(@as(U, 64)); // Length 64
-    stack.pushUnsafe(@as(U, 0)); // Offset 0
-
-    const initial_gas = gas.getRemaining();
-    const result = opKeccak256(&stack, &gas, &memory);
-    try expectEqual(InstructionResult.continue_, result);
-
-    // Verify gas cost: 30 + 6*2 = 42
-    const gas_used = initial_gas - gas.getRemaining();
-    try expectEqual(@as(u64, 42), gas_used);
+    while (i < 64) : (i += 1) interp.memory.buffer.items[i] = @as(u8, @intCast(i));
+    interp.stack.pushUnsafe(@as(U, 64)); // length 64
+    interp.stack.pushUnsafe(@as(U, 0)); // offset 0
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opKeccak256(&ctx);
+    try expect(interp.bytecode.continue_execution);
+    try expectEqual(@as(u64, 988), interp.gas.remaining); // 1000 - 12
 }
 
-test "KECCAK256: offset in middle of memory" {
-    var stack = Stack.new();
-    var gas = Gas.new(1000);
-    var memory = Memory.new();
-    defer memory.deinit();
-
-    // Pre-fill memory
-    try memory.buffer.resize(std.heap.c_allocator, 64);
-    @memset(memory.buffer.items[0..32], 0xAA);
-    @memset(memory.buffer.items[32..64], 0xBB);
-
-    // Hash the second half
-    stack.pushUnsafe(@as(U, 32)); // Length 32
-    stack.pushUnsafe(@as(U, 32)); // Offset 32
-    const result = opKeccak256(&stack, &gas, &memory);
-    try expectEqual(InstructionResult.continue_, result);
-
-    const hash = stack.popUnsafe();
-    try std.testing.expect(hash != 0);
+test "KECCAK256: dynamic word gas (100 bytes = ceil(100/32)=4 words = 24 gas)" {
+    var interp = Interpreter.defaultExt();
+    interp.gas = Gas.new(1000);
+    try interp.memory.buffer.resize(std.heap.c_allocator, 100);
+    interp.stack.pushUnsafe(@as(U, 100));
+    interp.stack.pushUnsafe(@as(U, 0));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opKeccak256(&ctx);
+    try expect(interp.bytecode.continue_execution);
+    try expectEqual(@as(u64, 976), interp.gas.remaining); // 1000 - 24
 }
 
-test "KECCAK256: gas cost calculation" {
-    var stack = Stack.new();
-    var gas = Gas.new(1000);
-    var memory = Memory.new();
-    defer memory.deinit();
-
-    try memory.buffer.resize(std.heap.c_allocator, 100);
-
-    // 100 bytes = ceil(100/32) = 4 words
-    // Gas cost = 30 + 6*4 = 54
-    stack.pushUnsafe(@as(U, 100)); // Length
-    stack.pushUnsafe(@as(U, 0)); // Offset
-
-    const initial_gas = gas.getRemaining();
-    const result = opKeccak256(&stack, &gas, &memory);
-    try expectEqual(InstructionResult.continue_, result);
-
-    const gas_used = initial_gas - gas.getRemaining();
-    try expectEqual(@as(u64, 54), gas_used);
+test "KECCAK256: auto-expands memory" {
+    // keccak256 should expand memory itself, unlike old implementation
+    var interp = Interpreter.defaultExt();
+    // Memory is empty, but we hash 32 bytes at offset 0
+    interp.stack.pushUnsafe(@as(U, 32)); // length 32
+    interp.stack.pushUnsafe(@as(U, 0)); // offset 0
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opKeccak256(&ctx);
+    try expect(interp.bytecode.continue_execution);
+    // Memory should have been expanded to at least 32 bytes
+    try expect(interp.memory.size() >= 32);
 }
 
-test "KECCAK256: partial word" {
-    var stack = Stack.new();
-    var gas = Gas.new(1000);
-    var memory = Memory.new();
-    defer memory.deinit();
-
-    try memory.buffer.resize(std.heap.c_allocator, 10);
-
-    // 10 bytes = ceil(10/32) = 1 word
-    // Gas cost = 30 + 6*1 = 36
-    stack.pushUnsafe(@as(U, 10)); // Length
-    stack.pushUnsafe(@as(U, 0)); // Offset
-
-    const initial_gas = gas.getRemaining();
-    const result = opKeccak256(&stack, &gas, &memory);
-    try expectEqual(InstructionResult.continue_, result);
-
-    const gas_used = initial_gas - gas.getRemaining();
-    try expectEqual(@as(u64, 36), gas_used);
+test "KECCAK256: out of gas on word cost" {
+    // Give less than 1 word cost (6 gas) for a 32-byte hash
+    var interp = Interpreter.defaultExt();
+    interp.gas = Gas.new(3); // less than G_KECCAK256WORD = 6
+    try interp.memory.buffer.resize(std.heap.c_allocator, 32);
+    interp.stack.pushUnsafe(@as(U, 32)); // 1 word
+    interp.stack.pushUnsafe(@as(U, 0));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opKeccak256(&ctx);
+    try expect(!interp.bytecode.continue_execution);
+    try expectEqual(.out_of_gas, interp.result);
 }
-
-// --- Error conditions ---
 
 test "KECCAK256: stack underflow" {
-    var stack = Stack.new();
-    var gas = Gas.new(1000);
-    var memory = Memory.new();
-    defer memory.deinit();
-
-    stack.pushUnsafe(@as(U, 0)); // Only 1 value, need 2
-    const result = opKeccak256(&stack, &gas, &memory);
-    try expectEqual(InstructionResult.stack_underflow, result);
-}
-
-test "KECCAK256: out of gas" {
-    var stack = Stack.new();
-    var gas = Gas.new(20); // Not enough gas (need 30 + 6*words)
-    var memory = Memory.new();
-    defer memory.deinit();
-
-    stack.pushUnsafe(@as(U, 0));
-    stack.pushUnsafe(@as(U, 0));
-    const result = opKeccak256(&stack, &gas, &memory);
-    try expectEqual(InstructionResult.out_of_gas, result);
-}
-
-test "KECCAK256: memory limit exceeded" {
-    var stack = Stack.new();
-    var gas = Gas.new(1000);
-    var memory = Memory.new();
-    defer memory.deinit();
-
-    // Try to hash beyond memory size
-    stack.pushUnsafe(@as(U, 100)); // Length 100
-    stack.pushUnsafe(@as(U, 0)); // Offset 0
-    const result = opKeccak256(&stack, &gas, &memory);
-    // Should fail because memory isn't expanded yet
-    try expectEqual(InstructionResult.memory_limit_oog, result);
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 0)); // only 1 value, need 2
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opKeccak256(&ctx);
+    try expectEqual(.stack_underflow, interp.result);
 }
 
 test "KECCAK256: deterministic" {
-    var stack1 = Stack.new();
-    var gas1 = Gas.new(1000);
-    var memory1 = Memory.new();
-    defer memory1.deinit();
-
-    // First hash
-    try memory1.buffer.resize(std.heap.c_allocator, 10);
+    // Two separate interpreters hashing the same data should produce the same result
+    var interp1 = Interpreter.defaultExt();
+    try interp1.memory.buffer.resize(std.heap.c_allocator, 10);
     const data = "test";
-    @memcpy(memory1.buffer.items[0..data.len], data);
-    stack1.pushUnsafe(@as(U, 4));
-    stack1.pushUnsafe(@as(U, 0));
-    _ = opKeccak256(&stack1, &gas1, &memory1);
-    const hash1 = stack1.popUnsafe();
+    @memcpy(interp1.memory.buffer.items[0..data.len], data);
+    interp1.stack.pushUnsafe(@as(U, 4));
+    interp1.stack.pushUnsafe(@as(U, 0));
+    var ctx1 = InstructionContext{ .interpreter = &interp1 };
+    opKeccak256(&ctx1);
+    const hash1 = interp1.stack.popUnsafe();
 
-    // Second hash (same data)
-    var stack2 = Stack.new();
-    var gas2 = Gas.new(1000);
-    var memory2 = Memory.new();
-    defer memory2.deinit();
+    var interp2 = Interpreter.defaultExt();
+    try interp2.memory.buffer.resize(std.heap.c_allocator, 10);
+    @memcpy(interp2.memory.buffer.items[0..data.len], data);
+    interp2.stack.pushUnsafe(@as(U, 4));
+    interp2.stack.pushUnsafe(@as(U, 0));
+    var ctx2 = InstructionContext{ .interpreter = &interp2 };
+    opKeccak256(&ctx2);
+    const hash2 = interp2.stack.popUnsafe();
 
-    try memory2.buffer.resize(std.heap.c_allocator, 10);
-    @memcpy(memory2.buffer.items[0..data.len], data);
-    stack2.pushUnsafe(@as(U, 4));
-    stack2.pushUnsafe(@as(U, 0));
-    _ = opKeccak256(&stack2, &gas2, &memory2);
-    const hash2 = stack2.popUnsafe();
-
-    // Should be identical
     try expectEqual(hash1, hash2);
 }

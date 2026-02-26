@@ -1,143 +1,115 @@
 const std = @import("std");
 const primitives = @import("primitives");
-const Stack = @import("../stack.zig").Stack;
-const Gas = @import("../gas.zig").Gas;
-const InstructionResult = @import("../instruction_result.zig").InstructionResult;
-const gas_costs = @import("../gas_costs.zig");
+const InstructionContext = @import("../instruction_context.zig").InstructionContext;
 
 /// AND opcode (0x16): a & b
-/// Stack: [a, b] -> [a & b]   Gas: 3 (VERYLOW)
-pub inline fn opAnd(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
+/// Stack: [a, b] -> [a & b]   Static gas: 3 (VERYLOW, charged by dispatch)
+pub fn opAnd(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
     stack.setTopUnsafe().* = a & b;
-    return .continue_;
 }
 
 /// OR opcode (0x17): a | b
-/// Stack: [a, b] -> [a | b]   Gas: 3 (VERYLOW)
-pub inline fn opOr(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
+/// Stack: [a, b] -> [a | b]   Static gas: 3 (VERYLOW)
+pub fn opOr(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
     stack.setTopUnsafe().* = a | b;
-    return .continue_;
 }
 
 /// XOR opcode (0x18): a ^ b
-/// Stack: [a, b] -> [a ^ b]   Gas: 3 (VERYLOW)
-pub inline fn opXor(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
+/// Stack: [a, b] -> [a ^ b]   Static gas: 3 (VERYLOW)
+pub fn opXor(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
     stack.setTopUnsafe().* = a ^ b;
-    return .continue_;
 }
 
 /// NOT opcode (0x19): ~a
-/// Stack: [a] -> [~a]   Gas: 3 (VERYLOW)
-pub inline fn opNot(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(1)) return .stack_underflow;
-    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
+/// Stack: [a] -> [~a]   Static gas: 3 (VERYLOW)
+pub fn opNot(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
     const ptr = stack.setTopUnsafe();
     ptr.* = ~ptr.*;
-    return .continue_;
 }
 
 /// BYTE opcode (0x1A): Extract byte from word
-/// Stack: [i, x] -> [byte_i(x)]   Gas: 3 (VERYLOW)
-/// Extracts the i-th byte (0 = most significant) from x
-pub inline fn opByte(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
+/// Stack: [i, x] -> [byte_i(x)]   Static gas: 3 (VERYLOW)
+pub fn opByte(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
     const i = stack.peekUnsafe(0);
     const x = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
 
-    // If i >= 32, result is 0
     const result = if (i < 32)
         (x >> @intCast((31 - i) * 8)) & 0xFF
     else
         0;
 
     stack.setTopUnsafe().* = result;
-    return .continue_;
 }
 
 /// SHL opcode (0x1B): Shift left
-/// Stack: [shift, value] -> [value << shift]   Gas: 3 (VERYLOW)
-pub inline fn opShl(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
+/// Stack: [shift, value] -> [value << shift]   Static gas: 3 (VERYLOW)
+pub fn opShl(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
     const shift = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
 
-    const result = if (shift < 256)
-        value << @intCast(shift)
-    else
-        0;
-
-    stack.setTopUnsafe().* = result;
-    return .continue_;
+    stack.setTopUnsafe().* = if (shift < 256) value << @intCast(shift) else 0;
 }
 
 /// SHR opcode (0x1C): Logical shift right
-/// Stack: [shift, value] -> [value >> shift]   Gas: 3 (VERYLOW)
-pub inline fn opShr(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
+/// Stack: [shift, value] -> [value >> shift]   Static gas: 3 (VERYLOW)
+pub fn opShr(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
     const shift = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
 
-    const result = if (shift < 256)
-        value >> @intCast(shift)
-    else
-        0;
-
-    stack.setTopUnsafe().* = result;
-    return .continue_;
+    stack.setTopUnsafe().* = if (shift < 256) value >> @intCast(shift) else 0;
 }
 
 /// SAR opcode (0x1D): Arithmetic shift right (with sign extension)
-/// Stack: [shift, value] -> [value >> shift (signed)]   Gas: 3 (VERYLOW)
-pub inline fn opSar(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(gas_costs.G_VERYLOW)) return .out_of_gas;
+/// Stack: [shift, value] -> [value >> shift (signed)]   Static gas: 3 (VERYLOW)
+pub fn opSar(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
     const shift = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
 
-    // Check if value is negative (MSB set)
     const is_negative = (value >> 255) == 1;
     const MAX: primitives.U256 = std.math.maxInt(primitives.U256);
 
     const result = if (shift >= 256) blk: {
-        // Shift >= 256 means all bits shift out
         break :blk if (is_negative) MAX else 0;
     } else if (shift == 0) blk: {
         break :blk value;
     } else if (is_negative) blk: {
-        // For negative numbers, we need to fill with 1s from the left
-        const shift_amt: u8 = @intCast(shift);
-        const shifted = value >> shift_amt;
-        const mask = MAX << @intCast(@as(u9, 256) - shift_amt);
+        const shifted = value >> @intCast(shift);
+        const mask = MAX << @intCast(256 - shift);
         break :blk shifted | mask;
     } else blk: {
-        // Positive number: standard logical shift
         break :blk value >> @intCast(shift);
     };
 
     stack.setTopUnsafe().* = result;
-    return .continue_;
 }
 
 test {

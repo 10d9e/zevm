@@ -67,12 +67,12 @@ pub fn register(bench: anytype, filter: []const u8) !void {
 }
 
 pub fn gasCost(name: []const u8) ?f64 {
-    if (std.mem.startsWith(u8, name, "OP_ISZERO")) return @floatFromInt(m.g_instruction_table[bytecode.ISZERO].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_LT")) return @floatFromInt(m.g_instruction_table[bytecode.LT].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_GT")) return @floatFromInt(m.g_instruction_table[bytecode.GT].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_SLT")) return @floatFromInt(m.g_instruction_table[bytecode.SLT].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_SGT")) return @floatFromInt(m.g_instruction_table[bytecode.SGT].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_EQ")) return @floatFromInt(m.g_instruction_table[bytecode.EQ].base_gas);
+    if (std.mem.startsWith(u8, name, "OP_ISZERO")) return @floatFromInt(m.g_instruction_table[bytecode.ISZERO].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_LT")) return @floatFromInt(m.g_instruction_table[bytecode.LT].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_GT")) return @floatFromInt(m.g_instruction_table[bytecode.GT].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_SLT")) return @floatFromInt(m.g_instruction_table[bytecode.SLT].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_SGT")) return @floatFromInt(m.g_instruction_table[bytecode.SGT].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_EQ")) return @floatFromInt(m.g_instruction_table[bytecode.EQ].static_gas);
     return null;
 }
 

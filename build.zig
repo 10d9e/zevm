@@ -247,6 +247,7 @@ pub fn build(b: *std.Build) void {
     database_module.addImport("state", state_module);
     database_module.addImport("bytecode", bytecode_module);
     context_module.addImport("primitives", primitives_module);
+    context_module.addImport("bytecode", bytecode_module);
     context_module.addImport("state", state_module);
     context_module.addImport("database", database_module);
     interpreter_module.addImport("primitives", primitives_module);

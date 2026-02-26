@@ -95,7 +95,7 @@ pub const JournalEntry = union(enum) {
                     switch (data.destroyed_status) {
                         .GloballySelfdestroyed => {
                             account.unmarkSelfdestructedLocally();
-                            account.unmarkSelfdestructed();
+                            account.unmarkSelfdestruct();
                         },
                         .LocallySelfdestroyed => {
                             account.unmarkSelfdestructedLocally();
@@ -152,8 +152,8 @@ pub const JournalEntry = union(enum) {
             },
             .TransientStorageChanged => |data| {
                 if (transient_storage) |ts| {
-                    if (data.old_value.eql(@as(primitives.StorageValue, 0))) {
-                        ts.remove(.{ data.address, data.key });
+                    if (data.old_value == 0) {
+                        _ = ts.remove(.{ data.address, data.key });
                     } else {
                         ts.put(.{ data.address, data.key }, data.old_value) catch {};
                     }
@@ -166,21 +166,19 @@ pub const JournalEntry = union(enum) {
 /// Warm addresses
 pub const WarmAddresses = struct {
     coinbase: ?primitives.Address,
-    precompiles: ?std.ArrayList(primitives.Address),
+    precompiles: std.ArrayList(primitives.Address),
     access_list: std.AutoHashMap(primitives.Address, std.ArrayList(primitives.StorageKey)),
 
     pub fn new() WarmAddresses {
         return .{
             .coinbase = null,
-            .precompiles = null,
+            .precompiles = std.ArrayList(primitives.Address){},
             .access_list = std.AutoHashMap(primitives.Address, std.ArrayList(primitives.StorageKey)).init(std.heap.c_allocator),
         };
     }
 
     pub fn deinit(self: *WarmAddresses) void {
-        if (self.precompiles) |*precompiles| {
-            precompiles.deinit();
-        }
+        self.precompiles.deinit(std.heap.c_allocator);
         var iterator = self.access_list.iterator();
         while (iterator.next()) |entry| {
             entry.value_ptr.deinit();
@@ -194,7 +192,7 @@ pub const WarmAddresses = struct {
 
     pub fn setPrecompileAddresses(self: *WarmAddresses, addresses: []const primitives.Address) !void {
         self.precompiles.clearRetainingCapacity();
-        try self.precompiles.appendSlice(addresses);
+        try self.precompiles.appendSlice(std.heap.c_allocator, addresses);
     }
 
     pub fn setAccessList(self: *WarmAddresses, access_list: std.HashMap(primitives.Address, std.ArrayList(primitives.StorageKey), std.hash_map.default_hash_fn(primitives.Address), std.hash_map.default_eql_fn(primitives.Address))) !void {
@@ -249,7 +247,7 @@ pub const WarmAddresses = struct {
     pub fn isStorageWarm(self: WarmAddresses, address: primitives.Address, key: primitives.StorageKey) bool {
         if (self.access_list.get(address)) |storage_keys| {
             for (storage_keys.items) |storage_key| {
-                if (std.mem.eql(u8, &key, &storage_key)) {
+                if (key == storage_key) {
                     return true;
                 }
             }
@@ -257,7 +255,7 @@ pub const WarmAddresses = struct {
         return false;
     }
 
-    pub fn getPrecompiles(self: WarmAddresses) []const primitives.Address {
+    pub fn getPrecompiles(self: *const WarmAddresses) []const primitives.Address {
         return self.precompiles.items;
     }
 };
@@ -354,11 +352,11 @@ pub const JournalInner = struct {
     /// See EIP-1153.
     transient_storage: state.TransientStorage,
     /// Emitted logs
-    logs: ?std.ArrayList(primitives.Log),
+    logs: std.ArrayList(primitives.Log),
     /// The current call stack depth
     depth: usize,
     /// The journal of evm_state changes, one for each transaction
-    journal: ?std.ArrayList(JournalEntry),
+    journal: std.ArrayList(JournalEntry),
     /// Global transaction id that represent number of transactions executed (Including reverted ones).
     /// It can be different from number of `journal_history` as some transaction could be
     /// reverted or had a error on execution.
@@ -382,8 +380,8 @@ pub const JournalInner = struct {
         return .{
             .evm_state = state.EvmState.init(std.heap.page_allocator),
             .transient_storage = state.TransientStorage.init(std.heap.page_allocator),
-            .logs = null,
-            .journal = null,
+            .logs = std.ArrayList(primitives.Log){},
+            .journal = std.ArrayList(JournalEntry){},
             .transaction_id = 0,
             .depth = 0,
             .spec = primitives.SpecId.prague,
@@ -392,17 +390,17 @@ pub const JournalInner = struct {
     }
 
     pub fn deinit(self: *JournalInner) void {
-        self.state.deinit();
+        self.evm_state.deinit();
         self.transient_storage.deinit();
-        self.logs.deinit();
-        self.journal.deinit();
+        self.logs.deinit(std.heap.page_allocator);
+        self.journal.deinit(std.heap.page_allocator);
         self.warm_addresses.deinit();
     }
 
     /// Returns the logs
     pub fn takeLogs(self: *JournalInner) std.ArrayList(primitives.Log) {
         const logs = self.logs;
-        self.logs = std.ArrayList(primitives.Log).init(std.heap.page_allocator);
+        self.logs = std.ArrayList(primitives.Log){};
         return logs;
     }
 
@@ -424,7 +422,7 @@ pub const JournalInner = struct {
 
     /// Discard the current transaction, by reverting the journal entries and incrementing the transaction id.
     pub fn discardTx(self: *JournalInner) void {
-        const is_spurious_dragon_enabled = self.spec.isEnabledIn(primitives.SpecId.SpuriousDragon);
+        const is_spurious_dragon_enabled = primitives.isEnabledIn(self.spec, .spurious_dragon);
 
         // iterate over all journals entries and revert our global evm_state
         var i = self.journal.items.len;
@@ -461,7 +459,7 @@ pub const JournalInner = struct {
 
     /// Return reference to state.
     pub fn getState(self: *JournalInner) *state.EvmState {
-        return &self.state;
+        return &self.evm_state;
     }
 
     /// Sets SpecId.
@@ -473,7 +471,7 @@ pub const JournalInner = struct {
     /// This is especially important for evm_state clear where touched empty accounts needs to
     /// be removed from state.
     pub fn touch(self: *JournalInner, address: primitives.Address) void {
-        if (self.state.getPtr(address)) |account| {
+        if (self.evm_state.getPtr(address)) |account| {
             JournalInner.touchAccount(&self.journal, address, account);
         }
     }
@@ -481,7 +479,7 @@ pub const JournalInner = struct {
     /// Mark account as touched.
     fn touchAccount(journal: *std.ArrayList(JournalEntry), address: primitives.Address, account: *state.Account) void {
         if (!account.isTouched()) {
-            journal.append(JournalEntryFactory.accountTouched(address)) catch {};
+            journal.append(std.heap.page_allocator, JournalEntryFactory.accountTouched(address)) catch {};
             account.markTouch();
         }
     }
@@ -494,17 +492,17 @@ pub const JournalInner = struct {
     ///
     /// Panics if the account has not been loaded and is missing from the evm_state set.
     pub fn getAccount(self: JournalInner, address: primitives.Address) *const state.Account {
-        return self.state.get(address) orelse unreachable;
+        return self.evm_state.get(address) orelse unreachable;
     }
 
     /// Set code and its hash to the account.
     ///
     /// Note: Assume account is warm and that hash is calculated from code.
     pub fn setCodeWithHash(self: *JournalInner, address: primitives.Address, code: bytecode.Bytecode, hash: primitives.Hash) void {
-        const account = self.state.getPtr(address).?;
+        const account = self.evm_state.getPtr(address).?;
         JournalInner.touchAccount(&self.journal, address, account);
 
-        self.journal.append(JournalEntryFactory.codeChanged(address)) catch {};
+        self.journal.append(std.heap.page_allocator,JournalEntryFactory.codeChanged(address)) catch {};
 
         account.info.code_hash = hash;
         account.info.code = code;
@@ -530,13 +528,13 @@ pub const JournalInner = struct {
     /// Add journal entry for caller accounting.
     pub fn callerAccountingJournalEntry(self: *JournalInner, address: primitives.Address, old_balance: primitives.U256, bump_nonce: bool) void {
         // account balance changed.
-        self.journal.append(JournalEntryFactory.balanceChanged(address, old_balance)) catch {};
+        self.journal.append(std.heap.page_allocator,JournalEntryFactory.balanceChanged(address, old_balance)) catch {};
         // account is touched.
-        self.journal.append(JournalEntryFactory.accountTouched(address)) catch {};
+        self.journal.append(std.heap.page_allocator,JournalEntryFactory.accountTouched(address)) catch {};
 
         if (bump_nonce) {
             // nonce changed.
-            self.journal.append(JournalEntryFactory.nonceChanged(address)) catch {};
+            self.journal.append(std.heap.page_allocator,JournalEntryFactory.nonceChanged(address)) catch {};
         }
     }
 
@@ -550,7 +548,7 @@ pub const JournalInner = struct {
 
     /// Increments the nonce of the account.
     pub fn nonceBumpJournalEntry(self: *JournalInner, address: primitives.Address) void {
-        self.journal.append(JournalEntryFactory.nonceChanged(address)) catch {};
+        self.journal.append(std.heap.page_allocator,JournalEntryFactory.nonceChanged(address)) catch {};
     }
 
     /// Transfers balance from two accounts. Returns error if sender balance is not enough.
@@ -560,35 +558,35 @@ pub const JournalInner = struct {
     /// Panics if from or to are not loaded.
     pub fn transferLoaded(self: *JournalInner, from: primitives.Address, to: primitives.Address, balance: primitives.U256) ?TransferError {
         if (std.mem.eql(u8, &from, &to)) {
-            const from_balance = self.state.getPtr(to).?.info.balance;
+            const from_balance = self.evm_state.getPtr(to).?.info.balance;
             // Check if from balance is enough to transfer the balance.
-            if (balance.gt(from_balance)) {
+            if (balance > from_balance) {
                 return TransferError.OutOfFunds;
             }
             return null;
         }
 
-        if (balance.isZero()) {
-            JournalInner.touchAccount(&self.journal, to, self.state.getPtr(to).?);
+        if (balance == 0) {
+            JournalInner.touchAccount(&self.journal, to, self.evm_state.getPtr(to).?);
             return null;
         }
 
         // sub balance from
-        const from_account = self.state.getPtr(from).?;
+        const from_account = self.evm_state.getPtr(from).?;
         JournalInner.touchAccount(&self.journal, from, from_account);
         const from_balance = &from_account.info.balance;
-        const from_balance_decr = from_balance.sub(balance) catch return TransferError.OutOfFunds;
+        const from_balance_decr = std.math.sub(u256, from_balance.*, balance) catch return TransferError.OutOfFunds;
         from_balance.* = from_balance_decr;
 
         // add balance to
-        const to_account = self.state.getPtr(to).?;
+        const to_account = self.evm_state.getPtr(to).?;
         JournalInner.touchAccount(&self.journal, to, to_account);
         const to_balance = &to_account.info.balance;
-        const to_balance_incr = to_balance.add(balance) catch return TransferError.OverflowPayment;
+        const to_balance_incr = std.math.add(u256, to_balance.*, balance) catch return TransferError.OverflowPayment;
         to_balance.* = to_balance_incr;
 
         // add journal entry
-        self.journal.append(JournalEntryFactory.balanceTransfer(from, to, balance)) catch {};
+        self.journal.append(std.heap.page_allocator,JournalEntryFactory.balanceTransfer(from, to, balance)) catch {};
 
         return null;
     }
@@ -620,14 +618,14 @@ pub const JournalInner = struct {
         const checkpoint = self.checkpoint();
 
         // Newly created account is present, as we just loaded it.
-        const target_acc = self.state.getPtr(target_address).?;
+        const target_acc = self.evm_state.getPtr(target_address).?;
         const last_journal = &self.journal;
 
         // New account can be created if:
         // Bytecode is not empty.
         // Nonce is not zero
         // Account is not precompile.
-        if (!target_acc.info.code_hash.eql(primitives.KECCAK_EMPTY) or target_acc.info.nonce != 0) {
+        if (!std.mem.eql(u8, &target_acc.info.code_hash, &primitives.KECCAK_EMPTY) or target_acc.info.nonce != 0) {
             self.checkpointRevert(checkpoint);
             return TransferError.CreateCollision;
         }
@@ -636,10 +634,10 @@ pub const JournalInner = struct {
         const is_created_globally = target_acc.markCreatedLocally();
 
         // this entry will revert set nonce.
-        last_journal.append(JournalEntryFactory.accountCreated(target_address, is_created_globally)) catch {};
+        last_journal.append(std.heap.page_allocator, JournalEntryFactory.accountCreated(target_address, is_created_globally)) catch {};
         target_acc.info.code = null;
         // EIP-161: State trie clearing (invariant-preserving alternative)
-        if (spec_id.isEnabledIn(primitives.SpecId.SpuriousDragon)) {
+        if (primitives.isEnabledIn(spec_id, .spurious_dragon)) {
             // nonce is going to be reset to zero in AccountCreated journal entry.
             target_acc.info.nonce = 1;
         }
@@ -649,17 +647,17 @@ pub const JournalInner = struct {
         JournalInner.touchAccount(last_journal, target_address, target_acc);
 
         // Add balance to created account, as we already have target here.
-        const new_balance = target_acc.info.balance.add(balance) catch {
+        const new_balance = std.math.add(u256, target_acc.info.balance, balance) catch {
             self.checkpointRevert(checkpoint);
             return TransferError.OverflowPayment;
         };
         target_acc.info.balance = new_balance;
 
         // safe to decrement for the caller as balance check is already done.
-        self.state.getPtr(caller).?.info.balance = self.state.getPtr(caller).?.info.balance.sub(balance) catch unreachable;
+        self.evm_state.getPtr(caller).?.info.balance = std.math.sub(u256, self.evm_state.getPtr(caller).?.info.balance, balance) catch unreachable;
 
         // add journal entry of transferred balance
-        last_journal.append(JournalEntryFactory.balanceTransfer(caller, target_address, balance)) catch {};
+        last_journal.append(std.heap.page_allocator, JournalEntryFactory.balanceTransfer(caller, target_address, balance)) catch {};
 
         return checkpoint;
     }
@@ -681,7 +679,7 @@ pub const JournalInner = struct {
 
     /// Reverts all changes to evm_state until given checkpoint.
     pub fn checkpointRevert(self: *JournalInner, checkpoint: JournalCheckpoint) void {
-        const is_spurious_dragon_enabled = self.spec.isEnabledIn(primitives.SpecId.SpuriousDragon);
+        const is_spurious_dragon_enabled = primitives.isEnabledIn(self.spec, .spurious_dragon);
         self.depth = self.depth -| 1;
         self.logs.shrinkRetainingCapacity(checkpoint.log_i);
 
@@ -711,19 +709,19 @@ pub const JournalInner = struct {
         const spec = self.spec;
         const account_load = try self.loadAccount(db, target);
         const is_cold = account_load.is_cold;
-        const is_empty = account_load.data.evm_stateClearAwareIsEmpty(spec);
+        const is_empty = account_load.data.stateClearAwareIsEmpty(spec);
 
         if (!std.mem.eql(u8, &address, &target)) {
             // Both accounts are loaded before this point, `address` as we execute its contract.
             // and `target` at the beginning of the function.
-            const acc_balance = self.state.get(address).?.info.balance;
+            const acc_balance = self.evm_state.get(address).?.info.balance;
 
-            const target_account = self.state.getPtr(target).?;
+            const target_account = self.evm_state.getPtr(target).?;
             JournalInner.touchAccount(&self.journal, target, target_account);
-            target_account.info.balance = target_account.info.balance.add(acc_balance) catch unreachable;
+            target_account.info.balance = std.math.add(u256, target_account.info.balance, acc_balance) catch unreachable;
         }
 
-        const acc = self.state.getPtr(address).?;
+        const acc = self.evm_state.getPtr(address).?;
         const balance = acc.info.balance;
 
         const destroyed_status = if (!acc.isSelfdestructed())
@@ -733,30 +731,32 @@ pub const JournalInner = struct {
         else
             SelfdestructionRevertStatus.RepeatedSelfdestruction;
 
-        const is_cancun_enabled = spec.isEnabledIn(primitives.SpecId.Cancun);
+        const is_cancun_enabled = primitives.isEnabledIn(spec, .cancun);
 
         // EIP-6780 (Cancun hard-fork): selfdestruct only if contract is created in the same tx
-        const journal_entry = if (acc.isCreatedLocally() or !is_cancun_enabled) {
-            acc.markSelfdestructedLocally();
-            acc.info.balance = @as(primitives.U256, 0);
-            JournalEntryFactory.accountDestroyed(address, target, destroyed_status, balance);
-        } else if (!std.mem.eql(u8, &address, &target)) {
-            acc.info.balance = @as(primitives.U256, 0);
-            JournalEntryFactory.balanceTransfer(address, target, balance);
-        } else {
-            // State is not changed:
-            // * if we are after Cancun upgrade and
-            // * Selfdestruct account that is created in the same transaction and
-            // * Specify the target is same as selfdestructed account. The balance stays unchanged.
-            null;
+        const journal_entry: ?JournalEntry = entry_blk: {
+            if (acc.isCreatedLocally() or !is_cancun_enabled) {
+                _ = acc.markSelfdestructedLocally();
+                acc.info.balance = @as(primitives.U256, 0);
+                break :entry_blk JournalEntryFactory.accountDestroyed(address, target, destroyed_status, balance);
+            } else if (!std.mem.eql(u8, &address, &target)) {
+                acc.info.balance = @as(primitives.U256, 0);
+                break :entry_blk JournalEntryFactory.balanceTransfer(address, target, balance);
+            } else {
+                // State is not changed:
+                // * if we are after Cancun upgrade and
+                // * Selfdestruct account that is created in the same transaction and
+                // * Specify the target is same as selfdestructed account. The balance stays unchanged.
+                break :entry_blk null;
+            }
         };
 
         if (journal_entry) |entry| {
-            self.journal.append(entry) catch {};
+            self.journal.append(std.heap.page_allocator,entry) catch {};
         }
 
-        return StateLoad.new(SelfDestructResult{
-            .had_value = !balance.isZero(),
+        return StateLoad(SelfDestructResult).new(SelfDestructResult{
+            .had_value = balance != 0,
             .target_exists = !is_empty,
             .previously_destroyed = destroyed_status == SelfdestructionRevertStatus.RepeatedSelfdestruction,
         }, is_cold);
@@ -764,12 +764,7 @@ pub const JournalInner = struct {
 
     /// Loads account into memory. return if it is cold or warm accessed
     pub fn loadAccount(self: *JournalInner, db: anytype, address: primitives.Address) !StateLoad(*const state.Account) {
-        const result = try self.loadAccountOptional(db, address, false, false);
-        return result.map(*const state.Account, struct {
-            fn mapFn(account: ?state.Account) *const state.Account {
-                return &account.?;
-            }
-        }.mapFn);
+        return self.loadAccountOptional(db, address, false, false);
     }
 
     /// Loads account and its code. If account is already loaded it will load its code.
@@ -779,22 +774,13 @@ pub const JournalInner = struct {
     /// In case of EIP-7702 delegated account will not be loaded,
     /// [`Self::load_account_delegated`] should be used instead.
     pub fn loadCode(self: *JournalInner, db: anytype, address: primitives.Address) !StateLoad(*const state.Account) {
-        const result = try self.loadAccountOptional(db, address, true, false);
-        return result.map(*const state.Account, struct {
-            fn mapFn(account: ?state.Account) *const state.Account {
-                return &account.?;
-            }
-        }.mapFn);
+        return self.loadAccountOptional(db, address, true, false);
     }
 
     /// Loads account into memory. If account is already loaded it will be marked as warm.
     pub fn loadAccountOptional(self: *JournalInner, db: anytype, address: primitives.Address, load_code: bool, skip_cold_load: bool) !StateLoad(*const state.Account) {
         const load = try self.loadAccountMutOptionalCode(db, address, load_code, skip_cold_load);
-        return load.map(*const state.Account, struct {
-            fn mapFn(account: ?state.Account) *const state.Account {
-                return &account.?.intoAccountRef();
-            }
-        }.mapFn);
+        return StateLoad(*const state.Account).new(load.data.account, load.is_cold);
     }
 
     /// Loads account into memory. If account is already loaded it will be marked as warm.
@@ -804,72 +790,67 @@ pub const JournalInner = struct {
 
     /// Loads account. If account is already loaded it will be marked as warm.
     pub fn loadAccountMutOptionalCode(self: *JournalInner, db: anytype, address: primitives.Address, load_code: bool, skip_cold_load: bool) !StateLoad(JournaledAccount) {
-        const load = switch (self.state.getEntry(address)) {
-            .occupied => |entry| {
-                const account = entry.value_ptr;
+        var is_cold: bool = undefined;
+        var account_ptr: *state.Account = undefined;
 
-                // skip load if account is cold.
-                var is_cold = account.isColdTransactionId(self.transaction_id);
-                if (is_cold) {
-                    // account can be loaded by we still need to check warm_addresses to see if it is cold.
-                    const should_be_cold = self.warm_addresses.isCold(address);
-
-                    // dont load it cold if skipping cold load is true.
-                    if (should_be_cold and skip_cold_load) {
-                        return JournalLoadError.ColdLoadSkipped;
-                    }
-                    is_cold = should_be_cold;
-
-                    // mark it warm.
-                    account.markWarmWithTransactionId(self.transaction_id);
-
-                    // if it is cold loaded and we have selfdestructed locally it means that
-                    // account was selfdestructed in previous transaction and we need to clear its information and storage.
-                    if (account.isSelfdestructedLocally()) {
-                        account.selfdestruct();
-                        account.unmarkSelfdestructedLocally();
-                    }
-                    // unmark locally created
-                    account.unmarkCreatedLocally();
-                }
-                StateLoad.new(account, is_cold);
-            },
-            .vacant => |vac| {
-                // Precompiles among some other account(coinbase included) are warm loaded so we need to take that into account
-                const is_cold = self.warm_addresses.isCold(address);
-
-                // dont load cold account if skip_cold_load is true
-                if (is_cold and skip_cold_load) {
+        if (self.evm_state.getPtr(address)) |existing| {
+            // Account already loaded — check warm/cold
+            var acct_is_cold = existing.isColdTransactionId(self.transaction_id);
+            if (acct_is_cold) {
+                const should_be_cold = self.warm_addresses.isCold(address);
+                if (should_be_cold and skip_cold_load) {
                     return JournalLoadError.ColdLoadSkipped;
                 }
-                const account = if (try db.basic(address)) |account_info|
-                    state.Account.fromAccountInfo(account_info, self.transaction_id)
-                else
-                    state.Account.newNotExisting(self.transaction_id);
-
-                StateLoad.new(vac.putValue(account), is_cold);
-            },
-        };
-
-        // journal loading of cold account.
-        if (load.is_cold) {
-            self.journal.append(JournalEntryFactory.accountWarmed(address)) catch {};
+                acct_is_cold = should_be_cold;
+                _ = existing.markWarmWithTransactionId(self.transaction_id);
+                if (existing.isSelfdestructedLocally()) {
+                    existing.selfdestruct();
+                    existing.unmarkSelfdestructedLocally();
+                }
+                existing.unmarkCreatedLocally();
+            }
+            is_cold = acct_is_cold;
+            account_ptr = existing;
+        } else {
+            // Account not yet loaded — fetch from DB and insert
+            const acct_is_cold = self.warm_addresses.isCold(address);
+            if (acct_is_cold and skip_cold_load) {
+                return JournalLoadError.ColdLoadSkipped;
+            }
+            const new_account = if (try db.basic(address)) |account_info|
+                state.Account{
+                    .info = account_info,
+                    .storage = std.AutoHashMap(primitives.StorageKey, state.EvmStorageSlot).init(std.heap.page_allocator),
+                    .transaction_id = self.transaction_id,
+                    .status = state.AccountStatus.empty(),
+                }
+            else
+                state.Account.newNotExisting(self.transaction_id);
+            const gop = try self.evm_state.getOrPut(address);
+            gop.value_ptr.* = new_account;
+            is_cold = acct_is_cold;
+            account_ptr = gop.value_ptr;
         }
 
-        if (load_code and load.data.info.code == null) {
-            const info = &load.data.info;
-            const code = if (info.code_hash.eql(primitives.KECCAK_EMPTY))
-                bytecode.Bytecode.default()
+        // Journal cold account load
+        if (is_cold) {
+            self.journal.append(std.heap.page_allocator,JournalEntryFactory.accountWarmed(address)) catch {};
+        }
+
+        // Load code if requested and not yet loaded
+        if (load_code and account_ptr.info.code == null) {
+            const info = &account_ptr.info;
+            const code = if (std.mem.eql(u8, &info.code_hash, &primitives.KECCAK_EMPTY))
+                bytecode.Bytecode.new()
             else
                 try db.codeByHash(info.code_hash);
             info.code = code;
         }
 
-        return load.map(JournaledAccount, struct {
-            fn mapFn(account: ?state.Account) JournaledAccount {
-                return JournaledAccount.new(address, account.?, &self.journal);
-            }
-        }.mapFn);
+        return StateLoad(JournaledAccount).new(
+            JournaledAccount.new(address, account_ptr, &self.journal),
+            is_cold,
+        );
     }
 
     /// Loads storage slot.
@@ -879,47 +860,36 @@ pub const JournalInner = struct {
     /// Panics if the account is not present in the state.
     pub fn sload(self: *JournalInner, db: anytype, address: primitives.Address, key: primitives.StorageKey, skip_cold_load: bool) !StateLoad(primitives.StorageValue) {
         // assume acc is warm
-        const account = self.state.getPtr(address).?;
-
+        const account = self.evm_state.getPtr(address).?;
         const is_newly_created = account.isCreated();
-        const result = switch (account.storage.getEntry(key)) {
-            .occupied => |occ| {
-                const slot = occ.value_ptr;
-                // skip load if account is cold.
-                const is_cold = slot.isColdTransactionId(self.transaction_id);
-                if (skip_cold_load and is_cold) {
-                    return JournalLoadError.ColdLoadSkipped;
-                }
-                slot.markWarmWithTransactionId(self.transaction_id);
-                .{ slot.present_value, is_cold };
-            },
-            .vacant => |vac| {
-                if (skip_cold_load) {
-                    return JournalLoadError.ColdLoadSkipped;
-                }
-                // if storage was cleared, we don't need to ping db.
-                const value = if (is_newly_created)
-                    @as(primitives.StorageValue, 0)
-                else
-                    try db.storage(address, key);
-                vac.putValue(state.EvmStorageSlot.new(value, self.transaction_id));
 
-                // is storage cold
-                const is_cold = !self.warm_addresses.isStorageWarm(address, key);
-
-                .{ value, is_cold };
-            },
-        };
-
-        const value = result[0];
-        const is_cold = result[1];
-
-        if (is_cold) {
-            // add it to journal as cold loaded.
-            self.journal.append(JournalEntryFactory.storageWarmed(address, key)) catch {};
+        if (account.storage.getPtr(key)) |slot| {
+            // Storage slot already loaded
+            const is_cold = slot.isColdTransactionId(self.transaction_id);
+            if (skip_cold_load and is_cold) {
+                return JournalLoadError.ColdLoadSkipped;
+            }
+            _ = slot.markWarmWithTransactionId(self.transaction_id);
+            if (is_cold) {
+                self.journal.append(std.heap.page_allocator,JournalEntryFactory.storageWarmed(address, key)) catch {};
+            }
+            return StateLoad(primitives.StorageValue).new(slot.present_value, is_cold);
+        } else {
+            // Storage slot not yet loaded — fetch from DB
+            if (skip_cold_load) {
+                return JournalLoadError.ColdLoadSkipped;
+            }
+            const value = if (is_newly_created)
+                @as(primitives.StorageValue, 0)
+            else
+                try db.storage(address, key);
+            try account.storage.put(key, state.EvmStorageSlot.new(value, self.transaction_id));
+            const is_cold = !self.warm_addresses.isStorageWarm(address, key);
+            if (is_cold) {
+                self.journal.append(std.heap.page_allocator,JournalEntryFactory.storageWarmed(address, key)) catch {};
+            }
+            return StateLoad(primitives.StorageValue).new(value, is_cold);
         }
-
-        return StateLoad.new(value, is_cold);
     }
 
     /// Stores storage slot.
@@ -930,24 +900,24 @@ pub const JournalInner = struct {
     pub fn sstore(self: *JournalInner, db: anytype, address: primitives.Address, key: primitives.StorageKey, new_value: primitives.StorageValue, skip_cold_load: bool) !StateLoad(SStoreResult) {
         // assume that acc exists and load the slot.
         const present = try self.sload(db, address, key, skip_cold_load);
-        const acc = self.state.getPtr(address).?;
+        const acc = self.evm_state.getPtr(address).?;
 
         // if there is no original value in dirty return present value, that is our original.
         const slot = acc.storage.getPtr(key).?;
 
         // new value is same as present, we don't need to do anything
-        if (present.data.eql(new_value)) {
-            return StateLoad.new(SStoreResult{
+        if (present.data == new_value) {
+            return StateLoad(SStoreResult).new(SStoreResult{
                 .original_value = slot.originalValue(),
                 .present_value = present.data,
                 .new_value = new_value,
             }, present.is_cold);
         }
 
-        self.journal.append(JournalEntryFactory.storageChanged(address, key, present.data)) catch {};
+        self.journal.append(std.heap.page_allocator,JournalEntryFactory.storageChanged(address, key, present.data)) catch {};
         // insert value into present state.
         slot.present_value = new_value;
-        return StateLoad.new(SStoreResult{
+        return StateLoad(SStoreResult).new(SStoreResult{
             .original_value = slot.originalValue(),
             .present_value = present.data,
             .new_value = new_value,
@@ -968,34 +938,25 @@ pub const JournalInner = struct {
     ///
     /// EIP-1153: Transient storage opcodes
     pub fn tstore(self: *JournalInner, address: primitives.Address, key: primitives.StorageKey, new_value: primitives.StorageValue) void {
-        const had_value = if (new_value.isZero()) {
-            // if new values is zero, remove entry from transient storage.
-            // if previous values was some insert it inside journal.
-            // If it is none nothing should be inserted.
-            self.transient_storage.remove(.{ address, key });
-        } else {
-            // insert values
-            const previous_value = self.transient_storage.get(.{ address, key }) orelse @as(primitives.StorageValue, 0);
-            self.transient_storage.put(.{ address, key }, new_value) catch {};
+        const previous_value = self.transient_storage.get(.{ address, key }) orelse @as(primitives.StorageValue, 0);
 
-            // check if previous value is same
-            if (!previous_value.eql(new_value)) {
-                // if it is different, insert previous values inside journal.
-                previous_value;
-            } else {
-                null;
+        if (new_value == 0) {
+            // Remove entry from transient storage; journal only if there was a previous value.
+            _ = self.transient_storage.remove(.{ address, key });
+            if (previous_value != 0) {
+                self.journal.append(std.heap.page_allocator,JournalEntryFactory.transientStorageChanged(address, key, previous_value)) catch {};
             }
-        };
-
-        if (had_value) |value| {
-            // insert in journal only if value was changed.
-            self.journal.append(JournalEntryFactory.transientStorageChanged(address, key, value)) catch {};
+        } else {
+            self.transient_storage.put(.{ address, key }, new_value) catch {};
+            if (previous_value != new_value) {
+                self.journal.append(std.heap.page_allocator,JournalEntryFactory.transientStorageChanged(address, key, previous_value)) catch {};
+            }
         }
     }
 
     /// Pushes log into subroutine.
     pub fn addLog(self: *JournalInner, log_entry: primitives.Log) void {
-        self.logs.append(log_entry) catch {};
+        self.logs.append(std.heap.page_allocator,log_entry) catch {};
     }
 };
 
@@ -1194,7 +1155,7 @@ pub fn Journal(comptime DB: type) type {
         pub fn loadAccountInfoSkipColdLoad(self: *@This(), address: primitives.Address, load_code: bool, skip_cold_load: bool) !AccountInfoLoad {
             const spec = self.inner.spec;
             const account = try self.inner.loadAccountOptional(self.getDbMut(), address, load_code, skip_cold_load);
-            return AccountInfoLoad.new(&account.data.info, account.is_cold, account.data.evm_stateClearAwareIsEmpty(spec));
+            return AccountInfoLoad.new(@constCast(&account.data.info), account.is_cold, account.data.stateClearAwareIsEmpty(spec));
         }
     };
 }
