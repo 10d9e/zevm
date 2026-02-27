@@ -28,7 +28,7 @@ pub const Execution = struct {
         );
 
         // Create frame
-        var frame = evm.createFrame(frame_data);
+        var frame = try evm.createFrame(frame_data);
 
         // Execute frame
         return evm.executeFrame(&frame);
@@ -54,7 +54,7 @@ pub const Execution = struct {
         );
 
         // Create frame
-        var frame = evm.createFrame(frame_data);
+        var frame = try evm.createFrame(frame_data);
 
         // Execute frame
         return evm.executeFrame(&frame);
@@ -81,7 +81,7 @@ pub const Execution = struct {
         );
 
         // Create frame
-        var frame = evm.createFrame(frame_data);
+        var frame = try evm.createFrame(frame_data);
 
         // Execute frame
         return evm.executeFrame(&frame);
@@ -119,7 +119,7 @@ pub const Execution = struct {
         );
 
         // Create frame
-        var frame = evm.createFrame(frame_data);
+        var frame = try evm.createFrame(frame_data);
 
         // Execute frame
         return evm.executeFrame(&frame);
@@ -134,7 +134,7 @@ pub const ExecutionLoop = struct {
         initial_frame_data: main.FrameData,
     ) !main.FrameResult {
         // Create initial frame
-        var frame = evm.createFrame(initial_frame_data);
+        var frame = try evm.createFrame(initial_frame_data);
 
         // Execute frame
         const result = try evm.executeFrame(&frame);

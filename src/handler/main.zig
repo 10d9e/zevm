@@ -285,10 +285,12 @@ pub const Frame = struct {
             self.interpreter.runtime_flags.spec_id,
         );
 
-        // Build a Host that delegates to the context, and set the sub-call runner.
+        // Build a Host that delegates to the context, set the sub-call runner,
+        // and wire up the precompile set for this hardfork.
         var host = interpreter.Host{
             .ctx = ctx,
             .run_sub_call = interpreter.protocol_schedule.runSubCallDefault,
+            .precompiles = &self.precompiles.precompiles,
         };
 
         const result = self.interpreter.runWithHost(

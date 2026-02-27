@@ -349,6 +349,8 @@ pub fn build(b: *std.Build) void {
     interpreter_tests.root_module.addImport("context", context_module);
     interpreter_tests.root_module.addImport("database", database_module);
     interpreter_tests.root_module.addImport("state", state_module);
+    interpreter_tests.root_module.addImport("precompile", precompile_module);
+    addCryptoLibraries(b, interpreter_tests, enable_blst, enable_mcl, blst_include_path, mcl_include_path, is_windows, target_info.os.tag == .macos);
     const run_interpreter_tests = b.addRunArtifact(interpreter_tests);
     test_step.dependOn(&run_interpreter_tests.step);
 

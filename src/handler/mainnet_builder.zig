@@ -4,6 +4,7 @@ const context = @import("context");
 const database = @import("database");
 const state = @import("state");
 const bytecode = @import("bytecode");
+const interpreter_mod = @import("interpreter");
 const main = @import("main.zig");
 const validation = @import("validation.zig");
 
@@ -112,33 +113,39 @@ pub const MainnetHandler = struct {
         const ctx = evm.getContext();
         const tx = &ctx.tx;
 
-        // Determine target address from tx.kind
-        const target: primitives.Address = switch (tx.kind) {
-            .Call => |addr| addr,
-            .Create => [_]u8{0} ** 20, // CREATE: address computed later (Phase 4)
-        };
-
-        // Top-level transactions are never static (STATICCALL is sub-call only)
-        const is_static = false;
-
         const calldata: []const u8 = if (tx.data) |data| data.items else &[_]u8{};
-
         // Gas available to execution = gas_limit minus intrinsic cost
         const exec_gas = tx.gas_limit - initial_gas;
 
-        const frame_data = main.FrameData.new(
-            tx.caller,
-            target,
-            tx.value,
-            calldata,
-            exec_gas,
-            is_static,
-            .call,
-        );
-
-        // Create and execute the frame
-        var frame = try evm.createFrame(frame_data);
-        return evm.executeFrame(&frame);
+        switch (tx.kind) {
+            .Create => {
+                // Top-level CREATE: tx validation already bumped caller nonce.
+                // Dispatch through Host.create() with skip_nonce_bump=true.
+                var host = interpreter_mod.Host{
+                    .ctx = ctx,
+                    .run_sub_call = interpreter_mod.protocol_schedule.runSubCallDefault,
+                    .precompiles = &evm.precompiles.precompiles,
+                };
+                const cr = host.create(tx.caller, tx.value, calldata, exec_gas, false, 0, true);
+                const status: main.ExecutionStatus = if (cr.success) .Success else .Revert;
+                var exec_result = main.ExecutionResult.new(status, exec_gas - cr.gas_remaining);
+                exec_result.return_data = cr.return_data;
+                return main.FrameResult.new(exec_result, cr.gas_remaining, 0);
+            },
+            .Call => |target| {
+                const frame_data = main.FrameData.new(
+                    tx.caller,
+                    target,
+                    tx.value,
+                    calldata,
+                    exec_gas,
+                    false, // top-level txs are never static
+                    .call,
+                );
+                var frame = try evm.createFrame(frame_data);
+                return evm.executeFrame(&frame);
+            },
+        }
     }
 
     /// Post-execution phase — gas refund capping (EIP-3529), EIP-7623 floor, reimburse caller,
@@ -250,6 +257,11 @@ pub const ExecuteCommitEvm = struct {
 // Pull in post-execution tests
 test {
     _ = @import("postexecution_tests.zig");
+}
+
+// Pull in precompile dispatch tests
+test {
+    _ = @import("precompile_dispatch_tests.zig");
 }
 
 // Placeholder for testing

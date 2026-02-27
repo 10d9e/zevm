@@ -9,6 +9,7 @@ const Memory = @import("memory.zig").Memory;
 const InstructionResult = @import("instruction_result.zig").InstructionResult;
 const CallScheme = @import("interpreter_action.zig").CallScheme;
 const gas_costs = @import("gas_costs.zig");
+const precompile_mod = @import("precompile");
 
 /// Result of a sub-call dispatched via Host.call()
 pub const CallResult = struct {
@@ -72,6 +73,8 @@ pub const Host = struct {
     ctx: *context_mod.Context,
     /// Callback to run a sub-interpreter. Set by protocol_schedule before execution.
     run_sub_call: *const fn (host: *Host, sub_interp: *Interpreter) void,
+    /// Precompile set for the current spec. Null disables precompile dispatch (benchmarks/unit tests).
+    precompiles: ?*const precompile_mod.Precompiles = null,
 
     // -----------------------------------------------------------------------
     // Block / transaction environment (no state access required)
@@ -224,6 +227,43 @@ pub const Host = struct {
             return CallResult.failure(inputs.gas_limit);
         }
 
+        // 1b. Precompile dispatch: if the callee is a precompile, run it instead of the interpreter.
+        // Value transfer still occurs (ETH accumulates at the precompile address).
+        if (self.precompiles) |pcs| {
+            if (pcs.get(inputs.callee)) |pc| {
+                const checkpoint = self.ctx.journaled_state.getCheckpoint();
+                // Value transfer (target == callee for normal CALL)
+                if (inputs.value > 0) {
+                    const xfer_err = self.ctx.journaled_state.transfer(inputs.caller, inputs.target, inputs.value) catch {
+                        self.ctx.journaled_state.checkpointRevert(checkpoint);
+                        return CallResult.failure(inputs.gas_limit);
+                    };
+                    if (xfer_err != null) {
+                        self.ctx.journaled_state.checkpointRevert(checkpoint);
+                        return CallResult.failure(inputs.gas_limit);
+                    }
+                }
+                const pc_result = pc.execute(inputs.data, inputs.gas_limit);
+                switch (pc_result) {
+                    .success => |out| {
+                        if (out.reverted) {
+                            self.ctx.journaled_state.checkpointRevert(checkpoint);
+                            return .{ .success = false, .return_data = out.bytes,
+                                       .gas_used = inputs.gas_limit, .gas_remaining = 0 };
+                        }
+                        self.ctx.journaled_state.checkpointCommit();
+                        return .{ .success = true, .return_data = out.bytes,
+                                   .gas_used = out.gas_used,
+                                   .gas_remaining = inputs.gas_limit - out.gas_used };
+                    },
+                    .err => {
+                        self.ctx.journaled_state.checkpointRevert(checkpoint);
+                        return CallResult.failure(inputs.gas_limit);
+                    },
+                }
+            }
+        }
+
         // 2. Load callee account and code
         const callee_load = self.ctx.journaled_state.loadAccountWithCode(inputs.callee) catch {
             return CallResult.failure(inputs.gas_limit);
@@ -304,6 +344,9 @@ pub const Host = struct {
         gas_limit: u64,
         comptime is_create2: bool,
         salt: primitives.U256,
+        /// When true, the caller nonce has already been incremented by tx validation.
+        /// The nonce bump is skipped here but the pre-bump nonce is still used for address derivation.
+        comptime skip_nonce_bump: bool,
     ) CreateResult {
         const MAX_CALL_DEPTH = 1024;
         const MAX_CODE_SIZE: usize = 24576;
@@ -320,11 +363,20 @@ pub const Host = struct {
             if (init_code.len > MAX_INITCODE_SIZE) return CreateResult.failure();
         }
 
-        // 3. Bump caller nonce BEFORE checkpoint so the bump is never reverted by CREATE failure
+        // 3. Manage caller nonce BEFORE checkpoint (nonce bump is never reverted by CREATE failure).
+        //    skip_nonce_bump=true means tx validation already bumped the nonce from N to N+1;
+        //    we still need N for address derivation.
         const caller_acc = js.inner.evm_state.getPtr(caller) orelse return CreateResult.failure();
-        const caller_nonce = caller_acc.info.nonce;
-        caller_acc.info.nonce = caller_nonce +| 1;
-        js.nonceBumpJournalEntry(caller);
+        const caller_nonce: u64 = if (skip_nonce_bump)
+            // Already bumped: current nonce is N+1, use N for address derivation
+            caller_acc.info.nonce -| 1
+        else blk: {
+            // Normal opcode path: read N, bump to N+1, record journal entry
+            const n = caller_acc.info.nonce;
+            caller_acc.info.nonce = n +| 1;
+            js.nonceBumpJournalEntry(caller);
+            break :blk n;
+        };
 
         // 4. Derive new contract address
         const new_addr: primitives.Address = if (is_create2) blk: {

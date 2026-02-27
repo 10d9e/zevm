@@ -246,7 +246,7 @@ pub fn opCreate(ctx: *InstructionContext) void {
     else &[_]u8{};
 
     const caller = ctx.interpreter.input.target;
-    const result = h.create(caller, value, init_code, forwarded, false, 0);
+    const result = h.create(caller, value, init_code, forwarded, false, 0, false);
 
     // Gas not used by sub-call is returned to caller
     ctx.interpreter.gas.remaining = ctx.interpreter.gas.remaining -| forwarded;
@@ -305,7 +305,7 @@ pub fn opCreate2(ctx: *InstructionContext) void {
     else &[_]u8{};
 
     const caller = ctx.interpreter.input.target;
-    const result = h.create(caller, value, init_code, forwarded, true, salt);
+    const result = h.create(caller, value, init_code, forwarded, true, salt, false);
 
     ctx.interpreter.gas.remaining = ctx.interpreter.gas.remaining -| forwarded;
     ctx.interpreter.gas.remaining +|= result.gas_remaining;

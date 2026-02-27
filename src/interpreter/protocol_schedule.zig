@@ -176,7 +176,7 @@ fn makeFrontierTable() InstructionTable {
     table[bytecode_mod.CALL] = entry(opcodes.opCall, 0);
     table[bytecode_mod.CALLCODE] = entry(opcodes.opCallcode, 0);
 
-    // CREATE / CREATE2 (stubs)
+    // CREATE / CREATE2 (base static gas; dynamic costs computed at runtime)
     table[bytecode_mod.CREATE] = entry(opcodes.opCreate, gas_costs.G_CREATE);
     table[bytecode_mod.CREATE2] = entry(opcodes.opCreate2, gas_costs.G_CREATE);
 
@@ -212,7 +212,7 @@ fn applyByzantiumChanges(table: *InstructionTable) void {
 fn applyConstantinopleChanges(table: *InstructionTable) void {
     // EXTCODEHASH added
     table[bytecode_mod.EXTCODEHASH] = entry(opcodes.opExtcodehash, 400);
-    // CREATE2 repriced (it was a stub, keep as stub)
+    // CREATE2 (EIP-1014) added in Constantinople; dynamic gas handles init-code and keccak costs.
     // SHL/SHR/SAR already in Byzantium
 }
 
