@@ -186,6 +186,22 @@ pub const MainnetHandler = struct {
                 return main.FrameResult.new(exec_result, cr.gas_remaining, cr.gas_refunded);
             },
             .Call => |target| {
+                // Load target account and its code before executing.
+                const callee_load = try ctx.journaled_state.loadAccountWithCode(target);
+                const callee_code = if (callee_load.data.info.code) |c| c else bytecode.Bytecode.new();
+
+                // Value transfer for top-level CALL (pre-execution, not through sub-call opcode).
+                if (tx.value > 0) {
+                    const xfer_err = try ctx.journaled_state.transfer(tx.caller, target, tx.value);
+                    if (xfer_err != null) {
+                        return main.FrameResult.new(
+                            main.ExecutionResult.new(.Fail, exec_gas),
+                            0,
+                            0,
+                        );
+                    }
+                }
+
                 const frame_data = main.FrameData.new(
                     tx.caller,
                     target,
@@ -196,6 +212,8 @@ pub const MainnetHandler = struct {
                     .call,
                 );
                 var frame = try evm.createFrame(frame_data);
+                // Set the actual target bytecode on the interpreter (Frame.init uses empty bytecode).
+                frame.interpreter.bytecode.setBytecode(callee_code);
                 return evm.executeFrame(&frame);
             },
         }

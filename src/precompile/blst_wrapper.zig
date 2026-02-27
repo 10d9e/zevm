@@ -48,13 +48,19 @@ const c = if (build_options.enable_blst) blk: {
     pub fn blst_p2_to_affine(_: *blst_p2_affine, _: *const blst_p2) void {}
     pub fn blst_p1_add_or_double_affine(_: *blst_p1, _: *const blst_p1, _: *const blst_p1_affine) void {}
     pub fn blst_p2_add_or_double_affine(_: *blst_p2, _: *const blst_p2, _: *const blst_p2_affine) void {}
-    pub fn blst_p1s_mult_pippenger(_: *blst_p1, _: [*]const blst_p1_affine, _: i32, _: [*]const blst_scalar, _: i32) void {}
-    pub fn blst_p2s_mult_pippenger(_: *blst_p2, _: [*]const blst_p2_affine, _: i32, _: [*]const blst_scalar, _: i32) void {}
+    pub fn blst_p1s_mult_pippenger(_: *blst_p1, _: [*]const *const blst_p1_affine, _: i32, _: [*]const *const u8, _: i32, _: ?*anyopaque) void {}
+    pub fn blst_p2s_mult_pippenger(_: *blst_p2, _: [*]const *const blst_p2_affine, _: i32, _: [*]const *const u8, _: i32, _: ?*anyopaque) void {}
+    pub fn blst_p1s_mult_pippenger_scratch_sizeof(_: usize) usize { return 0; }
+    pub fn blst_p2s_mult_pippenger_scratch_sizeof(_: usize) usize { return 0; }
+    pub fn blst_p1_cneg(_: *blst_p1, _: bool) void {}
+    pub fn blst_p2_cneg(_: *blst_p2, _: bool) void {}
+    pub fn blst_p1_add(_: *blst_p1, _: *const blst_p1, _: *const blst_p1) void {}
+    pub fn blst_p2_add(_: *blst_p2, _: *const blst_p2, _: *const blst_p2) void {}
     pub fn blst_miller_loop(_: *blst_fp12, _: *const blst_p2_affine, _: *const blst_p1_affine) void {}
     pub fn blst_fp12_mul(_: *blst_fp12, _: *const blst_fp12, _: *const blst_fp12) void {}
     pub fn blst_final_exp(_: *blst_fp12, _: *const blst_fp12) void {}
-    pub fn blst_fp12_is_one(_: *const blst_fp12) i32 {
-        return 0;
+    pub fn blst_fp12_is_one(_: *const blst_fp12) bool {
+        return false;
     }
     pub fn blst_map_to_g1(_: *blst_p1, _: *const blst_fp, _: ?*const anyopaque) void {}
     pub fn blst_map_to_g2(_: *blst_p2, _: *const blst_fp2, _: ?*const anyopaque) void {}

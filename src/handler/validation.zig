@@ -126,14 +126,16 @@ pub const Validation = struct {
             }
         }
 
-        // Calculate maximum cost: gas_limit * gas_price + value
+        // Calculate maximum gas fee: gas_limit * gas_price
+        // Value transfer happens separately during frame execution.
         // Use u256 arithmetic to avoid overflow
         const max_gas_fee: primitives.U256 = @as(primitives.U256, tx.gas_limit) * @as(primitives.U256, tx.gas_price);
+
+        // Validate balance covers gas fee + value (to ensure sender can afford the tx),
+        // but only deduct the gas fee here; value transfer is applied in executeFrame.
         const max_cost = std.math.add(primitives.U256, max_gas_fee, tx.value) catch {
             return ValidationError.BalanceOverflow;
         };
-
-        // Validate balance covers cost
         if (account_info.balance < max_cost) {
             return ValidationError.InsufficientBalance;
         }
@@ -152,8 +154,8 @@ pub const Validation = struct {
         const old_balance = account_info.balance;
         js.callerAccountingJournalEntry(tx.caller, old_balance, true);
 
-        // Deduct maximum fee from caller balance
-        account_info.balance = old_balance - max_cost;
+        // Deduct only the gas fee from caller balance (not the value — handled in executeFrame)
+        account_info.balance = old_balance - max_gas_fee;
 
         // Bump nonce
         account_info.nonce += 1;
