@@ -32,12 +32,12 @@ pub const BlockEnv = struct {
 
     pub fn default() BlockEnv {
         return .{
-            .number = primitives.U256.ZERO,
+            .number = @as(primitives.U256, 0),
             .beneficiary = [_]u8{0} ** 20,
-            .timestamp = primitives.U256.ONE,
+            .timestamp = @as(primitives.U256, 1),
             .gas_limit = std.math.maxInt(u64),
             .basefee = 0,
-            .difficulty = primitives.U256.ZERO,
+            .difficulty = @as(primitives.U256, 0),
             .prevrandao = null,
             .blob_excess_gas_and_price = BlobExcessGasAndPrice.new(0, primitives.BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE),
         };
@@ -241,12 +241,12 @@ pub const BlockEnvBuilder = struct {
 
     pub fn build(self: BlockEnvBuilder) BlockEnv {
         return .{
-            .number = self.number orelse primitives.U256.ZERO,
+            .number = self.number orelse @as(primitives.U256, 0),
             .beneficiary = self.beneficiary orelse primitives.Address{0} ** 20,
-            .timestamp = self.timestamp orelse primitives.U256.ONE,
+            .timestamp = self.timestamp orelse @as(primitives.U256, 1),
             .gas_limit = self.gas_limit orelse std.math.maxInt(u64),
             .basefee = self.basefee orelse 0,
-            .difficulty = self.difficulty orelse primitives.U256.ZERO,
+            .difficulty = self.difficulty orelse @as(primitives.U256, 0),
             .prevrandao = self.prevrandao,
             .blob_excess_gas_and_price = self.blob_excess_gas_and_price orelse BlobExcessGasAndPrice.new(0, primitives.BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE),
         };

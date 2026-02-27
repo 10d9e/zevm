@@ -26,6 +26,7 @@ pub const InstructionResult = @import("instruction_result.zig").InstructionResul
 pub const InterpreterAction = @import("interpreter_action.zig").InterpreterAction;
 pub const CallScheme = @import("interpreter_action.zig").CallScheme;
 pub const InstructionContext = @import("instruction_context.zig").InstructionContext;
+pub const Host = @import("host.zig").Host;
 pub const opcodes = @import("opcodes/main.zig");
 pub const instruction_table = @import("instruction_table.zig");
 pub const gas_costs = @import("gas_costs.zig");
@@ -38,6 +39,7 @@ test {
     _ = @import("stack.zig");
     _ = @import("opcodes/arithmetic.zig");
     _ = @import("opcodes/arithmetic_tests.zig");
+    _ = @import("execute_tests.zig");
 }
 
 /// Main interpreter module for EVM bytecode execution
@@ -70,7 +72,7 @@ pub const testing = struct {
     }
 
     pub fn testInterpreter() !void {
-        const inputs = InputsImpl.new([_]u8{0} ** 20, [_]u8{0} ** 20, primitives.U256.ZERO, &[_]u8{}, 1000000, CallScheme.call, false, 0);
+        const inputs = InputsImpl.new([_]u8{0} ** 20, [_]u8{0} ** 20, @as(primitives.U256, 0), &[_]u8{}, 1000000, CallScheme.call, false, 0);
 
         var interpreter = Interpreter.new(Memory.new(), ExtBytecode.new(bytecode.Bytecode.new()), inputs, false, primitives.SpecId.prague, 1000000);
 

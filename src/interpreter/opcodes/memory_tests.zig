@@ -13,7 +13,6 @@ const opMsize = memory_ops.opMsize;
 const opMcopy = memory_ops.opMcopy;
 
 const expectEqual = std.testing.expectEqual;
-const expect = std.testing.expect;
 const U = primitives.U256;
 
 // --- MLOAD tests ---
@@ -28,18 +27,18 @@ test "MLOAD: load from memory offset 0" {
     try memory.buffer.resize(std.heap.c_allocator, 64);
     @memset(memory.buffer.items[0..32], 0x42);
 
-    stack.pushUnsafe(U.ZERO); // Offset 0
+    stack.pushUnsafe(@as(U, 0)); // Offset 0
     const result = opMload(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
 
     // Should load 32 bytes of 0x42
     const value = stack.popUnsafe();
-    var expected_native: u256 = 0;
+    var expected: U = 0;
     var i: u8 = 0;
     while (i < 32) : (i += 1) {
-        expected_native = (expected_native << 8) | 0x42;
+        expected = (expected << 8) | 0x42;
     }
-    try expect(value.eql(U.fromNative(expected_native)));
+    try expectEqual(expected, value);
 }
 
 test "MLOAD: expand memory" {
@@ -48,7 +47,7 @@ test "MLOAD: expand memory" {
     var memory = Memory.new();
     defer memory.deinit();
 
-    stack.pushUnsafe(U.from(32)); // Load from offset 32
+    stack.pushUnsafe(@as(U, 32)); // Load from offset 32
     const result = opMload(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 64), memory.size()); // Should expand to 64 bytes
@@ -70,7 +69,7 @@ test "MLOAD: out of gas" {
     var memory = Memory.new();
     defer memory.deinit();
 
-    stack.pushUnsafe(U.ZERO);
+    stack.pushUnsafe(@as(U, 0));
     const result = opMload(&stack, &gas, &memory);
     try expectEqual(InstructionResult.out_of_gas, result);
 }
@@ -83,8 +82,8 @@ test "MSTORE: store 32 bytes" {
     var memory = Memory.new();
     defer memory.deinit();
 
-    stack.pushUnsafe(U.from(0x123456789ABCDEF)); // Value
-    stack.pushUnsafe(U.ZERO); // Offset
+    stack.pushUnsafe(@as(U, 0x123456789ABCDEF)); // Value
+    stack.pushUnsafe(@as(U, 0)); // Offset
     const result = opMstore(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 32), memory.size());
@@ -101,8 +100,8 @@ test "MSTORE: expand memory" {
     var memory = Memory.new();
     defer memory.deinit();
 
-    stack.pushUnsafe(U.from(42));
-    stack.pushUnsafe(U.from(64)); // Offset 64
+    stack.pushUnsafe(@as(U, 42));
+    stack.pushUnsafe(@as(U, 64)); // Offset 64
     const result = opMstore(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 96), memory.size()); // 64 + 32
@@ -115,13 +114,13 @@ test "MSTORE: overwrite existing data" {
     defer memory.deinit();
 
     // First store
-    stack.pushUnsafe(U.from(0xFF));
-    stack.pushUnsafe(U.ZERO);
+    stack.pushUnsafe(@as(U, 0xFF));
+    stack.pushUnsafe(@as(U, 0));
     _ = opMstore(&stack, &gas, &memory);
 
     // Second store (overwrite)
-    stack.pushUnsafe(U.from(0xAA));
-    stack.pushUnsafe(U.ZERO);
+    stack.pushUnsafe(@as(U, 0xAA));
+    stack.pushUnsafe(@as(U, 0));
     const result = opMstore(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
 
@@ -135,7 +134,7 @@ test "MSTORE: stack underflow" {
     var memory = Memory.new();
     defer memory.deinit();
 
-    stack.pushUnsafe(U.ZERO); // Only 1 value, need 2
+    stack.pushUnsafe(@as(U, 0)); // Only 1 value, need 2
     const result = opMstore(&stack, &gas, &memory);
     try expectEqual(InstructionResult.stack_underflow, result);
 }
@@ -148,8 +147,8 @@ test "MSTORE8: store single byte" {
     var memory = Memory.new();
     defer memory.deinit();
 
-    stack.pushUnsafe(U.from(0x12345)); // Value (only lowest byte stored)
-    stack.pushUnsafe(U.from(10)); // Offset
+    stack.pushUnsafe(@as(U, 0x12345)); // Value (only lowest byte stored)
+    stack.pushUnsafe(@as(U, 10)); // Offset
     const result = opMstore8(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(u8, 0x45), memory.buffer.items[10]);
@@ -161,8 +160,8 @@ test "MSTORE8: only lowest byte" {
     var memory = Memory.new();
     defer memory.deinit();
 
-    stack.pushUnsafe(U.fromNative(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF42));
-    stack.pushUnsafe(U.ZERO);
+    stack.pushUnsafe(@as(U, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF42));
+    stack.pushUnsafe(@as(U, 0));
     const result = opMstore8(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(u8, 0x42), memory.buffer.items[0]);
@@ -174,8 +173,8 @@ test "MSTORE8: expand memory" {
     var memory = Memory.new();
     defer memory.deinit();
 
-    stack.pushUnsafe(U.from(0xFF));
-    stack.pushUnsafe(U.from(100));
+    stack.pushUnsafe(@as(U, 0xFF));
+    stack.pushUnsafe(@as(U, 100));
     const result = opMstore8(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 101), memory.size());
@@ -191,7 +190,7 @@ test "MSIZE: empty memory" {
 
     const result = opMsize(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
-    try expect(stack.popUnsafe().eql(U.ZERO));
+    try expectEqual(@as(U, 0), stack.popUnsafe());
 }
 
 test "MSIZE: after expansion" {
@@ -205,7 +204,7 @@ test "MSIZE: after expansion" {
 
     const result = opMsize(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
-    try expect(stack.popUnsafe().eql(U.from(128)));
+    try expectEqual(@as(U, 128), stack.popUnsafe());
 }
 
 test "MSIZE: stack overflow" {
@@ -217,7 +216,7 @@ test "MSIZE: stack overflow" {
     // Fill stack
     var i: usize = 0;
     while (i < 1024) : (i += 1) {
-        stack.pushUnsafe(U.from(i));
+        stack.pushUnsafe(@as(U, i));
     }
 
     const result = opMsize(&stack, &gas, &memory);
@@ -239,9 +238,9 @@ test "MCOPY: basic copy" {
         memory.buffer.items[i] = @as(u8, @intCast(i));
     }
 
-    stack.pushUnsafe(U.from(16)); // Length
-    stack.pushUnsafe(U.ZERO); // Source offset
-    stack.pushUnsafe(U.from(32)); // Dest offset
+    stack.pushUnsafe(@as(U, 16)); // Length
+    stack.pushUnsafe(@as(U, 0)); // Source offset
+    stack.pushUnsafe(@as(U, 32)); // Dest offset
     const result = opMcopy(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
 
@@ -266,9 +265,9 @@ test "MCOPY: overlapping regions" {
     }
 
     // Copy overlapping: src=0, dest=16, len=16
-    stack.pushUnsafe(U.from(16)); // Length
-    stack.pushUnsafe(U.ZERO); // Source
-    stack.pushUnsafe(U.from(16)); // Dest
+    stack.pushUnsafe(@as(U, 16)); // Length
+    stack.pushUnsafe(@as(U, 0)); // Source
+    stack.pushUnsafe(@as(U, 16)); // Dest
     const result = opMcopy(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
 
@@ -285,9 +284,9 @@ test "MCOPY: zero length" {
     var memory = Memory.new();
     defer memory.deinit();
 
-    stack.pushUnsafe(U.ZERO); // Length = 0
-    stack.pushUnsafe(U.ZERO); // Source
-    stack.pushUnsafe(U.ZERO); // Dest
+    stack.pushUnsafe(@as(U, 0)); // Length = 0
+    stack.pushUnsafe(@as(U, 0)); // Source
+    stack.pushUnsafe(@as(U, 0)); // Dest
     const result = opMcopy(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
 }
@@ -298,9 +297,9 @@ test "MCOPY: expand memory" {
     var memory = Memory.new();
     defer memory.deinit();
 
-    stack.pushUnsafe(U.from(32)); // Length
-    stack.pushUnsafe(U.ZERO); // Source
-    stack.pushUnsafe(U.from(64)); // Dest (beyond current size)
+    stack.pushUnsafe(@as(U, 32)); // Length
+    stack.pushUnsafe(@as(U, 0)); // Source
+    stack.pushUnsafe(@as(U, 64)); // Dest (beyond current size)
     const result = opMcopy(&stack, &gas, &memory);
     try expectEqual(InstructionResult.continue_, result);
     try expectEqual(@as(usize, 96), memory.size()); // 64 + 32
@@ -312,8 +311,8 @@ test "MCOPY: stack underflow" {
     var memory = Memory.new();
     defer memory.deinit();
 
-    stack.pushUnsafe(U.ZERO);
-    stack.pushUnsafe(U.ZERO); // Only 2 values, need 3
+    stack.pushUnsafe(@as(U, 0));
+    stack.pushUnsafe(@as(U, 0)); // Only 2 values, need 3
     const result = opMcopy(&stack, &gas, &memory);
     try expectEqual(InstructionResult.stack_underflow, result);
 }

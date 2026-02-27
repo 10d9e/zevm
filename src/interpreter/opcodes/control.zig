@@ -21,22 +21,20 @@ pub inline fn opStop(stack: *Stack, gas: *Gas) InstructionResult {
 /// JUMP opcode (0x56): Unconditional jump
 /// Stack: [dest] -> []   Gas: 8 (MID)
 /// Jumps to destination if it's a valid JUMPDEST
-pub inline fn opJump(stack: *Stack, gas: *Gas, bytecode: bytecode_mod.Bytecode, pc: *usize) InstructionResult {
+pub inline fn opJump(stack: *Stack, gas: *Gas, code: []const u8, jump_table: ?*const bytecode_mod.JumpTable, pc: *usize) InstructionResult {
     if (!stack.hasItems(1)) return .stack_underflow;
     if (!gas.spend(GAS_MID)) return .out_of_gas;
 
     const dest = stack.popUnsafe();
+    const dest_u64 = std.math.cast(u64, dest) orelse return .invalid_jump;
+    const dest_usize: usize = @intCast(dest_u64);
 
-    // Validate destination is within bounds
-    if (dest >= bytecode.len()) {
-        return .invalid_jump;
-    }
+    if (dest_usize >= code.len) return .invalid_jump;
 
-    const dest_usize: usize = @intCast(dest);
-
-    // Validate destination is a JUMPDEST
-    if (!bytecode.isValidJump(dest_usize)) {
-        return .invalid_jump;
+    if (jump_table) |jt| {
+        if (!jt.isValid(dest_usize)) return .invalid_jump;
+    } else {
+        if (code[dest_usize] != bytecode_mod.JUMPDEST) return .invalid_jump;
     }
 
     pc.* = dest_usize;
@@ -46,7 +44,7 @@ pub inline fn opJump(stack: *Stack, gas: *Gas, bytecode: bytecode_mod.Bytecode, 
 /// JUMPI opcode (0x57): Conditional jump
 /// Stack: [dest, cond] -> []   Gas: 10 (HIGH)
 /// Jumps to destination if condition is non-zero and dest is valid JUMPDEST
-pub inline fn opJumpi(stack: *Stack, gas: *Gas, bytecode: bytecode_mod.Bytecode, pc: *usize) InstructionResult {
+pub inline fn opJumpi(stack: *Stack, gas: *Gas, code: []const u8, jump_table: ?*const bytecode_mod.JumpTable, pc: *usize) InstructionResult {
     if (!stack.hasItems(2)) return .stack_underflow;
     if (!gas.spend(GAS_HIGH)) return .out_of_gas;
 
@@ -54,21 +52,19 @@ pub inline fn opJumpi(stack: *Stack, gas: *Gas, bytecode: bytecode_mod.Bytecode,
     const cond = stack.peekUnsafe(1);
     stack.shrinkUnsafe(2);
 
-    // Only jump if condition is non-zero
     if (cond == 0) {
         return .continue_;
     }
 
-    // Validate destination is within bounds
-    if (dest >= bytecode.len()) {
-        return .invalid_jump;
-    }
+    const dest_u64 = std.math.cast(u64, dest) orelse return .invalid_jump;
+    const dest_usize: usize = @intCast(dest_u64);
 
-    const dest_usize: usize = @intCast(dest);
+    if (dest_usize >= code.len) return .invalid_jump;
 
-    // Validate destination is a JUMPDEST
-    if (!bytecode.isValidJump(dest_usize)) {
-        return .invalid_jump;
+    if (jump_table) |jt| {
+        if (!jt.isValid(dest_usize)) return .invalid_jump;
+    } else {
+        if (code[dest_usize] != bytecode_mod.JUMPDEST) return .invalid_jump;
     }
 
     pc.* = dest_usize;
@@ -88,7 +84,7 @@ pub inline fn opJumpdest(stack: *Stack, gas: *Gas) InstructionResult {
 pub inline fn opPc(stack: *Stack, gas: *Gas, pc: usize) InstructionResult {
     if (!stack.hasSpace(1)) return .stack_overflow;
     if (!gas.spend(GAS_BASE)) return .out_of_gas;
-    stack.pushUnsafe(pc);
+    stack.pushUnsafe(@as(primitives.U256, @intCast(pc)));
     return .continue_;
 }
 
@@ -97,7 +93,7 @@ pub inline fn opPc(stack: *Stack, gas: *Gas, pc: usize) InstructionResult {
 pub inline fn opGas(stack: *Stack, gas: *Gas) InstructionResult {
     if (!stack.hasSpace(1)) return .stack_overflow;
     if (!gas.spend(GAS_BASE)) return .out_of_gas;
-    stack.pushUnsafe(primitives.U256.from(gas.remaining));
+    stack.pushUnsafe(@as(primitives.U256, gas.remaining));
     return .continue_;
 }
 

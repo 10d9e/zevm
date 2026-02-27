@@ -22,7 +22,7 @@ pub const AccountInfo = struct {
 
     pub fn default() Self {
         return Self{
-            .balance = primitives.U256.ZERO,
+            .balance = @as(primitives.U256, 0),
             .nonce = 0,
             .code_hash = primitives.KECCAK_EMPTY,
             .code = bytecode.Bytecode.new(),
@@ -138,7 +138,7 @@ pub const AccountInfo = struct {
     /// - nonce is zero
     pub fn isEmpty(self: Self) bool {
         const code_empty = self.isEmptyCodeHash() or self.code_hash[0] == 0;
-        return code_empty and self.balance.eql(primitives.U256.ZERO) and self.nonce == 0;
+        return code_empty and self.balance == 0 and self.nonce == 0;
     }
 
     /// Returns true if the account is not empty.
@@ -185,7 +185,7 @@ pub const AccountInfo = struct {
     pub fn fromBytecode(bytecode_val: bytecode.Bytecode) Self {
         const hash = bytecode_val.hashSlow();
         return Self{
-            .balance = primitives.U256.ZERO,
+            .balance = @as(primitives.U256, 0),
             .nonce = 1,
             .code = bytecode_val,
             .code_hash = hash,
@@ -637,13 +637,13 @@ pub const testing = struct {
     }
 
     pub fn testEvmStorageSlot() !void {
-        const slot = EvmStorageSlot.new(primitives.U256.from(100), 0);
-        try std.testing.expect(slot.originalValue().eql(primitives.U256.from(100)));
-        try std.testing.expect(slot.presentValue().eql(primitives.U256.from(100)));
+        const slot = EvmStorageSlot.new(@as(primitives.U256, 100), 0);
+        try std.testing.expectEqual(@as(primitives.U256, 100), slot.originalValue());
+        try std.testing.expectEqual(@as(primitives.U256, 100), slot.presentValue());
         try std.testing.expect(!slot.isChanged());
 
         var slot_mut = slot;
-        slot_mut.present_value = primitives.U256.from(200);
+        slot_mut.present_value = @as(primitives.U256, 200);
         try std.testing.expect(slot_mut.isChanged());
     }
 

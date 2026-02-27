@@ -50,14 +50,13 @@ pub fn main() !void {
 
 fn testPrimitives() !void {
     // Test U256 operations
-    const U256 = zevm.primitives.U256;
-    const zero = U256.ZERO;
-    const one = U256.ONE;
-    const max = U256.MAX;
+    const zero: zevm.primitives.U256 = 0;
+    const one: zevm.primitives.U256 = 1;
+    const max: zevm.primitives.U256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
 
-    std.debug.assert(zero.eql(U256.ZERO));
-    std.debug.assert(one.eql(U256.ONE));
-    std.debug.assert(max.eql(U256.MAX));
+    std.debug.assert(zero == 0);
+    std.debug.assert(one == 1);
+    std.debug.assert(max == 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff);
 
     // Test address operations
     const zero_addr: zevm.primitives.Address = [_]u8{0} ** 20;
@@ -106,24 +105,23 @@ fn testBytecode() !void {
 
 fn testState() !void {
     // Test account info
-    const U256 = zevm.primitives.U256;
     var account = zevm.state.AccountInfo.new(
-        U256.ZERO,
+        @as(zevm.primitives.U256, 0),
         0,
         zevm.primitives.KECCAK_EMPTY,
         zevm.bytecode.Bytecode.new(),
     );
-    std.debug.assert(account.balance.eql(U256.ZERO));
+    std.debug.assert(account.balance == 0);
     std.debug.assert(account.nonce == 0);
     std.debug.assert(std.mem.eql(u8, &account.code_hash, &zevm.primitives.KECCAK_EMPTY));
 
     // Test account info with values
-    const balance = U256.from(1000);
+    const balance: zevm.primitives.U256 = 1000;
     const nonce: u64 = 5;
     const code_hash = [_]u8{0x01} ** 32;
 
     account = zevm.state.AccountInfo.new(balance, nonce, code_hash, zevm.bytecode.Bytecode.new());
-    std.debug.assert(account.balance.eql(balance));
+    std.debug.assert(account.balance == balance);
     std.debug.assert(account.nonce == nonce);
     std.debug.assert(std.mem.eql(u8, &account.code_hash, &code_hash));
 
@@ -137,7 +135,7 @@ fn testDatabase() !void {
 
     const addr: zevm.primitives.Address = [_]u8{0} ** 20;
     const account = zevm.state.AccountInfo.new(
-        zevm.primitives.U256.ZERO,
+        @as(zevm.primitives.U256, 0),
         0,
         zevm.primitives.KECCAK_EMPTY,
         zevm.bytecode.Bytecode.new(),
@@ -147,7 +145,7 @@ fn testDatabase() !void {
     try db.insertAccount(addr, account);
     const retrieved = try db.basic(addr);
     std.debug.assert(retrieved != null);
-    std.debug.assert(retrieved.?.balance.eql(account.balance));
+    std.debug.assert(retrieved.?.balance == account.balance);
 
     // Test code operations
     const code_hash: zevm.primitives.Hash = [_]u8{0x01} ** 32;
@@ -162,7 +160,7 @@ fn testDatabase() !void {
 fn testContext() !void {
     // Test block environment
     const block = zevm.context.BlockEnv.default();
-    std.debug.assert(block.number.eql(zevm.primitives.U256.ZERO));
+    std.debug.assert(block.number == 0);
     std.debug.assert(block.gas_limit == std.math.maxInt(u64));
 
     // Test transaction environment
@@ -198,11 +196,11 @@ fn testInterpreter() !void {
     var stack = zevm.interpreter.Stack.new();
     std.debug.assert(stack.len() == 0);
 
-    try stack.push(zevm.primitives.U256.from(42));
+    try stack.push(@as(zevm.primitives.U256, 42));
     std.debug.assert(stack.len() == 1);
 
     const value = stack.pop() orelse return;
-    std.debug.assert(value.eql(zevm.primitives.U256.from(42)));
+    std.debug.assert(value == 42);
 
     // Test memory operations
     var memory = zevm.interpreter.Memory.new();
@@ -219,7 +217,7 @@ fn testInterpreter() !void {
     const inputs = zevm.interpreter.InputsImpl.new(
         [_]u8{0} ** 20,
         [_]u8{0} ** 20,
-        zevm.primitives.U256.ZERO,
+        @as(zevm.primitives.U256, 0),
         &[_]u8{},
         100000,
         zevm.interpreter.CallScheme.call,
@@ -287,7 +285,7 @@ fn testHandler() !void {
     const frame_data = zevm.handler.FrameData.new(
         [_]u8{0} ** 20,
         [_]u8{0} ** 20,
-        zevm.primitives.U256.ZERO,
+        @as(zevm.primitives.U256, 0),
         &[_]u8{},
         100000,
         false,
@@ -376,7 +374,7 @@ fn testIntegration() !void {
     const inputs = zevm.interpreter.InputsImpl.new(
         ctx.tx.caller,
         target_addr,
-        zevm.primitives.U256.ZERO,
+        @as(zevm.primitives.U256, 0),
         &[_]u8{},
         ctx.tx.gas_limit,
         zevm.interpreter.CallScheme.call,

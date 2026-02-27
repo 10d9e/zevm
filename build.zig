@@ -346,6 +346,20 @@ pub fn build(b: *std.Build) void {
     const run_interpreter_tests = b.addRunArtifact(interpreter_tests);
     test_step.dependOn(&run_interpreter_tests.step);
 
+    // Execute tests (Interpreter.execute + Host vtable)
+    const execute_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/interpreter/execute_tests.zig" } },
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    execute_tests.root_module.addImport("primitives", primitives_module);
+    execute_tests.root_module.addImport("bytecode", bytecode_module);
+    execute_tests.root_module.addImport("context", context_module);
+    const run_execute_tests = b.addRunArtifact(execute_tests);
+    test_step.dependOn(&run_execute_tests.step);
+
     // Precompile unit tests - these are run via zig test command in CI
     // The command needs to link libc and include all modules
     // See .github/workflows/ci.yml for the full command
@@ -599,22 +613,10 @@ pub fn build(b: *std.Build) void {
     runner_mod.addImport("primitives", primitives_module);
     runner_mod.addImport("bytecode", bytecode_module);
     runner_mod.addImport("interpreter", interpreter_module);
+    runner_mod.addImport("context", context_module);
 
     b.installArtifact(runner_exe);
 
     const runner_step = b.step("spec-test-runner", "Build the spec test runner");
     runner_step.dependOn(&b.addInstallArtifact(runner_exe, .{}).step);
-
-    // --- Shared library: libzevm_uint256 ---
-    const ffi_lib = b.addLibrary(.{
-        .name = "zevm_uint256",
-        .linkage = .dynamic,
-        .root_module = b.createModule(.{
-            .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/ffi.zig" } },
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    ffi_lib.root_module.addImport("primitives", primitives_module);
-    b.installArtifact(ffi_lib);
 }

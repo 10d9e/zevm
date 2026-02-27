@@ -9,6 +9,20 @@ const InstructionResult = @import("instruction_result.zig").InstructionResult;
 const InterpreterAction = @import("interpreter_action.zig").InterpreterAction;
 const CallScheme = @import("interpreter_action.zig").CallScheme;
 const InstructionContext = @import("instruction_context.zig").InstructionContext;
+const Host = @import("host.zig").Host;
+const opcodes = @import("opcodes/main.zig");
+
+const U256 = primitives.U256;
+
+/// Convert a big-endian [32]u8 to U256
+fn u256FromBeBytes(bytes: [32]u8) U256 {
+    return @byteSwap(@as(U256, @bitCast(bytes)));
+}
+
+/// Convert a U256 to big-endian [32]u8
+fn u256ToBeBytes(val: U256) [32]u8 {
+    return @bitCast(@byteSwap(val));
+}
 
 /// Input data for current execution context
 pub const InputsImpl = struct {
@@ -57,7 +71,7 @@ pub const InputsImpl = struct {
         return InputsImpl{
             .caller = primitives.Address.zero(),
             .target = primitives.Address.zero(),
-            .value = primitives.U256.zero(),
+            .value = @as(primitives.U256, 0),
             .data = primitives.Bytes.init(std.heap.page_allocator, 0) catch unreachable,
             .gas_limit = 0,
             .scheme = .call,
@@ -243,7 +257,7 @@ pub const ExtBytecode = struct {
     /// Deinitialize
     pub fn deinit(self: *ExtBytecode) void {
         if (self.eof_sections) |*sections| {
-            sections.deinit();
+            sections.deinit(std.heap.c_allocator);
         }
     }
 
@@ -488,7 +502,469 @@ pub const Interpreter = struct {
     pub fn getExtendMut(self: *Interpreter) *void {
         return &self.extend;
     }
+
+    /// Execute the bytecode using block/tx environment and host for state lookups.
+    pub fn execute(
+        self: *Interpreter,
+        block_env: context.BlockEnv,
+        tx_env: context.TxEnv,
+        host: Host,
+    ) InstructionResult {
+        const code = self.bytecode.bytecode.originalBytes();
+        const bytecode_obj = bytecode.Bytecode.newLegacy(code);
+        const jump_table = bytecode_obj.legacyJumpTable();
+        var pc: usize = 0;
+        const stack = &self.stack;
+        const gas = &self.gas;
+        const memory = &self.memory;
+
+        while (pc < code.len) {
+            const opcode = code[pc];
+
+            const result: InstructionResult = switch (opcode) {
+                // Stop & Arithmetic
+                bytecode.STOP => return .stop,
+                bytecode.ADD => opcodes.opAdd(stack, gas),
+                bytecode.MUL => opcodes.opMul(stack, gas),
+                bytecode.SUB => opcodes.opSub(stack, gas),
+                bytecode.DIV => opcodes.opDiv(stack, gas),
+                bytecode.SDIV => opcodes.opSdiv(stack, gas),
+                bytecode.MOD => opcodes.opMod(stack, gas),
+                bytecode.SMOD => opcodes.opSmod(stack, gas),
+                bytecode.ADDMOD => opcodes.opAddmod(stack, gas),
+                bytecode.MULMOD => opcodes.opMulmod(stack, gas),
+                bytecode.EXP => opcodes.opExp(stack, gas),
+                bytecode.SIGNEXTEND => opcodes.opSignextend(stack, gas),
+
+                // Comparison
+                bytecode.LT => opcodes.opLt(stack, gas),
+                bytecode.GT => opcodes.opGt(stack, gas),
+                bytecode.SLT => opcodes.opSlt(stack, gas),
+                bytecode.SGT => opcodes.opSgt(stack, gas),
+                bytecode.EQ => opcodes.opEq(stack, gas),
+                bytecode.ISZERO => opcodes.opIsZero(stack, gas),
+
+                // Bitwise
+                bytecode.AND => opcodes.opAnd(stack, gas),
+                bytecode.OR => opcodes.opOr(stack, gas),
+                bytecode.XOR => opcodes.opXor(stack, gas),
+                bytecode.NOT => opcodes.opNot(stack, gas),
+                bytecode.BYTE => opcodes.opByte(stack, gas),
+                bytecode.SHL => opcodes.opShl(stack, gas),
+                bytecode.SHR => opcodes.opShr(stack, gas),
+                bytecode.SAR => opcodes.opSar(stack, gas),
+
+                // Keccak
+                bytecode.KECCAK256 => opcodes.opKeccak256(stack, gas, memory),
+
+                // Environmental info
+                bytecode.ADDRESS => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(addressToU256(self.input.target));
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.CALLER => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(addressToU256(self.input.caller));
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.CALLVALUE => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(self.input.value);
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.CALLDATALOAD => blk: {
+                    if (!stack.hasItems(1)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(3)) break :blk InstructionResult.out_of_gas;
+                    const offset_val = stack.peekUnsafe(0);
+                    const calldata = self.input.data;
+                    const offset_u64 = std.math.cast(u64, offset_val) orelse {
+                        stack.setTopUnsafe().* = @as(U256, 0);
+                        break :blk InstructionResult.continue_;
+                    };
+                    const offset: usize = @intCast(@min(offset_u64, calldata.len));
+                    var buf: [32]u8 = [_]u8{0} ** 32;
+                    const available = if (offset < calldata.len) calldata.len - offset else 0;
+                    const to_copy = @min(available, 32);
+                    if (to_copy > 0) {
+                        @memcpy(buf[0..to_copy], calldata[offset .. offset + to_copy]);
+                    }
+                    stack.setTopUnsafe().* = u256FromBeBytes(buf);
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.CALLDATASIZE => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(@as(U256, @intCast(self.input.data.len)));
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.CALLDATACOPY => blk: {
+                    if (!stack.hasItems(3)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(3)) break :blk InstructionResult.out_of_gas;
+                    const dest_offset = stack.peekUnsafe(0);
+                    const src_offset = stack.peekUnsafe(1);
+                    const length = stack.peekUnsafe(2);
+                    stack.shrinkUnsafe(3);
+
+                    const len_u64 = std.math.cast(u64, length) orelse break :blk InstructionResult.memory_limit_oog;
+                    if (len_u64 == 0) break :blk InstructionResult.continue_;
+
+                    const dest_u64 = std.math.cast(u64, dest_offset) orelse break :blk InstructionResult.memory_limit_oog;
+                    const src_u64 = std.math.cast(u64, src_offset) orelse 0;
+                    const dest: usize = @intCast(dest_u64);
+                    const len: usize = @intCast(len_u64);
+                    const new_size = dest + len;
+
+                    if (new_size > memory.size()) {
+                        memory.buffer.resize(std.heap.c_allocator, new_size) catch break :blk InstructionResult.memory_limit_oog;
+                    }
+
+                    const calldata = self.input.data;
+                    const src: usize = @intCast(@min(src_u64, calldata.len));
+                    var i: usize = 0;
+                    while (i < len) : (i += 1) {
+                        const src_pos = src + i;
+                        memory.buffer.items[dest + i] = if (src_pos < calldata.len) calldata[src_pos] else 0;
+                    }
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.CODESIZE => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(@as(U256, @intCast(code.len)));
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.CODECOPY => blk: {
+                    if (!stack.hasItems(3)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(3)) break :blk InstructionResult.out_of_gas;
+                    const dest_offset = stack.peekUnsafe(0);
+                    const src_offset = stack.peekUnsafe(1);
+                    const length = stack.peekUnsafe(2);
+                    stack.shrinkUnsafe(3);
+
+                    const len_u64 = std.math.cast(u64, length) orelse break :blk InstructionResult.memory_limit_oog;
+                    if (len_u64 == 0) break :blk InstructionResult.continue_;
+
+                    const dest_u64 = std.math.cast(u64, dest_offset) orelse break :blk InstructionResult.memory_limit_oog;
+                    const src_u64 = std.math.cast(u64, src_offset) orelse 0;
+                    const dest: usize = @intCast(dest_u64);
+                    const src: usize = @intCast(@min(src_u64, code.len));
+                    const len: usize = @intCast(len_u64);
+                    const new_size = dest + len;
+
+                    if (new_size > memory.size()) {
+                        memory.buffer.resize(std.heap.c_allocator, new_size) catch break :blk InstructionResult.memory_limit_oog;
+                    }
+
+                    var i: usize = 0;
+                    while (i < len) : (i += 1) {
+                        const src_pos = src + i;
+                        memory.buffer.items[dest + i] = if (src_pos < code.len) code[src_pos] else 0;
+                    }
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.GASPRICE => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(@as(U256, tx_env.gas_price));
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.ORIGIN => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(addressToU256(tx_env.caller));
+                    break :blk InstructionResult.continue_;
+                },
+
+                // Block info
+                bytecode.COINBASE => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(addressToU256(block_env.beneficiary));
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.TIMESTAMP => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(block_env.timestamp);
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.NUMBER => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(block_env.number);
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.DIFFICULTY => blk: {
+                    // Post-merge: returns prevrandao
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    const val = if (block_env.prevrandao) |pr| u256FromBeBytes(pr) else @as(U256, 0);
+                    stack.pushUnsafe(val);
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.GASLIMIT => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(@as(U256, block_env.gas_limit));
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.BASEFEE => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(@as(U256, block_env.basefee));
+                    break :blk InstructionResult.continue_;
+                },
+
+                // Memory ops
+                bytecode.MLOAD => opcodes.opMload(stack, gas, memory),
+                bytecode.MSTORE => opcodes.opMstore(stack, gas, memory),
+                bytecode.MSTORE8 => opcodes.opMstore8(stack, gas, memory),
+                bytecode.MSIZE => opcodes.opMsize(stack, gas, memory),
+                bytecode.MCOPY => opcodes.opMcopy(stack, gas, memory),
+
+                // Storage operations
+                bytecode.SLOAD => blk: {
+                    if (!stack.hasItems(1)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(100)) break :blk InstructionResult.out_of_gas;
+                    const key = stack.peekUnsafe(0);
+                    const val = host.sload(self.input.target, key);
+                    stack.setTopUnsafe().* = val;
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.SSTORE => blk: {
+                    if (!stack.hasItems(2)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(100)) break :blk InstructionResult.out_of_gas;
+                    const key = stack.peekUnsafe(0);
+                    const value = stack.peekUnsafe(1);
+                    stack.shrinkUnsafe(2);
+                    host.sstore(self.input.target, key, value);
+                    break :blk InstructionResult.continue_;
+                },
+
+                // Stack operations
+                bytecode.POP => opcodes.opPop(stack, gas),
+                bytecode.PUSH0 => opcodes.opPush0(stack, gas),
+
+                // PUSH1-PUSH32
+                inline bytecode.PUSH1...bytecode.PUSH32 => |push_op| blk: {
+                    const n: u8 = push_op - bytecode.PUSH1 + 1;
+                    break :blk opcodes.opPushN(stack, gas, code, &pc, n);
+                },
+
+                // DUP1-DUP16
+                inline bytecode.DUP1...bytecode.DUP16 => |dup_op| blk: {
+                    const n: u8 = dup_op - bytecode.DUP1 + 1;
+                    break :blk opcodes.opDupN(stack, gas, n);
+                },
+
+                // SWAP1-SWAP16
+                inline bytecode.SWAP1...bytecode.SWAP16 => |swap_op| blk: {
+                    const n: u8 = swap_op - bytecode.SWAP1 + 1;
+                    break :blk opcodes.opSwapN(stack, gas, n);
+                },
+
+                // Control flow
+                bytecode.JUMP => blk: {
+                    if (!stack.hasItems(1)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(8)) break :blk InstructionResult.out_of_gas;
+                    const dest = stack.popUnsafe();
+                    const dest_u64 = std.math.cast(u64, dest) orelse break :blk InstructionResult.invalid_jump;
+                    const dest_usize: usize = @intCast(dest_u64);
+                    if (dest_usize >= code.len) break :blk InstructionResult.invalid_jump;
+                    if (jump_table) |jt| {
+                        if (!jt.isValid(dest_usize)) break :blk InstructionResult.invalid_jump;
+                    } else {
+                        if (code[dest_usize] != bytecode.JUMPDEST) break :blk InstructionResult.invalid_jump;
+                    }
+                    pc = dest_usize;
+                    continue;
+                },
+                bytecode.JUMPI => blk: {
+                    if (!stack.hasItems(2)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(10)) break :blk InstructionResult.out_of_gas;
+                    const dest = stack.peekUnsafe(0);
+                    const cond = stack.peekUnsafe(1);
+                    stack.shrinkUnsafe(2);
+                    if (cond != 0) {
+                        const dest_u64 = std.math.cast(u64, dest) orelse break :blk InstructionResult.invalid_jump;
+                        const dest_usize: usize = @intCast(dest_u64);
+                        if (dest_usize >= code.len) break :blk InstructionResult.invalid_jump;
+                        if (jump_table) |jt| {
+                            if (!jt.isValid(dest_usize)) break :blk InstructionResult.invalid_jump;
+                        } else {
+                            if (code[dest_usize] != bytecode.JUMPDEST) break :blk InstructionResult.invalid_jump;
+                        }
+                        pc = dest_usize;
+                        continue;
+                    }
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.JUMPDEST => opcodes.opJumpdest(stack, gas),
+                bytecode.PC => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(@as(U256, @intCast(pc)));
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.GAS => opcodes.opGas(stack, gas),
+
+                // Return / Revert
+                bytecode.RETURN => return .@"return",
+                bytecode.REVERT => return .revert,
+                bytecode.INVALID => return .invalid_opcode,
+
+                // LOG0-LOG4
+                inline bytecode.LOG0...bytecode.LOG4 => |log_op| blk: {
+                    const topic_count: u8 = log_op - bytecode.LOG0;
+                    const items_needed: u8 = topic_count + 2;
+                    if (!stack.hasItems(items_needed)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(375)) break :blk InstructionResult.out_of_gas;
+                    stack.shrinkUnsafe(items_needed);
+                    break :blk InstructionResult.continue_;
+                },
+
+                // BALANCE, EXTCODESIZE, etc.
+                bytecode.BALANCE => blk: {
+                    if (!stack.hasItems(1)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(100)) break :blk InstructionResult.out_of_gas;
+                    const addr_val = stack.peekUnsafe(0);
+                    const full = u256ToBeBytes(addr_val);
+                    var addr_bytes: [20]u8 = undefined;
+                    @memcpy(&addr_bytes, full[12..32]);
+                    stack.setTopUnsafe().* = host.balance(addr_bytes);
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.SELFBALANCE => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(5)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(host.balance(self.input.target));
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.EXTCODESIZE => blk: {
+                    if (!stack.hasItems(1)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(100)) break :blk InstructionResult.out_of_gas;
+                    const addr_val = stack.peekUnsafe(0);
+                    const full = u256ToBeBytes(addr_val);
+                    var addr_bytes: [20]u8 = undefined;
+                    @memcpy(&addr_bytes, full[12..32]);
+                    stack.setTopUnsafe().* = @as(U256, @intCast(host.codeSize(addr_bytes)));
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.EXTCODEHASH => blk: {
+                    if (!stack.hasItems(1)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(100)) break :blk InstructionResult.out_of_gas;
+                    const addr_val = stack.peekUnsafe(0);
+                    const full = u256ToBeBytes(addr_val);
+                    var addr_bytes: [20]u8 = undefined;
+                    @memcpy(&addr_bytes, full[12..32]);
+                    stack.setTopUnsafe().* = host.codeHash(addr_bytes);
+                    break :blk InstructionResult.continue_;
+                },
+
+                // BLOCKHASH, CHAINID
+                bytecode.BLOCKHASH => blk: {
+                    if (!stack.hasItems(1)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(20)) break :blk InstructionResult.out_of_gas;
+                    const num = stack.peekUnsafe(0);
+                    stack.setTopUnsafe().* = host.blockHash(num);
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.CHAINID => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(@as(U256, tx_env.chain_id orelse 1));
+                    break :blk InstructionResult.continue_;
+                },
+
+                // Transient storage (EIP-1153) - stubs
+                bytecode.TLOAD => blk: {
+                    if (!stack.hasItems(1)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(100)) break :blk InstructionResult.out_of_gas;
+                    stack.setTopUnsafe().* = @as(U256, 0);
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.TSTORE => blk: {
+                    if (!stack.hasItems(2)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(100)) break :blk InstructionResult.out_of_gas;
+                    stack.shrinkUnsafe(2);
+                    break :blk InstructionResult.continue_;
+                },
+
+                // RETURNDATASIZE, RETURNDATACOPY (no sub-calls, so always 0)
+                bytecode.RETURNDATASIZE => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(@as(U256, 0));
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.RETURNDATACOPY => blk: {
+                    if (!stack.hasItems(3)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(3)) break :blk InstructionResult.out_of_gas;
+                    stack.shrinkUnsafe(3);
+                    break :blk InstructionResult.continue_;
+                },
+
+                // BLOBHASH, BLOBBASEFEE
+                bytecode.BLOBHASH => blk: {
+                    if (!stack.hasItems(1)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(3)) break :blk InstructionResult.out_of_gas;
+                    stack.setTopUnsafe().* = @as(U256, 0);
+                    break :blk InstructionResult.continue_;
+                },
+                bytecode.BLOBBASEFEE => blk: {
+                    if (!stack.hasSpace(1)) break :blk InstructionResult.stack_overflow;
+                    if (!gas.spend(2)) break :blk InstructionResult.out_of_gas;
+                    stack.pushUnsafe(@as(U256, 0));
+                    break :blk InstructionResult.continue_;
+                },
+
+                // EXTCODECOPY
+                bytecode.EXTCODECOPY => blk: {
+                    if (!stack.hasItems(4)) break :blk InstructionResult.stack_underflow;
+                    if (!gas.spend(100)) break :blk InstructionResult.out_of_gas;
+                    stack.shrinkUnsafe(4);
+                    break :blk InstructionResult.continue_;
+                },
+
+                // CALL family, CREATE - not supported yet
+                bytecode.CALL,
+                bytecode.CALLCODE,
+                bytecode.DELEGATECALL,
+                bytecode.STATICCALL,
+                bytecode.CREATE,
+                bytecode.CREATE2,
+                => return .invalid_opcode,
+
+                bytecode.SELFDESTRUCT => return .selfdestruct,
+
+                else => return .invalid_opcode,
+            };
+
+            switch (result) {
+                .continue_ => {
+                    pc += 1;
+                },
+                .stop => return .stop,
+                .@"return" => return .@"return",
+                .revert => return .revert,
+                else => return result,
+            }
+        }
+
+        // Fell off the end of bytecode — implicit STOP
+        return .stop;
+    }
 };
+
+fn addressToU256(addr: [20]u8) U256 {
+    var buf: [32]u8 = [_]u8{0} ** 32;
+    @memcpy(buf[12..32], &addr);
+    return u256FromBeBytes(buf);
+}
 
 /// Calculate number of words from bytes
 pub fn numWords(bytes: usize) usize {

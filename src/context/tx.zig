@@ -166,7 +166,7 @@ pub const TxEnv = struct {
             .gas_limit = primitives.TX_GAS_LIMIT_CAP,
             .gas_price = 0,
             .kind = TxKind{ .Call = [_]u8{0} ** 20 },
-            .value = primitives.U256.ZERO,
+            .value = @as(primitives.U256, 0),
             .data = null,
             .nonce = 0,
             .chain_id = 1, // Mainnet chain ID is 1
@@ -368,7 +368,7 @@ pub const TxEnvBuilder = struct {
             .gas_limit = primitives.TX_GAS_LIMIT_CAP,
             .gas_price = 0,
             .kind = TxKind{ .Call = [_]u8{0} ** 20 },
-            .value = primitives.U256.ZERO,
+            .value = @as(primitives.U256, 0),
             .data = null,
             .nonce = 0,
             .chain_id = 1, // Mainnet chain ID is 1

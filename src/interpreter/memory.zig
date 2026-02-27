@@ -147,7 +147,7 @@ pub const Memory = struct {
         }
     }
 
-    /// Load a U256 from memory
+    /// Load a U256 from memory (big-endian)
     pub fn loadU256(self: Memory, offset: usize) primitives.U256 {
         if (offset + 32 > self.buffer.items.len) {
             // Pad with zeros if beyond memory
@@ -156,17 +156,17 @@ pub const Memory = struct {
             if (available > 0) {
                 @memcpy(bytes[0..available], self.buffer.items[offset .. offset + available]);
             }
-            return primitives.U256.fromBytes(bytes);
+            return @byteSwap(@as(primitives.U256, @bitCast(bytes)));
         }
 
         var bytes: [32]u8 = undefined;
         @memcpy(&bytes, self.buffer.items[offset .. offset + 32]);
-        return primitives.U256.fromBytes(bytes);
+        return @byteSwap(@as(primitives.U256, @bitCast(bytes)));
     }
 
-    /// Store a U256 to memory
+    /// Store a U256 to memory (big-endian)
     pub fn storeU256(self: *Memory, offset: usize, value: primitives.U256) !void {
-        const bytes = value.toBytes();
+        const bytes: [32]u8 = @bitCast(@byteSwap(value));
         try self.set(offset, &bytes);
     }
 
@@ -179,17 +179,17 @@ pub const Memory = struct {
             if (available > 0) {
                 @memcpy(bytes[0..available], self.buffer.items[offset .. offset + available]);
             }
-            return primitives.U128.fromBytes(bytes);
+            return @bitCast(bytes);
         }
 
         var bytes: [16]u8 = undefined;
         @memcpy(&bytes, self.buffer.items[offset .. offset + 16]);
-        return primitives.U128.fromBytes(bytes);
+        return @bitCast(bytes);
     }
 
     /// Store a U128 to memory
     pub fn storeU128(self: *Memory, offset: usize, value: primitives.U128) !void {
-        const bytes = value.toBytes();
+        const bytes: [16]u8 = @bitCast(value);
         try self.set(offset, &bytes);
     }
 
@@ -202,17 +202,17 @@ pub const Memory = struct {
             if (available > 0) {
                 @memcpy(bytes[0..available], self.buffer.items[offset .. offset + available]);
             }
-            return primitives.U64.fromBytes(bytes);
+            return @bitCast(bytes);
         }
 
         var bytes: [8]u8 = undefined;
         @memcpy(&bytes, self.buffer.items[offset .. offset + 8]);
-        return primitives.U64.fromBytes(bytes);
+        return @bitCast(bytes);
     }
 
     /// Store a U64 to memory
     pub fn storeU64(self: *Memory, offset: usize, value: primitives.U64) !void {
-        const bytes = value.toBytes();
+        const bytes: [8]u8 = @bitCast(value);
         try self.set(offset, &bytes);
     }
 
@@ -225,17 +225,17 @@ pub const Memory = struct {
             if (available > 0) {
                 @memcpy(bytes[0..available], self.buffer.items[offset .. offset + available]);
             }
-            return primitives.U32.fromBytes(bytes);
+            return @bitCast(bytes);
         }
 
         var bytes: [4]u8 = undefined;
         @memcpy(&bytes, self.buffer.items[offset .. offset + 4]);
-        return primitives.U32.fromBytes(bytes);
+        return @bitCast(bytes);
     }
 
     /// Store a U32 to memory
     pub fn storeU32(self: *Memory, offset: usize, value: primitives.U32) !void {
-        const bytes = value.toBytes();
+        const bytes: [4]u8 = @bitCast(value);
         try self.set(offset, &bytes);
     }
 
@@ -248,17 +248,17 @@ pub const Memory = struct {
             if (available > 0) {
                 @memcpy(bytes[0..available], self.buffer.items[offset .. offset + available]);
             }
-            return primitives.U16.fromBytes(bytes);
+            return @bitCast(bytes);
         }
 
         var bytes: [2]u8 = undefined;
         @memcpy(&bytes, self.buffer.items[offset .. offset + 2]);
-        return primitives.U16.fromBytes(bytes);
+        return @bitCast(bytes);
     }
 
     /// Store a U16 to memory
     pub fn storeU16(self: *Memory, offset: usize, value: primitives.U16) !void {
-        const bytes = value.toBytes();
+        const bytes: [2]u8 = @bitCast(value);
         try self.set(offset, &bytes);
     }
 

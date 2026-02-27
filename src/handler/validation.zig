@@ -21,14 +21,25 @@ pub const Validation = struct {
 
     /// Validate block environment
     pub fn validateBlockEnv(block: *context.BlockEnv) !void {
-        // U256 values are always >= 0, no need to check number/timestamp
+        // Validate block number
+        if (block.number < 0) {
+            return error.InvalidBlockNumber;
+        }
+
+        // Validate timestamp
+        if (block.timestamp < 0) {
+            return error.InvalidTimestamp;
+        }
 
         // Validate gas limit
         if (block.gas_limit == 0) {
             return error.InvalidGasLimit;
         }
 
-        // basefee is u64, always >= 0
+        // Validate base fee (EIP-1559)
+        if (block.basefee < 0) {
+            return error.InvalidBaseFee;
+        }
     }
 
     /// Validate transaction environment
@@ -38,10 +49,27 @@ pub const Validation = struct {
             return error.InvalidGasLimit;
         }
 
-        // gas_price is u128, always >= 0
-        // gas_priority_fee is ?u128, always >= 0 if present
-        // value is U256, always >= 0
-        // nonce is u64, always >= 0
+        // Validate gas price (for EIP-1559 this represents max_gas_fee)
+        if (tx.gas_price < 0) {
+            return error.InvalidGasPrice;
+        }
+
+        // Validate priority fee per gas (EIP-1559)
+        if (tx.gas_priority_fee) |priority_fee| {
+            if (priority_fee < 0) {
+                return error.InvalidMaxPriorityFeePerGas;
+            }
+        }
+
+        // Validate value
+        if (tx.value < 0) {
+            return error.InvalidValue;
+        }
+
+        // Validate nonce
+        if (tx.nonce < 0) {
+            return error.InvalidNonce;
+        }
     }
 
     /// Validate configuration environment
@@ -99,7 +127,7 @@ pub const Validation = struct {
         const total_cost = calculateTotalCost(tx);
 
         // Validate sufficient balance
-        if (caller_account.?.balance.lt(total_cost)) {
+        if (caller_account.?.balance < total_cost) {
             return error.InsufficientBalance;
         }
 
@@ -139,12 +167,14 @@ pub const Validation = struct {
 
     /// Calculate total cost
     fn calculateTotalCost(tx: *context.TxEnv) primitives.U256 {
-        // Add gas cost: gas_cost (u64) * gas_price (u128)
-        const gas_cost = calculateInitialGas(tx);
-        const gas_price = tx.gas_price;
-        const gas_total = primitives.U256.from(gas_cost).mul(primitives.U256.fromU128(gas_price));
+        var cost = tx.value;
 
-        return tx.value.add(gas_total);
+        // Add gas cost
+        const gas_cost = calculateInitialGas(tx);
+        const gas_price = tx.gas_price orelse @as(primitives.U256, 0);
+        cost += gas_cost * gas_price;
+
+        return cost;
     }
 };
 

@@ -269,6 +269,55 @@ Test coverage includes:
 - Inspector tools
 - Integration tests
 
+## Ethereum State Tests
+
+ZEVM includes a runner for the official [Ethereum execution-spec-tests](https://github.com/ethereum/execution-spec-tests) state test fixtures. These tests verify EVM correctness against the Ethereum specification across supported hardforks (Prague, Osaka).
+
+### Quick Start
+
+```bash
+# Download fixtures, generate test data, build and run
+make spec-tests
+```
+
+### Step by Step
+
+```bash
+# 1. Download fixtures and generate the Zig test data file
+make generate-spec-tests
+
+# 2. Build the runner
+zig build spec-test-runner
+
+# 3. Run all state tests
+./zig-out/bin/spec-test-runner
+```
+
+### Filtering
+
+```bash
+# Run only Osaka fork tests
+./zig-out/bin/spec-test-runner --fork=Osaka
+
+# Filter by test name substring
+./zig-out/bin/spec-test-runner --filter=sstore
+
+# Stop on first failure
+./zig-out/bin/spec-test-runner --fail-fast
+
+# Show passing tests
+./zig-out/bin/spec-test-runner --verbose
+
+# Combine flags
+./zig-out/bin/spec-test-runner --fork=Prague --filter=shift --fail-fast
+```
+
+### How It Works
+
+1. **Generator** (`src/spec_test/generator.zig`) parses JSON fixtures from `ethereum/execution-spec-tests` and emits a hardcoded Zig data file (`spec-tests/generated/data.zig`).
+2. **Runner** (`src/spec_test/runner.zig`) imports the generated data, sets up pre-state (accounts, storage, balances), executes bytecode through the interpreter, and validates post-state storage against expectations.
+3. **Types** (`src/spec_test/types.zig`) defines the shared `TestCase`, `PreAccount`, and `StorageEntry` structures.
+
 ## Performance
 
 ZEVM is designed for high performance:

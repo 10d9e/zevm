@@ -161,7 +161,7 @@ pub const EmptyDB = struct {
         _ = self;
         _ = address;
         _ = index;
-        return primitives.U256.ZERO;
+        return @as(primitives.StorageValue, 0);
     }
 
     pub fn blockHash(self: *Self, number: u64) !primitives.Hash {
@@ -186,7 +186,7 @@ pub const EmptyDB = struct {
         _ = self;
         _ = address;
         _ = index;
-        return primitives.U256.ZERO;
+        return @as(primitives.StorageValue, 0);
     }
 
     pub fn blockHashRef(self: Self, number: u64) !primitives.Hash {
@@ -207,7 +207,7 @@ const StorageKeyContext = struct {
     }
     pub fn eql(ctx: @This(), a: struct { primitives.Address, primitives.StorageKey }, b: struct { primitives.Address, primitives.StorageKey }) bool {
         _ = ctx;
-        return std.mem.eql(u8, &a[0], &b[0]) and a[1].eql(b[1]);
+        return std.mem.eql(u8, &a[0], &b[0]) and a[1] == b[1];
     }
 };
 
@@ -249,7 +249,7 @@ pub const InMemoryDB = struct {
     }
 
     pub fn getStorage(self: *Self, address: primitives.Address, index: primitives.StorageKey) !primitives.StorageValue {
-        return self.storage_map.get(.{ address, index }) orelse primitives.U256.ZERO;
+        return self.storage_map.get(.{ address, index }) orelse @as(primitives.StorageValue, 0);
     }
 
     pub fn blockHash(self: *Self, number: u64) !primitives.Hash {
@@ -265,7 +265,7 @@ pub const InMemoryDB = struct {
     }
 
     pub fn storageRef(self: Self, address: primitives.Address, index: primitives.StorageKey) !primitives.StorageValue {
-        return self.storage_map.get(.{ address, index }) orelse primitives.U256.ZERO;
+        return self.storage_map.get(.{ address, index }) orelse @as(primitives.StorageValue, 0);
     }
 
     pub fn blockHashRef(self: Self, number: u64) !primitives.Hash {
@@ -371,8 +371,8 @@ pub const testing = struct {
         const code = try db.codeByHash(code_hash);
         try std.testing.expect(code.isEmpty());
 
-        const storage_value = try db.storage(address, primitives.U256.ZERO);
-        try std.testing.expect(storage_value.eql(primitives.U256.ZERO));
+        const storage_value = try db.storage(address, @as(primitives.U256, 0));
+        try std.testing.expectEqual(@as(primitives.U256, 0), storage_value);
 
         const block_hash = try db.blockHash(1);
         try std.testing.expectEqual([_]u8{0} ** 32, block_hash);
@@ -387,13 +387,13 @@ pub const testing = struct {
         defer db.deinit();
 
         const address: primitives.Address = [_]u8{0x01} ** 20;
-        const account_info = state.AccountInfo.fromBalance(primitives.U256.from(1000));
+        const account_info = state.AccountInfo.fromBalance(@as(primitives.U256, 1000));
 
         try db.insertAccount(address, account_info);
 
         const retrieved_account = try db.basic(address);
         try std.testing.expect(retrieved_account != null);
-        try std.testing.expect(retrieved_account.?.balance.eql(primitives.U256.from(1000)));
+        try std.testing.expectEqual(@as(primitives.U256, 1000), retrieved_account.?.balance);
 
         const code_hash: primitives.Hash = [_]u8{0x02} ** 32;
         const code = bytecode.Bytecode.new();

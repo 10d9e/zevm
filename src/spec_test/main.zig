@@ -122,7 +122,6 @@ fn printDetail(stdout: anytype, detail: runner.FailureDetail) !void {
     }
 }
 
-
 fn printSummary(stdout: anytype, passed: usize, failed: usize, skipped: usize, errors: usize, elapsed_ns: u64) !void {
     const total = passed + failed + skipped + errors;
     try stdout.print("\n=== Spec Test Results ===\n", .{});

@@ -8,7 +8,7 @@ const std = @import("std");
 /// - Type aliases for common EVM concepts (storage keys/values)
 pub const Address = [20]u8;
 pub const Hash = [32]u8;
-pub const U256 = @import("u256.zig").U256;
+pub const U256 = std.math.IntFittingRange(0, 115792089237316195423570985008687907853269984665640564039457584007913129639935);
 pub const U128 = u128;
 pub const U64 = u64;
 pub const U32 = u32;

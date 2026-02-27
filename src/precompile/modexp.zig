@@ -52,21 +52,36 @@ fn rightPadVec(input: []const u8, len: usize) []const u8 {
 /// Extract U256 from bytes (big-endian)
 fn extractU256(bytes: []const u8) primitives.U256 {
     const padded = rightPad(32, bytes);
-    return primitives.U256.fromBytes(padded);
+    // Convert to U256 - simplified for now
+    var result: primitives.U256 = 0;
+    for (padded) |b| {
+        result = result * 256 + b;
+    }
+    return result;
 }
 
 /// Calculate iteration count for modexp
 fn calculateIterationCount(exp_length: u64, exp_highp: primitives.U256, multiplier: u64) u64 {
-    if (exp_length <= 32 and exp_highp.isZero()) {
+    if (exp_length <= 32 and exp_highp == 0) {
         return 0;
     } else if (exp_length <= 32) {
-        // Count bits in exp_highp using clz
-        const total_bits: u64 = 256 - @as(u64, exp_highp.clz());
-        return if (total_bits > 0) total_bits - 1 else 0;
+        // Count bits in exp_highp
+        var bits: u64 = 0;
+        var val = exp_highp;
+        while (val > 0) {
+            bits += 1;
+            val >>= 1;
+        }
+        return if (bits > 0) bits - 1 else 0;
     } else {
-        const total_bits: u64 = 256 - @as(u64, exp_highp.clz());
+        var bits: u64 = 0;
+        var val = exp_highp;
+        while (val > 0) {
+            bits += 1;
+            val >>= 1;
+        }
         const base_iter = multiplier * (exp_length - 32);
-        const highp_iter = if (total_bits > 0) total_bits - 1 else 0;
+        const highp_iter = if (bits > 0) bits - 1 else 0;
         return @max(base_iter + highp_iter, 1);
     }
 }
@@ -147,15 +162,14 @@ fn runInner(
     // Check EIP-7823 limits for Osaka (1024 bytes per parameter)
     const EIP7823_LIMIT: u64 = 1024;
     if (is_osaka) {
-        const limit = primitives.U256.from(EIP7823_LIMIT);
-        if (base_len_u256.gt(limit) or exp_len_u256.gt(limit) or mod_len_u256.gt(limit)) {
+        if (base_len_u256 > EIP7823_LIMIT or exp_len_u256 > EIP7823_LIMIT or mod_len_u256 > EIP7823_LIMIT) {
             return main.PrecompileResult{ .err = main.PrecompileError.ModexpEip7823LimitSize };
         }
     }
 
-    const base_len: usize = base_len_u256.toU64() orelse std.math.maxInt(usize);
-    const exp_len: usize = exp_len_u256.toU64() orelse std.math.maxInt(usize);
-    const mod_len: usize = mod_len_u256.toU64() orelse std.math.maxInt(usize);
+    const base_len = @as(usize, @intCast(@min(base_len_u256, std.math.maxInt(usize))));
+    const exp_len = @as(usize, @intCast(@min(exp_len_u256, std.math.maxInt(usize))));
+    const mod_len = @as(usize, @intCast(@min(mod_len_u256, std.math.maxInt(usize))));
 
     // Extract exponent high part (first 32 bytes or exp_len, whichever is smaller)
     const exp_highp_len = @min(exp_len, 32);

@@ -15,7 +15,7 @@ pub fn main() !void {
 
     // Create a test account
     const test_address: zevm.primitives.Address = [_]u8{0x01} ** 20;
-    const account_info = zevm.state.AccountInfo.fromBalance(zevm.primitives.U256.from(1000));
+    const account_info = zevm.state.AccountInfo.fromBalance(@as(zevm.primitives.U256, 1000));
 
     // Insert account into database
     try db.insertAccount(test_address, account_info);
