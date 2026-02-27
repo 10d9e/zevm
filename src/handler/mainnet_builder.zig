@@ -76,10 +76,13 @@ pub const MainnetHandler = struct {
         // 2. EIP-4844: Validate blob transaction fields (Cancun+)
         try validation.Validation.validateBlobTx(&ctx.tx, &ctx.block, ctx.cfg.spec);
 
-        // 3. Calculate intrinsic gas and validate gas_limit covers it
+        // 3. EIP-7702: Validate set-code transaction fields (Prague+)
+        try validation.Validation.validateEip7702Tx(&ctx.tx, ctx.cfg.spec);
+
+        // 4. Calculate intrinsic gas and validate gas_limit covers it
         initial_gas.* = try validation.Validation.validateInitialTxGas(evm);
 
-        // 4. Load caller, check nonce/code/balance, deduct max fee, bump nonce
+        // 5. Load caller, check nonce/code/balance, deduct max fee, bump nonce
         try validation.Validation.validateAgainstStateAndDeductCaller(evm, initial_gas.initial_gas);
     }
 

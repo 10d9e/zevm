@@ -11,6 +11,8 @@ const CALLDATA_ZERO_BYTE_COST: u64 = 4;
 const CALLDATA_NONZERO_BYTE_COST: u64 = 16;
 const ACCESS_LIST_ADDRESS_COST: u64 = 2400;
 const ACCESS_LIST_STORAGE_KEY_COST: u64 = 1900;
+// EIP-7702: per-authorization intrinsic gas (PER_AUTH_BASE_COST)
+const TX_EIP7702_AUTH_COST: u64 = 12500;
 
 /// Validation utilities
 pub const Validation = struct {
@@ -168,8 +170,9 @@ pub const Validation = struct {
     /// + 32,000 for CREATE transactions
     /// + 4 per zero calldata byte, 16 per non-zero calldata byte
     /// + 2,400 per access-list address, 1,900 per access-list storage slot
+    /// + 12,500 per EIP-7702 authorization list entry (Prague+)
+    /// + GAS_PER_BLOB per EIP-4844 blob hash
     pub fn calculateInitialGas(tx: *const context.TxEnv, spec: primitives.SpecId) u64 {
-        _ = spec; // future: spec-dependent costs (e.g. EIP-2028 reduced calldata costs)
         var gas: u64 = TX_BASE_COST;
 
         // CREATE adds extra base cost
@@ -201,7 +204,30 @@ pub const Validation = struct {
             gas += @as(u64, blob_hashes.items.len) * primitives.GAS_PER_BLOB;
         }
 
+        // EIP-7702: authorization list intrinsic gas (Prague+)
+        if (primitives.isEnabledIn(spec, .prague)) {
+            if (tx.authorization_list) |auth_list| {
+                gas += @as(u64, auth_list.items.len) * TX_EIP7702_AUTH_COST;
+            }
+        }
+
         return gas;
+    }
+
+    /// Validate EIP-7702 set-code transaction fields (Prague+).
+    ///
+    /// - Rejects if Prague is not enabled
+    /// - Rejects if the authorization list is empty
+    pub fn validateEip7702Tx(tx: *const context.TxEnv, spec: primitives.SpecId) !void {
+        if (!primitives.isEnabledIn(spec, .prague)) return;
+
+        // Only applies to transactions that carry an authorization list
+        const auth_list = tx.authorization_list orelse return;
+
+        // EIP-7702: authorization list must be non-empty
+        if (auth_list.items.len == 0) {
+            return ValidationError.EmptyAuthorizationList;
+        }
     }
 
     /// Validate EIP-4844 blob transaction fields (Cancun+).
@@ -211,6 +237,11 @@ pub const Validation = struct {
         if (!primitives.isEnabledIn(spec, .cancun)) return;
 
         const blob_hashes = tx.blob_hashes orelse return;
+
+        // EIP-4844: blob transactions cannot be CREATE
+        if (tx.kind == .Create) {
+            return ValidationError.BlobCreateTransaction;
+        }
 
         // Blob count limit
         if (blob_hashes.items.len > primitives.MAX_BLOB_NUMBER_PER_BLOCK) {
@@ -280,6 +311,9 @@ pub const ValidationError = error{
     TooManyBlobs,
     InvalidBlobVersionedHash,
     BlobGasPriceTooLow,
+    BlobCreateTransaction,
+    // EIP-7702 set-code transaction errors
+    EmptyAuthorizationList,
 };
 
 test {
