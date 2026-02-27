@@ -100,22 +100,27 @@ fn callImpl(
     // Base call cost (warm/cold + value transfer + new account)
     const base_cost = gas_costs.getCallGasCost(spec, is_cold, transfers_value, account_exists);
 
-    // Apply 63/64 rule to determine forwarded gas
+    // Apply 63/64 rule to determine forwarded gas (EIP-150).
     const remaining = ctx.interpreter.gas.remaining;
     if (remaining < base_cost) { ctx.interpreter.halt(.out_of_gas); return; }
 
     const after_base = remaining - base_cost;
-    const max_forwarded = after_base - after_base / 64; // EIP-150: 63/64 rule
+    const max_forwarded = after_base - after_base / 64;
 
-    var forwarded: u64 = if (gas_val > std.math.maxInt(u64)) max_forwarded else @intCast(gas_val);
-    forwarded = @min(forwarded, max_forwarded);
+    const forwarded: u64 = @min(
+        if (gas_val > std.math.maxInt(u64)) max_forwarded else @as(u64, @intCast(gas_val)),
+        max_forwarded,
+    );
 
-    // Value transfer stipend: add 2300 to forwarded gas if transferring value
-    const stipend: u64 = if (transfers_value) 2300 else 0;
-    forwarded +|= stipend;
+    // The stipend (2300 gas) is gifted to the callee on value-bearing CALL.
+    // It is NOT deducted from the caller's gas — the caller only pays `forwarded`.
+    const stipend: u64 = if (transfers_value) gas_costs.CALL_STIPEND else 0;
+    // Gas limit seen by the sub-interpreter = forwarded amount + free stipend.
+    const sub_gas_limit: u64 = forwarded +| stipend;
 
-    // Spend the base cost
+    // Deduct base cost then the forwarded amount from this frame's gas.
     if (!ctx.interpreter.gas.spend(base_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(forwarded)) { ctx.interpreter.halt(.out_of_gas); return; }
 
     // Build call inputs. For DELEGATECALL, caller and value come from parent frame.
     // For CALLCODE, target (storage context) stays as current contract.
@@ -145,16 +150,16 @@ fn callImpl(
         .callee = target_addr,
         .value = call_value,
         .data = call_data,
-        .gas_limit = forwarded,
+        .gas_limit = sub_gas_limit,
         .scheme = scheme,
         .is_static = call_is_static,
     };
 
     const result = h.call(inputs);
 
-    // Return unused gas from sub-call
-    if (!ctx.interpreter.gas.spend(0)) {} // no-op, just for clarity
+    // Return unused gas from sub-call and propagate any refunds it accumulated.
     ctx.interpreter.gas.remaining +|= result.gas_remaining;
+    ctx.interpreter.gas.refunded += result.gas_refunded;
 
     // Copy return data to memory
     const actual_ret_size = @min(result.return_data.len, ret_size_u);
@@ -248,9 +253,10 @@ pub fn opCreate(ctx: *InstructionContext) void {
     const caller = ctx.interpreter.input.target;
     const result = h.create(caller, value, init_code, forwarded, false, 0, false);
 
-    // Gas not used by sub-call is returned to caller
+    // Adjust parent gas: forwarded was already spent; add back what sub-call didn't use.
     ctx.interpreter.gas.remaining = ctx.interpreter.gas.remaining -| forwarded;
     ctx.interpreter.gas.remaining +|= result.gas_remaining;
+    ctx.interpreter.gas.refunded += result.gas_refunded;
     ctx.interpreter.return_data.data = @constCast(result.return_data);
 
     if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
@@ -309,6 +315,7 @@ pub fn opCreate2(ctx: *InstructionContext) void {
 
     ctx.interpreter.gas.remaining = ctx.interpreter.gas.remaining -| forwarded;
     ctx.interpreter.gas.remaining +|= result.gas_remaining;
+    ctx.interpreter.gas.refunded += result.gas_refunded;
     ctx.interpreter.return_data.data = @constCast(result.return_data);
 
     if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }

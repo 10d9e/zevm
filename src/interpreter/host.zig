@@ -17,9 +17,12 @@ pub const CallResult = struct {
     return_data: []const u8,
     gas_used: u64,
     gas_remaining: u64,
+    /// Refund counter accumulated inside the sub-call (SSTORE clears, etc.).
+    /// Must be added to the parent frame's gas.refunded on return.
+    gas_refunded: i64,
 
     pub fn failure(gas_limit: u64) CallResult {
-        return .{ .success = false, .return_data = &[_]u8{}, .gas_used = gas_limit, .gas_remaining = 0 };
+        return .{ .success = false, .return_data = &[_]u8{}, .gas_used = gas_limit, .gas_remaining = 0, .gas_refunded = 0 };
     }
 };
 
@@ -57,9 +60,11 @@ pub const CreateResult = struct {
     address: primitives.Address,
     gas_remaining: u64,
     return_data: []const u8,
+    /// Refund counter accumulated inside the init-code sub-interpreter.
+    gas_refunded: i64,
 
     pub fn failure() CreateResult {
-        return .{ .success = false, .address = [_]u8{0} ** 20, .gas_remaining = 0, .return_data = &[_]u8{} };
+        return .{ .success = false, .address = [_]u8{0} ** 20, .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
     }
 };
 
@@ -249,12 +254,12 @@ pub const Host = struct {
                         if (out.reverted) {
                             self.ctx.journaled_state.checkpointRevert(checkpoint);
                             return .{ .success = false, .return_data = out.bytes,
-                                       .gas_used = inputs.gas_limit, .gas_remaining = 0 };
+                                       .gas_used = inputs.gas_limit, .gas_remaining = 0, .gas_refunded = 0 };
                         }
                         self.ctx.journaled_state.checkpointCommit();
                         return .{ .success = true, .return_data = out.bytes,
                                    .gas_used = out.gas_used,
-                                   .gas_remaining = inputs.gas_limit - out.gas_used };
+                                   .gas_remaining = inputs.gas_limit - out.gas_used, .gas_refunded = 0 };
                     },
                     .err => {
                         self.ctx.journaled_state.checkpointRevert(checkpoint);
@@ -325,12 +330,15 @@ pub const Host = struct {
 
         const gas_remaining = sub_interp.gas.remaining;
         const gas_used = if (inputs.gas_limit > gas_remaining) inputs.gas_limit - gas_remaining else 0;
+        // Propagate sub-call refund counter (SSTORE clears, etc.) to caller frame.
+        const gas_refunded: i64 = if (result.isSuccess()) sub_interp.gas.refunded else 0;
 
         return CallResult{
             .success = result.isSuccess(),
             .return_data = sub_interp.return_data.data,
             .gas_used = gas_used,
             .gas_remaining = gas_remaining,
+            .gas_refunded = gas_refunded,
         };
     }
 
@@ -429,6 +437,7 @@ pub const Host = struct {
                 .address = [_]u8{0} ** 20,
                 .gas_remaining = sub_interp.gas.remaining,
                 .return_data = sub_interp.return_data.data,
+                .gas_refunded = 0,
             };
         }
 
@@ -437,14 +446,14 @@ pub const Host = struct {
         if (deployed.len > MAX_CODE_SIZE) {
             js.checkpointRevert(checkpoint);
             return .{ .success = false, .address = [_]u8{0} ** 20,
-                       .gas_remaining = sub_interp.gas.remaining, .return_data = &[_]u8{} };
+                       .gas_remaining = sub_interp.gas.remaining, .return_data = &[_]u8{}, .gas_refunded = 0 };
         }
         // EIP-3541 (London+): reject code starting with 0xEF
         if (primitives.isEnabledIn(spec_id, .london)) {
             if (deployed.len > 0 and deployed[0] == 0xEF) {
                 js.checkpointRevert(checkpoint);
                 return .{ .success = false, .address = [_]u8{0} ** 20,
-                           .gas_remaining = sub_interp.gas.remaining, .return_data = &[_]u8{} };
+                           .gas_remaining = sub_interp.gas.remaining, .return_data = &[_]u8{}, .gas_refunded = 0 };
             }
         }
 
@@ -472,6 +481,7 @@ pub const Host = struct {
             .address = new_addr,
             .gas_remaining = gas_after_deposit,
             .return_data = sub_interp.return_data.data,
+            .gas_refunded = sub_interp.gas.refunded,
         };
     }
 };

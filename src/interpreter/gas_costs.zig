@@ -15,15 +15,18 @@ pub const G_SSET = 20000; // Storage set (from zero to non-zero)
 pub const G_SRESET = 5000; // Storage reset (non-zero to non-zero or zero)
 
 // Call costs
-pub const G_CALL = 700;
+pub const G_CALL_FRONTIER = 40; // Frontier/Homestead CALL base gas
+pub const G_CALL = 700;         // Tangerine+ (EIP-150) through pre-Berlin CALL base gas
 pub const COLD_ACCOUNT_ACCESS = 2600;
 pub const WARM_ACCOUNT_ACCESS = 100;
 pub const COLD_SLOAD = 2100;
 pub const WARM_SLOAD = 100;
+pub const CALL_STIPEND = 2300; // Gas gifted to callee on value-bearing CALL (not deducted from caller)
 
 // Storage costs - Pre-Berlin
-pub const G_SLOAD_TANGERINE = 200;
-pub const G_SLOAD_ISTANBUL = 800;
+pub const G_SLOAD_FRONTIER = 50;   // Frontier/Homestead SLOAD gas
+pub const G_SLOAD_TANGERINE = 200; // Tangerine (EIP-150) through pre-Istanbul SLOAD gas
+pub const G_SLOAD_ISTANBUL = 800;  // Istanbul (EIP-1884) SLOAD gas
 
 // Storage costs - Berlin and later (EIP-2929)
 pub const G_SLOAD_BERLIN_COLD = 2100;
@@ -94,8 +97,8 @@ pub fn toWordSize(size: usize) usize {
 // Get SLOAD gas cost based on spec and cold/warm access
 pub fn getSloadCost(spec: primitives.SpecId, is_cold: bool) u64 {
     return switch (spec) {
-        .frontier, .homestead, .tangerine, .spurious => G_SLOAD_TANGERINE,
-        .byzantium, .constantinople, .petersburg => G_SLOAD_ISTANBUL,
+        .frontier, .homestead => G_SLOAD_FRONTIER,
+        .tangerine, .spurious, .byzantium, .constantinople, .petersburg => G_SLOAD_TANGERINE,
         .istanbul, .muir_glacier => G_SLOAD_ISTANBUL,
         .berlin, .london, .arrow_glacier, .gray_glacier => {
             return if (is_cold) G_SLOAD_BERLIN_COLD else G_SLOAD_BERLIN_WARM;
@@ -199,17 +202,21 @@ pub fn getCallGasCost(
     transfers_value: bool,
     account_exists: bool,
 ) u64 {
-    var cost: u64 = G_CALL;
+    // Base access cost:
+    //   Berlin+ (EIP-2929): cold/warm account access replaces the flat G_CALL
+    //   Tangerine+ (EIP-150) through pre-Berlin: flat 700
+    //   Frontier/Homestead (pre-Tangerine): flat 40
+    var cost: u64 = if (primitives.isEnabledIn(spec, .berlin))
+        (if (is_cold) COLD_ACCOUNT_ACCESS else WARM_ACCOUNT_ACCESS)
+    else if (primitives.isEnabledIn(spec, .tangerine))
+        G_CALL
+    else
+        G_CALL_FRONTIER;
 
-    // EIP-2929: Cold/warm account access
-    if (primitives.isEnabledIn(spec, .berlin)) {
-        cost += if (is_cold) COLD_ACCOUNT_ACCESS else WARM_ACCOUNT_ACCESS;
-    }
-
-    // Value transfer cost
+    // Value transfer cost (G_CALLVALUE = 9000, unchanged across all forks)
     if (transfers_value) {
         cost += 9000;
-        // Account creation cost
+        // New account creation cost (G_NEWACCOUNT = 25000)
         if (!account_exists) {
             cost += 25000;
         }

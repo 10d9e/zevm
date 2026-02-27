@@ -156,8 +156,8 @@ fn makeFrontierTable() InstructionTable {
     table[bytecode_mod.GASLIMIT] = entry(opcodes.opGaslimit, gas_costs.G_BASE);
     table[bytecode_mod.BALANCE] = entry(opcodes.opBalance, 400);
 
-    // Storage
-    table[bytecode_mod.SLOAD] = entry(opcodes.opSload, gas_costs.G_SLOAD_TANGERINE);
+    // Storage — Frontier gas (50); Tangerine reprices to 200, Istanbul to 800, Berlin to dynamic.
+    table[bytecode_mod.SLOAD] = entry(opcodes.opSload, gas_costs.G_SLOAD_FRONTIER);
     table[bytecode_mod.SSTORE] = entry(opcodes.opSstore, 0);
 
     // Logs

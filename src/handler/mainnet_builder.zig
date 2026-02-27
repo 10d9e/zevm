@@ -130,7 +130,7 @@ pub const MainnetHandler = struct {
                 const status: main.ExecutionStatus = if (cr.success) .Success else .Revert;
                 var exec_result = main.ExecutionResult.new(status, exec_gas - cr.gas_remaining);
                 exec_result.return_data = cr.return_data;
-                return main.FrameResult.new(exec_result, cr.gas_remaining, 0);
+                return main.FrameResult.new(exec_result, cr.gas_remaining, cr.gas_refunded);
             },
             .Call => |target| {
                 const frame_data = main.FrameData.new(
@@ -262,6 +262,11 @@ test {
 // Pull in precompile dispatch tests
 test {
     _ = @import("precompile_dispatch_tests.zig");
+}
+
+// Pull in call gas accounting / integration tests
+test {
+    _ = @import("call_integration_tests.zig");
 }
 
 // Placeholder for testing

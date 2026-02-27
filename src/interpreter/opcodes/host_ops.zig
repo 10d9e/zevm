@@ -268,6 +268,14 @@ pub fn opSstore(ctx: *InstructionContext) void {
     const self_addr = ctx.interpreter.input.target;
     const spec = ctx.interpreter.runtime_flags.spec_id;
 
+    // EIP-2200 (Istanbul+): SSTORE must not execute when gas_remaining <= CALL_STIPEND.
+    // This prevents a callee that received only the 2300-gas stipend from mutating storage.
+    if (primitives.isEnabledIn(spec, .istanbul)) {
+        if (ctx.interpreter.gas.remaining <= gas_costs.CALL_STIPEND) {
+            ctx.interpreter.halt(.out_of_gas); return;
+        }
+    }
+
     const result = h.sstore(self_addr, key, new_value) orelse {
         ctx.interpreter.halt(.invalid_opcode); return;
     };
