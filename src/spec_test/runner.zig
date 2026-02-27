@@ -291,7 +291,7 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
 
     // Check for execution errors
     if (exec_result.isError()) {
-        return .{ .result = .err, .detail = .{ .reason = "execution error", .exec_result = exec_result } };
+        return .{ .result = .err, .detail = .{ .reason = "execution error", .exec_result = exec_result, .opcode = interp.last_opcode } };
     }
 
     // Validate expected storage

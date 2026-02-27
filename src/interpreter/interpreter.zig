@@ -356,6 +356,8 @@ pub const Interpreter = struct {
     runtime_flags: RuntimeFlags,
     /// Extended functionality and customizations
     extend: void,
+    /// Last opcode executed (for error diagnostics)
+    last_opcode: ?u8 = null,
 
     /// Create new interpreter
     pub fn new(
@@ -520,6 +522,7 @@ pub const Interpreter = struct {
 
         while (pc < code.len) {
             const opcode = code[pc];
+            self.last_opcode = opcode;
 
             const result: InstructionResult = switch (opcode) {
                 // Stop & Arithmetic
