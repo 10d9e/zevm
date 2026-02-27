@@ -615,7 +615,7 @@ pub const JournalInner = struct {
     /// This should have been done inside `create_inner`.
     pub fn createAccountCheckpoint(self: *JournalInner, caller: primitives.Address, target_address: primitives.Address, balance: primitives.U256, spec_id: primitives.SpecId) !JournalCheckpoint {
         // Enter subroutine
-        const checkpoint = self.checkpoint();
+        const checkpoint = self.getCheckpoint();
 
         // Newly created account is present, as we just loaded it.
         const target_acc = self.evm_state.getPtr(target_address).?;

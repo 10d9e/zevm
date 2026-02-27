@@ -8,6 +8,7 @@ const ExtBytecode = @import("interpreter.zig").ExtBytecode;
 const Memory = @import("memory.zig").Memory;
 const InstructionResult = @import("instruction_result.zig").InstructionResult;
 const CallScheme = @import("interpreter_action.zig").CallScheme;
+const gas_costs = @import("gas_costs.zig");
 
 /// Result of a sub-call dispatched via Host.call()
 pub const CallResult = struct {
@@ -47,6 +48,18 @@ pub const SelfDestructLoadResult = struct {
     target_exists: bool,
     previously_destroyed: bool,
     is_cold: bool,
+};
+
+/// Result of a CREATE / CREATE2 operation
+pub const CreateResult = struct {
+    success: bool,
+    address: primitives.Address,
+    gas_remaining: u64,
+    return_data: []const u8,
+
+    pub fn failure() CreateResult {
+        return .{ .success = false, .address = [_]u8{0} ** 20, .gas_remaining = 0, .return_data = &[_]u8{} };
+    }
 };
 
 /// The Host bridges opcode handlers to the EVM execution context.
@@ -280,6 +293,135 @@ pub const Host = struct {
             .gas_remaining = gas_remaining,
         };
     }
+
+    /// Execute a CREATE or CREATE2.  Returns the new contract address on success,
+    /// or zero address on failure.  Caller must be pre-loaded in journaled_state.
+    pub fn create(
+        self: *Host,
+        caller: primitives.Address,
+        value: primitives.U256,
+        init_code: []const u8,
+        gas_limit: u64,
+        comptime is_create2: bool,
+        salt: primitives.U256,
+    ) CreateResult {
+        const MAX_CALL_DEPTH = 1024;
+        const MAX_CODE_SIZE: usize = 24576;
+        const MAX_INITCODE_SIZE: usize = 2 * MAX_CODE_SIZE; // EIP-3860
+
+        const js = &self.ctx.journaled_state;
+        const spec_id = js.inner.spec;
+
+        // 1. Depth check
+        if (js.depth() >= MAX_CALL_DEPTH) return CreateResult.failure();
+
+        // 2. EIP-3860 (Shanghai+): init code size limit
+        if (primitives.isEnabledIn(spec_id, .shanghai)) {
+            if (init_code.len > MAX_INITCODE_SIZE) return CreateResult.failure();
+        }
+
+        // 3. Bump caller nonce BEFORE checkpoint so the bump is never reverted by CREATE failure
+        const caller_acc = js.inner.evm_state.getPtr(caller) orelse return CreateResult.failure();
+        const caller_nonce = caller_acc.info.nonce;
+        caller_acc.info.nonce = caller_nonce +| 1;
+        js.nonceBumpJournalEntry(caller);
+
+        // 4. Derive new contract address
+        const new_addr: primitives.Address = if (is_create2) blk: {
+            var init_hash: [32]u8 = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(init_code, &init_hash, .{});
+            break :blk create2Address(caller, salt, init_hash);
+        } else createAddress(caller, caller_nonce);
+
+        // 5. Load target address into state (required before createAccountCheckpoint)
+        _ = js.loadAccount(new_addr) catch return CreateResult.failure();
+
+        // 6. Create account checkpoint: collision check, value transfer, set nonce=1 (EIP-161)
+        const checkpoint = js.createAccountCheckpoint(caller, new_addr, value, spec_id) catch {
+            return CreateResult.failure();
+        };
+
+        // 7. Increment depth for sub-interpreter
+        js.inner.depth += 1;
+
+        // 8. Build and run init-code sub-interpreter
+        const sub_mem = Memory.new();
+        const init_bytecode = bytecode_mod.Bytecode.newRaw(init_code);
+        var sub_interp = Interpreter.new(
+            sub_mem,
+            ExtBytecode.new(init_bytecode),
+            InputsImpl.new(
+                caller,
+                new_addr,
+                value,
+                @constCast(init_code),
+                gas_limit,
+                .call,
+                false, // not static
+                js.inner.depth,
+            ),
+            false,
+            spec_id,
+            gas_limit,
+        );
+        self.run_sub_call(self, &sub_interp);
+
+        // 9. Decrement depth
+        js.inner.depth -= 1;
+
+        // 10. Handle sub-interpreter failure
+        if (!sub_interp.result.isSuccess()) {
+            js.checkpointRevert(checkpoint);
+            return .{
+                .success = false,
+                .address = [_]u8{0} ** 20,
+                .gas_remaining = sub_interp.gas.remaining,
+                .return_data = sub_interp.return_data.data,
+            };
+        }
+
+        // 11. Validate deployed code
+        const deployed = sub_interp.return_data.data;
+        if (deployed.len > MAX_CODE_SIZE) {
+            js.checkpointRevert(checkpoint);
+            return .{ .success = false, .address = [_]u8{0} ** 20,
+                       .gas_remaining = sub_interp.gas.remaining, .return_data = &[_]u8{} };
+        }
+        // EIP-3541 (London+): reject code starting with 0xEF
+        if (primitives.isEnabledIn(spec_id, .london)) {
+            if (deployed.len > 0 and deployed[0] == 0xEF) {
+                js.checkpointRevert(checkpoint);
+                return .{ .success = false, .address = [_]u8{0} ** 20,
+                           .gas_remaining = sub_interp.gas.remaining, .return_data = &[_]u8{} };
+            }
+        }
+
+        // 12. Code deposit gas: 200 per byte of deployed code
+        const deposit_cost = gas_costs.G_CODEDEPOSIT * @as(u64, @intCast(deployed.len));
+        if (sub_interp.gas.remaining < deposit_cost) {
+            js.checkpointRevert(checkpoint);
+            return CreateResult.failure();
+        }
+        const gas_after_deposit = sub_interp.gas.remaining - deposit_cost;
+
+        // 13. Store deployed bytecode
+        if (deployed.len > 0) {
+            var code_hash: [32]u8 = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(deployed, &code_hash, .{});
+            const bc = bytecode_mod.Bytecode.newRaw(deployed);
+            js.setCodeWithHash(new_addr, bc, code_hash);
+        }
+
+        // 14. Commit sub-call state
+        js.checkpointCommit();
+
+        return .{
+            .success = true,
+            .address = new_addr,
+            .gas_remaining = gas_after_deposit,
+            .return_data = sub_interp.return_data.data,
+        };
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -328,4 +470,60 @@ pub fn u256ToHash(val: primitives.U256) primitives.Hash {
         v >>= 8;
     }
     return h;
+}
+
+/// Derive CREATE contract address: keccak256(rlp([sender, nonce]))[12:]
+pub fn createAddress(sender: primitives.Address, nonce: u64) primitives.Address {
+    // Build RLP encoding of [sender, nonce]
+    // RLP(address): 0x94 (= 0x80+20) prefix + 20 bytes
+    // RLP(nonce): 0x80 for zero, single byte for 1-127, length-prefixed for >= 128
+    // List header: 0xC0 + content_len
+    var buf: [30]u8 = undefined; // 1 + 20 + 1..9 = at most 30 bytes of content
+    var pos: usize = 0;
+    buf[pos] = 0x94; pos += 1;
+    @memcpy(buf[pos..pos + 20], &sender); pos += 20;
+    if (nonce == 0) {
+        buf[pos] = 0x80; pos += 1;
+    } else if (nonce < 0x80) {
+        buf[pos] = @intCast(nonce); pos += 1;
+    } else {
+        // Encode nonce as minimal big-endian bytes
+        var tmp: [8]u8 = undefined;
+        var len: usize = 0;
+        var n = nonce;
+        while (n > 0) : (n >>= 8) { len += 1; }
+        var m = nonce;
+        var idx: usize = len;
+        while (idx > 0) : (idx -= 1) { tmp[idx - 1] = @intCast(m & 0xFF); m >>= 8; }
+        buf[pos] = @intCast(0x80 + len); pos += 1;
+        @memcpy(buf[pos..pos + len], tmp[0..len]); pos += len;
+    }
+    // List prefix: 0xC0 + content_len
+    var rlp: [31]u8 = undefined;
+    rlp[0] = @intCast(0xC0 + pos);
+    @memcpy(rlp[1..1 + pos], buf[0..pos]);
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(rlp[0..1 + pos], &hash, .{});
+    var addr: primitives.Address = undefined;
+    @memcpy(&addr, hash[12..32]);
+    return addr;
+}
+
+/// Derive CREATE2 contract address: keccak256(0xff ++ sender ++ salt ++ keccak256(init_code))[12:]
+pub fn create2Address(sender: primitives.Address, salt: primitives.U256, init_code_hash: [32]u8) primitives.Address {
+    var preimage: [85]u8 = undefined; // 1 + 20 + 32 + 32
+    preimage[0] = 0xFF;
+    @memcpy(preimage[1..21], &sender);
+    // Encode salt as 32-byte big-endian
+    var salt_bytes: [32]u8 = undefined;
+    var s = salt;
+    var i: usize = 32;
+    while (i > 0) : (i -= 1) { salt_bytes[i - 1] = @intCast(s & 0xFF); s >>= 8; }
+    @memcpy(preimage[21..53], &salt_bytes);
+    @memcpy(preimage[53..85], &init_code_hash);
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(&preimage, &hash, .{});
+    var addr: primitives.Address = undefined;
+    @memcpy(&addr, hash[12..32]);
+    return addr;
 }

@@ -201,22 +201,120 @@ pub fn opStaticcall(ctx: *InstructionContext) void {
     callImpl(ctx, false, .staticcall);
 }
 
-/// CREATE (0xF0): Create a new contract. Stub — pushes 0 (failure).
+/// CREATE (0xF0): Create a new contract.
 /// Stack: [value, offset, size] -> [addr]
 pub fn opCreate(ctx: *InstructionContext) void {
+    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    if (ctx.interpreter.runtime_flags.is_static) { ctx.interpreter.halt(.invalid_static); return; }
     const stack = &ctx.interpreter.stack;
     if (!stack.hasItems(3)) { ctx.interpreter.halt(.stack_underflow); return; }
+
+    const value  = stack.peekUnsafe(0);
+    const offset = stack.peekUnsafe(1);
+    const size   = stack.peekUnsafe(2);
     stack.shrinkUnsafe(3);
+
+    const spec = ctx.interpreter.runtime_flags.spec_id;
+
+    // Base cost
+    if (!ctx.interpreter.gas.spend(gas_costs.G_CREATE)) { ctx.interpreter.halt(.out_of_gas); return; }
+
+    // Validate and resolve memory region
+    const size_u: usize = if (size > std.math.maxInt(usize)) {
+        ctx.interpreter.halt(.memory_limit_oog); return;
+    } else @intCast(size);
+    const off_u: usize = if (size_u == 0) 0 else if (offset > std.math.maxInt(usize)) {
+        ctx.interpreter.halt(.memory_limit_oog); return;
+    } else @intCast(offset);
+
+    if (size_u > 0) {
+        if (!expandMemory(ctx, off_u + size_u)) { ctx.interpreter.halt(.out_of_gas); return; }
+    }
+
+    // EIP-3860 (Shanghai+): initcode word gas
+    if (primitives.isEnabledIn(spec, .shanghai)) {
+        const word_cost: u64 = 2 * @as(u64, @intCast((size_u + 31) / 32));
+        if (!ctx.interpreter.gas.spend(word_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+    }
+
+    // 63/64 rule: forward at most 63/64 of remaining gas
+    const remaining = ctx.interpreter.gas.remaining;
+    const forwarded = remaining - remaining / 64;
+
+    const init_code: []const u8 = if (size_u > 0)
+        ctx.interpreter.memory.buffer.items[off_u .. off_u + size_u]
+    else &[_]u8{};
+
+    const caller = ctx.interpreter.input.target;
+    const result = h.create(caller, value, init_code, forwarded, false, 0);
+
+    // Gas not used by sub-call is returned to caller
+    ctx.interpreter.gas.remaining = ctx.interpreter.gas.remaining -| forwarded;
+    ctx.interpreter.gas.remaining +|= result.gas_remaining;
+    ctx.interpreter.return_data.data = @constCast(result.return_data);
+
     if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
-    stack.pushUnsafe(0); // 0 = creation failed (stub)
+    stack.pushUnsafe(if (result.success) host_module.addressToU256(result.address) else 0);
 }
 
-/// CREATE2 (0xF5): Create a new contract with deterministic address. Stub — pushes 0.
+/// CREATE2 (0xF5): Create a new contract with deterministic address.
 /// Stack: [value, offset, size, salt] -> [addr]
 pub fn opCreate2(ctx: *InstructionContext) void {
+    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    if (ctx.interpreter.runtime_flags.is_static) { ctx.interpreter.halt(.invalid_static); return; }
     const stack = &ctx.interpreter.stack;
     if (!stack.hasItems(4)) { ctx.interpreter.halt(.stack_underflow); return; }
+
+    const value  = stack.peekUnsafe(0);
+    const offset = stack.peekUnsafe(1);
+    const size   = stack.peekUnsafe(2);
+    const salt   = stack.peekUnsafe(3);
     stack.shrinkUnsafe(4);
+
+    const spec = ctx.interpreter.runtime_flags.spec_id;
+
+    if (!ctx.interpreter.gas.spend(gas_costs.G_CREATE)) { ctx.interpreter.halt(.out_of_gas); return; }
+
+    const size_u: usize = if (size > std.math.maxInt(usize)) {
+        ctx.interpreter.halt(.memory_limit_oog); return;
+    } else @intCast(size);
+    const off_u: usize = if (size_u == 0) 0 else if (offset > std.math.maxInt(usize)) {
+        ctx.interpreter.halt(.memory_limit_oog); return;
+    } else @intCast(offset);
+
+    if (size_u > 0) {
+        if (!expandMemory(ctx, off_u + size_u)) { ctx.interpreter.halt(.out_of_gas); return; }
+    }
+
+    // CREATE2 keccak word cost (charged for the init_code hash)
+    {
+        const word_cost: u64 = gas_costs.G_KECCAK256WORD * @as(u64, @intCast((size_u + 31) / 32));
+        if (!ctx.interpreter.gas.spend(word_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+    }
+    // EIP-3860 (Shanghai+): additional initcode word gas
+    if (primitives.isEnabledIn(spec, .shanghai)) {
+        const word_cost: u64 = 2 * @as(u64, @intCast((size_u + 31) / 32));
+        if (!ctx.interpreter.gas.spend(word_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+    }
+
+    const remaining = ctx.interpreter.gas.remaining;
+    const forwarded = remaining - remaining / 64;
+
+    const init_code: []const u8 = if (size_u > 0)
+        ctx.interpreter.memory.buffer.items[off_u .. off_u + size_u]
+    else &[_]u8{};
+
+    const caller = ctx.interpreter.input.target;
+    const result = h.create(caller, value, init_code, forwarded, true, salt);
+
+    ctx.interpreter.gas.remaining = ctx.interpreter.gas.remaining -| forwarded;
+    ctx.interpreter.gas.remaining +|= result.gas_remaining;
+    ctx.interpreter.return_data.data = @constCast(result.return_data);
+
     if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
-    stack.pushUnsafe(0); // 0 = creation failed (stub)
+    stack.pushUnsafe(if (result.success) host_module.addressToU256(result.address) else 0);
+}
+
+test {
+    _ = @import("create_tests.zig");
 }
