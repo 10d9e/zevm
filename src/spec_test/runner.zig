@@ -5,11 +5,12 @@ const primitives = @import("primitives");
 const bytecode_mod = @import("bytecode");
 const interpreter = @import("interpreter");
 const context = @import("context");
+const database = @import("database");
+const state_mod = @import("state");
 const types = @import("types");
 
 const U256 = primitives.U256;
 const InstructionResult = interpreter.InstructionResult;
-const Host = interpreter.Host;
 
 /// Convert a big-endian [32]u8 to U256
 fn u256FromBeBytes(bytes: [32]u8) U256 {
@@ -95,102 +96,12 @@ pub fn fmtU256Bytes(val: [32]u8, buf: *[68]u8) usize {
     return pos;
 }
 
-// --- TestHost: mock Host implementation for spec tests ---
-
-const StorageMapKey = struct {
-    address: [20]u8,
-    key: U256,
-};
-
-const TestHost = struct {
-    pre_storage: *std.AutoHashMap(StorageMapKey, U256),
-    storage_writes: *std.AutoHashMap(StorageMapKey, U256),
-    pre_accounts: []const types.PreAccount,
-
-    fn host(self: *TestHost) Host {
-        return .{
-            .ptr = @ptrCast(self),
-            .vtable = &vtable,
-        };
-    }
-
-    const vtable = Host.VTable{
-        .sload = @ptrCast(&sloadFn),
-        .sstore = @ptrCast(&sstoreFn),
-        .balance = @ptrCast(&balanceFn),
-        .code = @ptrCast(&codeFn),
-        .codeSize = @ptrCast(&codeSizeFn),
-        .codeHash = @ptrCast(&codeHashFn),
-        .blockHash = @ptrCast(&blockHashFn),
-    };
-
-    fn sloadFn(self: *TestHost, addr: [20]u8, key: U256) U256 {
-        return self.storage_writes.get(.{
-            .address = addr,
-            .key = key,
-        }) orelse self.pre_storage.get(.{
-            .address = addr,
-            .key = key,
-        }) orelse @as(U256, 0);
-    }
-
-    fn sstoreFn(self: *TestHost, addr: [20]u8, key: U256, val: U256) void {
-        self.storage_writes.put(.{
-            .address = addr,
-            .key = key,
-        }, val) catch {};
-    }
-
-    fn balanceFn(self: *TestHost, addr: [20]u8) U256 {
-        for (self.pre_accounts) |acct| {
-            if (std.mem.eql(u8, &acct.address, &addr)) {
-                return u256FromBeBytes(acct.balance);
-            }
-        }
-        return @as(U256, 0);
-    }
-
-    fn codeFn(self: *TestHost, addr: [20]u8) []const u8 {
-        for (self.pre_accounts) |acct| {
-            if (std.mem.eql(u8, &acct.address, &addr)) {
-                return acct.code;
-            }
-        }
-        return &.{};
-    }
-
-    fn codeSizeFn(self: *TestHost, addr: [20]u8) usize {
-        for (self.pre_accounts) |acct| {
-            if (std.mem.eql(u8, &acct.address, &addr)) {
-                return acct.code.len;
-            }
-        }
-        return 0;
-    }
-
-    fn codeHashFn(self: *TestHost, addr: [20]u8) U256 {
-        for (self.pre_accounts) |acct| {
-            if (std.mem.eql(u8, &acct.address, &addr)) {
-                if (acct.code.len == 0) {
-                    return @as(U256, 0);
-                }
-                var hash_buf: [32]u8 = undefined;
-                std.crypto.hash.sha3.Keccak256.hash(acct.code, &hash_buf, .{});
-                return u256FromBeBytes(hash_buf);
-            }
-        }
-        return @as(U256, 0);
-    }
-
-    fn blockHashFn(_: *TestHost, _: U256) U256 {
-        return @as(U256, 0);
-    }
-};
-
 pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome {
     if (!std.mem.eql(u8, tc.fork, "Osaka") and !std.mem.eql(u8, tc.fork, "Prague")) {
         return .{ .result = .skip, .detail = .{ .reason = "unsupported fork" } };
     }
+
+    const spec: primitives.SpecId = if (std.mem.eql(u8, tc.fork, "Prague")) .prague else .osaka;
 
     // Find target account's code in pre_accounts
     var target_code: []const u8 = &.{};
@@ -211,33 +122,35 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         return .{ .result = .fail, .detail = .{ .reason = "no code but storage expected" } };
     }
 
-    // Set up pre-state storage
-    var pre_storage = std.AutoHashMap(StorageMapKey, U256).init(allocator);
-    defer pre_storage.deinit();
+    // Build InMemoryDB from pre_accounts
+    var db = database.InMemoryDB.init(allocator);
     for (tc.pre_accounts) |acct| {
+        var acct_info = state_mod.AccountInfo{
+            .balance = u256FromBeBytes(acct.balance),
+            .nonce = acct.nonce,
+            .code_hash = primitives.KECCAK_EMPTY,
+            .code = bytecode_mod.Bytecode.new(),
+        };
+        if (acct.code.len > 0) {
+            const code_bc = bytecode_mod.Bytecode.newLegacy(acct.code);
+            acct_info.code_hash = code_bc.hashSlow();
+            acct_info.code = code_bc;
+        }
+        db.insertAccount(acct.address, acct_info) catch {
+            return .{ .result = .err, .detail = .{ .reason = "OOM inserting account" } };
+        };
         for (acct.storage) |entry| {
-            pre_storage.put(.{
-                .address = acct.address,
-                .key = u256FromBeBytes(entry.key),
-            }, u256FromBeBytes(entry.value)) catch {
-                return .{ .result = .err, .detail = .{ .reason = "OOM setting up pre-storage" } };
+            db.insertStorage(acct.address, u256FromBeBytes(entry.key), u256FromBeBytes(entry.value)) catch {
+                return .{ .result = .err, .detail = .{ .reason = "OOM inserting storage" } };
             };
         }
     }
 
-    // Storage writes tracked during execution
-    var storage_writes = std.AutoHashMap(StorageMapKey, U256).init(allocator);
-    defer storage_writes.deinit();
+    // Build context (db is moved into Context by value)
+    var ctx = context.Context.new(db, spec);
 
-    // Build TestHost
-    var test_host = TestHost{
-        .pre_storage = &pre_storage,
-        .storage_writes = &storage_writes,
-        .pre_accounts = tc.pre_accounts,
-    };
-
-    // Build block env
-    const block_env = context.BlockEnv{
+    // Set block env
+    ctx.setBlock(context.BlockEnv{
         .number = u256FromBeBytes(tc.block_number),
         .beneficiary = tc.coinbase,
         .timestamp = u256FromBeBytes(tc.block_timestamp),
@@ -246,13 +159,16 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         .difficulty = u256FromBeBytes(tc.block_difficulty),
         .prevrandao = tc.prevrandao,
         .blob_excess_gas_and_price = null,
-    };
+    });
 
-    // Build tx env (only fields the execute loop reads)
+    // Set tx env
     var tx_env = context.TxEnv.default();
     tx_env.gas_price = tc.gas_price;
     tx_env.caller = tc.caller;
-    // chain_id stays default (1)
+    ctx.setTx(tx_env);
+
+    // Get protocol schedule (instruction table + precompiles)
+    const schedule = interpreter.ProtocolSchedule.forSpec(spec);
 
     // Build interpreter inputs
     const inputs = interpreter.InputsImpl{
@@ -273,13 +189,18 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         ext_bytecode,
         inputs,
         false,
-        primitives.SpecId.prague,
+        spec,
         tc.gas_limit,
     );
     defer interp.deinit();
 
-    // Execute
-    const exec_result = interp.execute(block_env, tx_env, test_host.host());
+    // Build host and execute
+    var host = interpreter.Host{
+        .ctx = &ctx,
+        .run_sub_call = interpreter.protocol_schedule.runSubCallDefault,
+        .precompiles = &schedule.precompiles,
+    };
+    const exec_result = interp.runWithHost(&schedule.instructions, &host);
 
     // If we expect an exception, any non-success result is a pass
     if (tc.expect_exception) {
@@ -294,19 +215,27 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         return .{ .result = .err, .detail = .{ .reason = "execution error", .exec_result = exec_result, .opcode = interp.last_opcode } };
     }
 
-    // Validate expected storage
+    // Validate expected storage by reading from the journal's evm_state.
+    // Slots written during execution are in evm_state[addr].storage[key].present_value.
+    // Slots not accessed fall back to the pre-populated DB.
+    const evm_state = &ctx.journaled_state.evm_state;
     for (tc.expected_storage) |expected_acct| {
         for (expected_acct.storage) |entry| {
             const key = u256FromBeBytes(entry.key);
             const expected_val = u256FromBeBytes(entry.value);
 
-            const actual_val = storage_writes.get(.{
-                .address = expected_acct.address,
-                .key = key,
-            }) orelse pre_storage.get(.{
-                .address = expected_acct.address,
-                .key = key,
-            }) orelse @as(U256, 0);
+            var actual_val: U256 = 0;
+            if (evm_state.get(expected_acct.address)) |account| {
+                if (account.storage.get(key)) |slot| {
+                    actual_val = slot.presentValue();
+                } else {
+                    // Slot not touched during execution — read from pre-state DB
+                    actual_val = ctx.journaled_state.database.getStorage(expected_acct.address, key) catch 0;
+                }
+            } else {
+                // Account not loaded during execution — read from pre-state DB
+                actual_val = ctx.journaled_state.database.getStorage(expected_acct.address, key) catch 0;
+            }
 
             if (actual_val != expected_val) {
                 return .{ .result = .fail, .detail = .{

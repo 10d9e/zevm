@@ -627,6 +627,9 @@ pub fn build(b: *std.Build) void {
     runner_mod.addImport("bytecode", bytecode_module);
     runner_mod.addImport("interpreter", interpreter_module);
     runner_mod.addImport("context", context_module);
+    runner_mod.addImport("database", database_module);
+    runner_mod.addImport("state", state_module);
+    runner_mod.addImport("precompile", precompile_module);
 
     b.installArtifact(runner_exe);
 
