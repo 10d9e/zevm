@@ -66,7 +66,8 @@ pub const G_KECCAK256WORD = 6;
 
 // EXP costs
 pub const G_EXP = 10;
-pub const G_EXPBYTE = 50;
+pub const G_EXPBYTE = 50;           // Post-Spurious Dragon (EIP-160)
+pub const G_EXPBYTE_FRONTIER = 10;  // Pre-Spurious Dragon
 
 // SELFDESTRUCT
 pub const G_SELFDESTRUCT = 5000;

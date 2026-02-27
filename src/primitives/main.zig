@@ -73,6 +73,15 @@ pub const CALL_STACK_LIMIT: u64 = 1024;
 /// Blob base fee update fraction for Prague hardfork
 pub const BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE: u64 = 3338477;
 
+/// EIP-4844: gas consumed per blob
+pub const GAS_PER_BLOB: u64 = 131_072;
+
+/// EIP-4844: maximum blobs per block (6 for Cancun/Prague)
+pub const MAX_BLOB_NUMBER_PER_BLOCK: usize = 6;
+
+/// EIP-4844: versioned hash version byte for KZG commitments
+pub const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
+
 /// Transaction gas limit cap (EIP-7825)
 pub const TX_GAS_LIMIT_CAP: u64 = 30000000;
 

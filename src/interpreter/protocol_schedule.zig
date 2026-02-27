@@ -140,9 +140,6 @@ fn makeFrontierTable() InstructionTable {
     table[bytecode_mod.CALLDATACOPY] = entry(opcodes.opCalldatacopy, gas_costs.G_VERYLOW);
     table[bytecode_mod.CODESIZE] = entry(opcodes.opCodesize, gas_costs.G_BASE);
     table[bytecode_mod.CODECOPY] = entry(opcodes.opCodecopy, gas_costs.G_VERYLOW);
-    table[bytecode_mod.RETURNDATASIZE] = entry(opcodes.opReturndatasize, gas_costs.G_BASE);
-    table[bytecode_mod.RETURNDATACOPY] = entry(opcodes.opReturndatacopy, gas_costs.G_VERYLOW);
-
     // Environment: host-requiring opcodes
     table[bytecode_mod.ORIGIN] = entry(opcodes.opOrigin, gas_costs.G_BASE);
     table[bytecode_mod.GASPRICE] = entry(opcodes.opGasprice, gas_costs.G_BASE);
@@ -176,9 +173,9 @@ fn makeFrontierTable() InstructionTable {
     table[bytecode_mod.CALL] = entry(opcodes.opCall, 0);
     table[bytecode_mod.CALLCODE] = entry(opcodes.opCallcode, 0);
 
-    // CREATE / CREATE2 (base static gas; dynamic costs computed at runtime)
+    // CREATE (base static gas; dynamic costs computed at runtime)
+    // CREATE2 added in Constantinople (EIP-1014)
     table[bytecode_mod.CREATE] = entry(opcodes.opCreate, gas_costs.G_CREATE);
-    table[bytecode_mod.CREATE2] = entry(opcodes.opCreate2, gas_costs.G_CREATE);
 
     return table;
 }
@@ -197,14 +194,11 @@ fn applyTangerineChanges(table: *InstructionTable) void {
 }
 
 fn applyByzantiumChanges(table: *InstructionTable) void {
-    // EIP-145: Bitwise shifts
-    table[bytecode_mod.SHL] = entry(opcodes.opShl, gas_costs.G_VERYLOW);
-    table[bytecode_mod.SHR] = entry(opcodes.opShr, gas_costs.G_VERYLOW);
-    table[bytecode_mod.SAR] = entry(opcodes.opSar, gas_costs.G_VERYLOW);
+    // EIP-211: RETURNDATASIZE / RETURNDATACOPY added in Byzantium
+    table[bytecode_mod.RETURNDATASIZE] = entry(opcodes.opReturndatasize, gas_costs.G_BASE);
+    table[bytecode_mod.RETURNDATACOPY] = entry(opcodes.opReturndatacopy, gas_costs.G_VERYLOW);
     // EIP-140: REVERT
     table[bytecode_mod.REVERT] = entry(opcodes.opRevert, 0);
-    // EIP-211: RETURNDATASIZE / RETURNDATACOPY (already in Frontier table but enabled here)
-    // They're already registered; no gas change needed.
     // STATICCALL added
     table[bytecode_mod.STATICCALL] = entry(opcodes.opStaticcall, 0);
 }
@@ -212,8 +206,12 @@ fn applyByzantiumChanges(table: *InstructionTable) void {
 fn applyConstantinopleChanges(table: *InstructionTable) void {
     // EXTCODEHASH added
     table[bytecode_mod.EXTCODEHASH] = entry(opcodes.opExtcodehash, 400);
-    // CREATE2 (EIP-1014) added in Constantinople; dynamic gas handles init-code and keccak costs.
-    // SHL/SHR/SAR already in Byzantium
+    // EIP-1014: CREATE2
+    table[bytecode_mod.CREATE2] = entry(opcodes.opCreate2, gas_costs.G_CREATE);
+    // EIP-145: Bitwise shifts
+    table[bytecode_mod.SHL] = entry(opcodes.opShl, gas_costs.G_VERYLOW);
+    table[bytecode_mod.SHR] = entry(opcodes.opShr, gas_costs.G_VERYLOW);
+    table[bytecode_mod.SAR] = entry(opcodes.opSar, gas_costs.G_VERYLOW);
 }
 
 fn applyIstanbulChanges(table: *InstructionTable) void {

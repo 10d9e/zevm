@@ -106,13 +106,19 @@ pub fn opMulmod(ctx: *InstructionContext) void {
 
 /// EXP opcode (0x0A): base ^ exponent (mod 2^256)
 /// Stack: [base, exponent] -> [base ^ exponent]
-/// Static gas: 10 (G_EXP, charged by dispatch) + dynamic: 50 * byteSize(exponent)
+/// Static gas: 10 (G_EXP, charged by dispatch) + dynamic: G_EXPBYTE * byteSize(exponent)
+/// EIP-160 (Spurious Dragon): G_EXPBYTE raised from 10 to 50.
 pub fn opExp(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
     if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
     const exponent = stack.peekUnsafe(1);
-    // Dynamic gas: G_EXPBYTE per byte of exponent
-    const dynamic_gas = gas_costs.G_EXPBYTE * byteSize(exponent);
+    // Dynamic gas: G_EXPBYTE per byte of exponent (10 pre-Spurious Dragon, 50 post)
+    const spec = ctx.interpreter.runtime_flags.spec_id;
+    const expbyte_cost: u64 = if (primitives.isEnabledIn(spec, .spurious_dragon))
+        gas_costs.G_EXPBYTE
+    else
+        gas_costs.G_EXPBYTE_FRONTIER;
+    const dynamic_gas = expbyte_cost * byteSize(exponent);
     if (!ctx.interpreter.gas.spend(dynamic_gas)) { ctx.interpreter.halt(.out_of_gas); return; }
     const base = stack.peekUnsafe(0);
     stack.shrinkUnsafe(1);

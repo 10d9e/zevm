@@ -68,13 +68,18 @@ pub const MainContext = struct {
 pub const MainnetHandler = struct {
     /// Validate transaction — environment checks (no DB access) then caller state check.
     pub fn validate(evm: *MainnetEvm, initial_gas: *validation.InitialAndFloorGas) !void {
+        const ctx = evm.getContext();
+
         // 1. Validate block/tx/cfg fields (chain ID, gas cap, priority fee ordering)
         try validation.Validation.validateEnv(evm);
 
-        // 2. Calculate intrinsic gas and validate gas_limit covers it
+        // 2. EIP-4844: Validate blob transaction fields (Cancun+)
+        try validation.Validation.validateBlobTx(&ctx.tx, &ctx.block, ctx.cfg.spec);
+
+        // 3. Calculate intrinsic gas and validate gas_limit covers it
         initial_gas.* = try validation.Validation.validateInitialTxGas(evm);
 
-        // 3. Load caller, check nonce/code/balance, deduct max fee, bump nonce
+        // 4. Load caller, check nonce/code/balance, deduct max fee, bump nonce
         try validation.Validation.validateAgainstStateAndDeductCaller(evm, initial_gas.initial_gas);
     }
 
@@ -103,6 +108,51 @@ pub const MainnetHandler = struct {
                 // Load each storage slot (marks it warm, journal entry recorded)
                 for (item.storage_keys.items) |key| {
                     _ = try js.sload(item.address, key);
+                }
+            }
+        }
+
+        // EIP-7702: Apply authorization list (Prague+)
+        // For each recovered authorization, validate and apply code delegation.
+        if (primitives.isEnabledIn(spec, .prague)) {
+            if (tx.authorization_list) |auth_list| {
+                for (auth_list.items) |auth_entry| {
+                    switch (auth_entry) {
+                        .Right => |recovered| {
+                            switch (recovered.authority) {
+                                .Valid => |authority_addr| {
+                                    const auth = recovered.auth;
+
+                                    // chain_id 0 means valid for any chain
+                                    const chain_id_valid = auth.chain_id == 0 or
+                                        auth.chain_id == @as(primitives.U256, ctx.cfg.chain_id);
+                                    if (!chain_id_valid) continue;
+
+                                    // Load authority account (marks it warm)
+                                    const load_result = js.loadAccountMutOptionalCode(authority_addr, true, false) catch continue;
+                                    const journaled = load_result.data;
+
+                                    // Nonce must match exactly — skip if stale
+                                    if (journaled.account.info.nonce != auth.nonce) continue;
+
+                                    // Bump authority nonce (journaled, revertable)
+                                    journaled.account.info.nonce += 1;
+                                    js.nonceBumpJournalEntry(authority_addr);
+
+                                    // Apply delegation: zero address clears code; otherwise set EIP-7702 bytecode
+                                    const zero_addr = [_]u8{0} ** 20;
+                                    const bc = if (std.mem.eql(u8, &auth.address, &zero_addr))
+                                        bytecode.Bytecode.new()
+                                    else
+                                        bytecode.Bytecode{ .eip7702 = bytecode.Eip7702Bytecode.new(auth.address) };
+
+                                    js.inner.setCode(authority_addr, bc);
+                                },
+                                .Invalid => {}, // skip invalid (unrecoverable) authorities
+                            }
+                        },
+                        .Left => {}, // unrecovered signed authorization — skip
+                    }
                 }
             }
         }

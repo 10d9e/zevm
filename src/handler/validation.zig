@@ -196,7 +196,40 @@ pub const Validation = struct {
             }
         }
 
+        // EIP-4844: blob intrinsic gas (GAS_PER_BLOB per blob)
+        if (tx.blob_hashes) |blob_hashes| {
+            gas += @as(u64, blob_hashes.items.len) * primitives.GAS_PER_BLOB;
+        }
+
         return gas;
+    }
+
+    /// Validate EIP-4844 blob transaction fields (Cancun+).
+    ///
+    /// Checks blob count, versioned hash format, and blob gas price affordability.
+    pub fn validateBlobTx(tx: *const context.TxEnv, block: *const context.BlockEnv, spec: primitives.SpecId) !void {
+        if (!primitives.isEnabledIn(spec, .cancun)) return;
+
+        const blob_hashes = tx.blob_hashes orelse return;
+
+        // Blob count limit
+        if (blob_hashes.items.len > primitives.MAX_BLOB_NUMBER_PER_BLOCK) {
+            return ValidationError.TooManyBlobs;
+        }
+
+        // All blob hashes must use KZG version prefix 0x01
+        for (blob_hashes.items) |hash| {
+            if (hash[0] != primitives.VERSIONED_HASH_VERSION_KZG) {
+                return ValidationError.InvalidBlobVersionedHash;
+            }
+        }
+
+        // max_fee_per_blob_gas must cover the current block blob base fee
+        if (block.blob_excess_gas_and_price) |blob_info| {
+            if (tx.max_fee_per_blob_gas < blob_info.blob_gasprice) {
+                return ValidationError.BlobGasPriceTooLow;
+            }
+        }
     }
 
     /// Calculates the EIP-7623 floor gas (tokens * 10).
@@ -243,6 +276,10 @@ pub const ValidationError = error{
     InsufficientBalance,
     GasPriceLessThanBaseFee,
     CallerLoadFailed,
+    // EIP-4844 blob transaction errors
+    TooManyBlobs,
+    InvalidBlobVersionedHash,
+    BlobGasPriceTooLow,
 };
 
 test {

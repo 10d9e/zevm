@@ -392,6 +392,12 @@ pub const JournalInner = struct {
     pub fn deinit(self: *JournalInner) void {
         self.evm_state.deinit();
         self.transient_storage.deinit();
+        // Free heap-allocated topic slices before freeing the log list
+        for (self.logs.items) |log| {
+            if (log.topics.len > 0) {
+                std.heap.page_allocator.free(@constCast(log.topics));
+            }
+        }
         self.logs.deinit(std.heap.page_allocator);
         self.journal.deinit(std.heap.page_allocator);
         self.warm_addresses.deinit();
@@ -417,6 +423,12 @@ pub const JournalInner = struct {
         self.journal.clearRetainingCapacity();
         self.warm_addresses.clearCoinbaseAndAccessList();
         self.transaction_id += 1;
+        // Free heap-allocated topic slices (in case takeLogs() was not called)
+        for (self.logs.items) |log| {
+            if (log.topics.len > 0) {
+                std.heap.page_allocator.free(@constCast(log.topics));
+            }
+        }
         self.logs.clearRetainingCapacity();
     }
 
@@ -434,6 +446,12 @@ pub const JournalInner = struct {
 
         self.transient_storage.clearRetainingCapacity();
         self.depth = 0;
+        // Free heap-allocated topic slices before clearing the log list
+        for (self.logs.items) |log| {
+            if (log.topics.len > 0) {
+                std.heap.page_allocator.free(@constCast(log.topics));
+            }
+        }
         self.logs.clearRetainingCapacity();
         self.transaction_id += 1;
         self.warm_addresses.clearCoinbaseAndAccessList();
@@ -515,8 +533,8 @@ pub const JournalInner = struct {
     /// In case of EIP-7702 code with zero address, the bytecode will be erased.
     pub fn setCode(self: *JournalInner, address: primitives.Address, code: bytecode.Bytecode) void {
         if (code == .eip7702) {
-            if (code.eip7702.address().isZero()) {
-                self.setCodeWithHash(address, bytecode.Bytecode.default(), primitives.KECCAK_EMPTY);
+            if (std.mem.eql(u8, &code.eip7702.address, &[_]u8{0} ** 20)) {
+                self.setCodeWithHash(address, bytecode.Bytecode.new(), primitives.KECCAK_EMPTY);
                 return;
             }
         }
@@ -625,7 +643,8 @@ pub const JournalInner = struct {
         // Bytecode is not empty.
         // Nonce is not zero
         // Account is not precompile.
-        if (!std.mem.eql(u8, &target_acc.info.code_hash, &primitives.KECCAK_EMPTY) or target_acc.info.nonce != 0) {
+        if (!std.mem.eql(u8, &target_acc.info.code_hash, &primitives.KECCAK_EMPTY) or
+            target_acc.info.nonce != 0 or target_acc.info.balance != 0) {
             self.checkpointRevert(checkpoint);
             return TransferError.CreateCollision;
         }
