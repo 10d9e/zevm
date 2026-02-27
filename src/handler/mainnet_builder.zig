@@ -141,19 +141,65 @@ pub const MainnetHandler = struct {
         return evm.executeFrame(&frame);
     }
 
-    /// Post-execution phase — gas refund, reimburse caller, reward beneficiary.
-    ///
-    /// Left as stubs for Phase 2.
-    pub fn postExecution(evm: *MainnetEvm, result: *main.FrameResult) !void {
-        _ = evm;
-        _ = result;
-        // Phase 2: calculate refunds (EIP-3529 SSTORE), enforce floor (EIP-7623),
-        //          reimburse caller, reward beneficiary, commit journal.
+    /// Post-execution phase — gas refund capping (EIP-3529), EIP-7623 floor, reimburse caller,
+    /// reward beneficiary, and commit journal.
+    pub fn postExecution(
+        evm: *MainnetEvm,
+        result: *main.FrameResult,
+        initial_gas: validation.InitialAndFloorGas,
+    ) !void {
+        const ctx = evm.getContext();
+        const tx = &ctx.tx;
+        const block = &ctx.block;
+        const spec = ctx.cfg.spec;
+        const js = &ctx.journaled_state;
+
+        const is_london = primitives.isEnabledIn(spec, .london);
+
+        // 1. EIP-3529: cap gas refund
+        const exec_gas = tx.gas_limit - initial_gas.initial_gas;
+        const gas_spent = exec_gas - result.gas_remaining;
+        const raw_refund = @as(u64, @intCast(@max(0, result.gas_refunded)));
+        const quotient: u64 = if (is_london) 5 else 2;
+        var capped_refund = @min(raw_refund, gas_spent / quotient);
+
+        // 2. EIP-7623: floor gas (Prague+)
+        var effective_exec_gas_used = gas_spent - capped_refund;
+        if (primitives.isEnabledIn(spec, .prague)) {
+            if (effective_exec_gas_used < initial_gas.floor_gas) {
+                effective_exec_gas_used = initial_gas.floor_gas;
+                capped_refund = 0;
+            }
+        }
+
+        // 3. Effective gas price (EIP-1559 aware)
+        const basefee: u128 = @as(u128, block.basefee);
+        const effective_gas_price: u128 = if (tx.gas_priority_fee) |tip|
+            @min(tx.gas_price, basefee + tip)
+        else
+            tx.gas_price;
+
+        // 4. Reimburse caller: (gas_remaining + capped_refund) * effective_gas_price
+        const gas_returned: u64 = result.gas_remaining + capped_refund;
+        const reimburse_amount: primitives.U256 = @as(primitives.U256, effective_gas_price) * @as(primitives.U256, gas_returned);
+        try js.balanceIncr(tx.caller, reimburse_amount);
+
+        // 5. Pay beneficiary (only tip portion post-London)
+        const total_gas_used = initial_gas.initial_gas + effective_exec_gas_used;
+        const coinbase_price: u128 = if (is_london) effective_gas_price -| basefee else effective_gas_price;
+        const beneficiary_amount: primitives.U256 = @as(primitives.U256, coinbase_price) * @as(primitives.U256, total_gas_used);
+        try js.balanceIncr(block.beneficiary, beneficiary_amount);
+
+        // 6. Commit transaction state
+        js.commitTx();
+
+        // 7. Update ExecutionResult with final accounting
+        result.result.gas_used = total_gas_used;
+        result.result.gas_refunded = capped_refund;
     }
 
     /// Handle errors — revert journal, discard tx.
-    pub fn catchError(evm: *MainnetEvm, err: anyerror) void {
-        _ = err;
+    pub fn catchError(evm: *MainnetEvm, _: anyerror) void {
         const ctx = evm.getContext();
         // Revert all state changes from this transaction
         ctx.journaled_state.discardTx();
@@ -178,30 +224,33 @@ pub const ExecuteEvm = struct {
         };
 
         // Execute frame
-        const frame_result = MainnetHandler.executeFrame(self, initial_gas.initial_gas) catch |err| {
+        var frame_result = MainnetHandler.executeFrame(self, initial_gas.initial_gas) catch |err| {
             MainnetHandler.catchError(self, err);
             return main.ExecutionResult.new(.Fail, 0);
         };
 
-        // Post-execution (Phase 2 stubs)
-        var fr = frame_result;
-        MainnetHandler.postExecution(self, &fr) catch {};
+        // Post-execution: refund capping, floor gas, reimburse caller, reward beneficiary, commit
+        MainnetHandler.postExecution(self, &frame_result, initial_gas) catch |err| {
+            MainnetHandler.catchError(self, err);
+            return main.ExecutionResult.new(.Fail, 0);
+        };
 
         return frame_result.result;
     }
 };
 
 /// Execute commit EVM — execute then commit state to the underlying database.
+/// Note: commitTx() is called inside postExecution; no second commit needed here.
 pub const ExecuteCommitEvm = struct {
     pub fn executeAndCommit(self: *MainnetEvm) !main.ExecutionResult {
-        const result = try ExecuteEvm.execute(self);
-
-        // Commit journal changes (Phase 2: also need to apply EvmState diff to DB)
-        self.ctx.journaled_state.commitTx();
-
-        return result;
+        return ExecuteEvm.execute(self);
     }
 };
+
+// Pull in post-execution tests
+test {
+    _ = @import("postexecution_tests.zig");
+}
 
 // Placeholder for testing
 pub const testing = struct {

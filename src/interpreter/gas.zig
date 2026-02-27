@@ -145,6 +145,22 @@ pub const Gas = struct {
         self.memory = memory;
         self.refunded = refund_amount;
     }
+
+    /// Apply EIP-3529 refund cap in-place.
+    /// Pre-London: cap at gas_spent / 2. London+: cap at gas_spent / 5.
+    pub fn setFinalRefund(self: *Gas, is_london: bool) void {
+        const quotient: u64 = if (is_london) 5 else 2;
+        const spent = self.getSpent();
+        const raw = @as(u64, @intCast(@max(0, self.refunded)));
+        self.refunded = @as(i64, @intCast(@min(raw, spent / quotient)));
+    }
+
+    /// Returns gas_spent − capped_refund (never negative). Used by EIP-7623 check.
+    pub fn spentSubRefunded(self: Gas) u64 {
+        const spent = self.getSpent();
+        const ref = @as(u64, @intCast(@max(0, self.refunded)));
+        return if (spent > ref) spent - ref else 0;
+    }
 };
 
 /// Memory gas tracking for memory expansion costs

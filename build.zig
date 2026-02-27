@@ -255,6 +255,7 @@ pub fn build(b: *std.Build) void {
     interpreter_module.addImport("context", context_module);
     interpreter_module.addImport("database", database_module);
     interpreter_module.addImport("state", state_module);
+    interpreter_module.addImport("precompile", precompile_module);
     precompile_module.addImport("build_options", lib_options_module);
     precompile_module.addImport("primitives", primitives_module);
     handler_module.addImport("primitives", primitives_module);

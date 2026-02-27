@@ -20,8 +20,8 @@ const MAX = std.math.maxInt(U);
 
 test "LT: 5 < 10" {
     var interp = Interpreter.defaultExt();
-    interp.stack.pushUnsafe(@as(U, 5));
-    interp.stack.pushUnsafe(@as(U, 10));
+    interp.stack.pushUnsafe(@as(U, 10)); // right operand (goes to second)
+    interp.stack.pushUnsafe(@as(U, 5));  // left operand (top → µs[0])
     var ctx = InstructionContext{ .interpreter = &interp };
     opLt(&ctx);
     try expect(interp.bytecode.continue_execution);
@@ -30,8 +30,8 @@ test "LT: 5 < 10" {
 
 test "LT: 10 < 5 is false" {
     var interp = Interpreter.defaultExt();
-    interp.stack.pushUnsafe(@as(U, 10));
-    interp.stack.pushUnsafe(@as(U, 5));
+    interp.stack.pushUnsafe(@as(U, 5));  // right operand
+    interp.stack.pushUnsafe(@as(U, 10)); // left operand (top)
     var ctx = InstructionContext{ .interpreter = &interp };
     opLt(&ctx);
     try expectEqual(@as(U, 0), interp.stack.popUnsafe());
@@ -48,8 +48,8 @@ test "LT: equal values = false" {
 
 test "LT: 0 < MAX" {
     var interp = Interpreter.defaultExt();
-    interp.stack.pushUnsafe(@as(U, 0));
-    interp.stack.pushUnsafe(MAX);
+    interp.stack.pushUnsafe(MAX);        // right operand
+    interp.stack.pushUnsafe(@as(U, 0));  // left operand (top)
     var ctx = InstructionContext{ .interpreter = &interp };
     opLt(&ctx);
     try expectEqual(@as(U, 1), interp.stack.popUnsafe());
@@ -67,8 +67,8 @@ test "LT: stack underflow" {
 
 test "GT: 10 > 5" {
     var interp = Interpreter.defaultExt();
-    interp.stack.pushUnsafe(@as(U, 10));
-    interp.stack.pushUnsafe(@as(U, 5));
+    interp.stack.pushUnsafe(@as(U, 5));  // right operand
+    interp.stack.pushUnsafe(@as(U, 10)); // left operand (top)
     var ctx = InstructionContext{ .interpreter = &interp };
     opGt(&ctx);
     try expectEqual(@as(U, 1), interp.stack.popUnsafe());
@@ -76,8 +76,8 @@ test "GT: 10 > 5" {
 
 test "GT: 5 > 10 is false" {
     var interp = Interpreter.defaultExt();
-    interp.stack.pushUnsafe(@as(U, 5));
-    interp.stack.pushUnsafe(@as(U, 10));
+    interp.stack.pushUnsafe(@as(U, 10)); // right operand
+    interp.stack.pushUnsafe(@as(U, 5));  // left operand (top)
     var ctx = InstructionContext{ .interpreter = &interp };
     opGt(&ctx);
     try expectEqual(@as(U, 0), interp.stack.popUnsafe());
@@ -96,8 +96,8 @@ test "GT: equal values = false" {
 
 test "SLT: positive < positive" {
     var interp = Interpreter.defaultExt();
-    interp.stack.pushUnsafe(@as(U, 5));
-    interp.stack.pushUnsafe(@as(U, 10));
+    interp.stack.pushUnsafe(@as(U, 10)); // right operand
+    interp.stack.pushUnsafe(@as(U, 5));  // left operand (top)
     var ctx = InstructionContext{ .interpreter = &interp };
     opSlt(&ctx);
     try expectEqual(@as(U, 1), interp.stack.popUnsafe());
@@ -106,8 +106,8 @@ test "SLT: positive < positive" {
 test "SLT: negative < positive" {
     var interp = Interpreter.defaultExt();
     const negative: U = @as(U, 1) << 255; // most negative
-    interp.stack.pushUnsafe(negative);
-    interp.stack.pushUnsafe(@as(U, 1));
+    interp.stack.pushUnsafe(@as(U, 1)); // right operand
+    interp.stack.pushUnsafe(negative);  // left operand (top)
     var ctx = InstructionContext{ .interpreter = &interp };
     opSlt(&ctx);
     try expectEqual(@as(U, 1), interp.stack.popUnsafe());
@@ -116,8 +116,8 @@ test "SLT: negative < positive" {
 test "SLT: positive < negative is false" {
     var interp = Interpreter.defaultExt();
     const negative: U = @as(U, 1) << 255;
-    interp.stack.pushUnsafe(@as(U, 1));
-    interp.stack.pushUnsafe(negative);
+    interp.stack.pushUnsafe(negative);  // right operand
+    interp.stack.pushUnsafe(@as(U, 1)); // left operand (top)
     var ctx = InstructionContext{ .interpreter = &interp };
     opSlt(&ctx);
     try expectEqual(@as(U, 0), interp.stack.popUnsafe());
@@ -127,8 +127,8 @@ test "SLT: -1 < -2 is false (both negative)" {
     var interp = Interpreter.defaultExt();
     const minus_one: U = MAX;
     const minus_two: U = MAX - 1;
-    interp.stack.pushUnsafe(minus_one);
-    interp.stack.pushUnsafe(minus_two);
+    interp.stack.pushUnsafe(minus_two); // right operand
+    interp.stack.pushUnsafe(minus_one); // left operand (top)
     var ctx = InstructionContext{ .interpreter = &interp };
     opSlt(&ctx);
     try expectEqual(@as(U, 0), interp.stack.popUnsafe());
@@ -138,8 +138,8 @@ test "SLT: -1 < -2 is false (both negative)" {
 
 test "SGT: 10 > 5" {
     var interp = Interpreter.defaultExt();
-    interp.stack.pushUnsafe(@as(U, 10));
-    interp.stack.pushUnsafe(@as(U, 5));
+    interp.stack.pushUnsafe(@as(U, 5));  // right operand
+    interp.stack.pushUnsafe(@as(U, 10)); // left operand (top)
     var ctx = InstructionContext{ .interpreter = &interp };
     opSgt(&ctx);
     try expectEqual(@as(U, 1), interp.stack.popUnsafe());
@@ -148,8 +148,8 @@ test "SGT: 10 > 5" {
 test "SGT: positive > negative" {
     var interp = Interpreter.defaultExt();
     const negative: U = @as(U, 1) << 255;
-    interp.stack.pushUnsafe(@as(U, 1));
-    interp.stack.pushUnsafe(negative);
+    interp.stack.pushUnsafe(negative);  // right operand
+    interp.stack.pushUnsafe(@as(U, 1)); // left operand (top)
     var ctx = InstructionContext{ .interpreter = &interp };
     opSgt(&ctx);
     try expectEqual(@as(U, 1), interp.stack.popUnsafe());
@@ -158,8 +158,8 @@ test "SGT: positive > negative" {
 test "SGT: negative > positive is false" {
     var interp = Interpreter.defaultExt();
     const negative: U = @as(U, 1) << 255;
-    interp.stack.pushUnsafe(negative);
-    interp.stack.pushUnsafe(@as(U, 1));
+    interp.stack.pushUnsafe(@as(U, 1)); // right operand
+    interp.stack.pushUnsafe(negative);  // left operand (top)
     var ctx = InstructionContext{ .interpreter = &interp };
     opSgt(&ctx);
     try expectEqual(@as(U, 0), interp.stack.popUnsafe());

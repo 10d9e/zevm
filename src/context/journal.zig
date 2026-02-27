@@ -181,7 +181,7 @@ pub const WarmAddresses = struct {
         self.precompiles.deinit(std.heap.c_allocator);
         var iterator = self.access_list.iterator();
         while (iterator.next()) |entry| {
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(std.heap.page_allocator);
         }
         self.access_list.deinit();
     }
@@ -199,7 +199,7 @@ pub const WarmAddresses = struct {
         // Clear existing access list
         var iterator = self.access_list.iterator();
         while (iterator.next()) |entry| {
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(std.heap.page_allocator);
         }
         self.access_list.clearRetainingCapacity();
 
@@ -216,7 +216,7 @@ pub const WarmAddresses = struct {
         self.coinbase = null;
         var iterator = self.access_list.iterator();
         while (iterator.next()) |entry| {
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(std.heap.page_allocator);
         }
         self.access_list.clearRetainingCapacity();
     }
@@ -543,7 +543,7 @@ pub const JournalInner = struct {
     /// Mark account as touched.
     pub fn balanceIncr(self: *JournalInner, db: anytype, address: primitives.Address, balance: primitives.U256) !void {
         const account = try self.loadAccountMut(db, address);
-        account.account.incrBalance(balance);
+        account.data.account.incrBalance(balance);
     }
 
     /// Increments the nonce of the account.

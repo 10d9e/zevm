@@ -34,8 +34,10 @@ pub const ValidationError = validation.ValidationError;
 pub const ExecutionResult = struct {
     /// Execution status
     status: ExecutionStatus,
-    /// Gas used
+    /// Gas used (final, after refund capping and floor enforcement)
     gas_used: u64,
+    /// Gas refunded (final capped refund, set in postExecution)
+    gas_refunded: u64,
     /// Logs emitted during execution
     logs: std.ArrayList(Log),
     /// Return data
@@ -48,6 +50,7 @@ pub const ExecutionResult = struct {
         return ExecutionResult{
             .status = status,
             .gas_used = gas_used,
+            .gas_refunded = 0,
             .logs = std.ArrayList(Log){ .items = &[_]Log{}, .capacity = 0 },
             .return_data = &[_]u8{},
             .halt_reason = null,
@@ -126,16 +129,19 @@ pub const FrameResult = struct {
     result: ExecutionResult,
     /// Gas remaining
     gas_remaining: u64,
+    /// Raw refund counter from interpreter (before capping)
+    gas_refunded: i64,
     /// Memory
     memory: interpreter.Memory,
     /// Stack
     stack: interpreter.Stack,
 
     /// Create new frame result
-    pub fn new(result: ExecutionResult, gas_remaining: u64) FrameResult {
+    pub fn new(result: ExecutionResult, gas_remaining: u64, gas_refunded: i64) FrameResult {
         return FrameResult{
             .result = result,
             .gas_remaining = gas_remaining,
+            .gas_refunded = gas_refunded,
             .memory = interpreter.Memory.new(),
             .stack = interpreter.Stack.new(),
         };
@@ -291,6 +297,7 @@ pub const Frame = struct {
         );
 
         const gas_used = self.interpreter.gas.getSpent();
+        const gas_refunded = self.interpreter.gas.refunded;
         const status: ExecutionStatus = switch (result) {
             .stop, .@"return", .selfdestruct => .Success,
             .revert => .Revert,
@@ -300,6 +307,7 @@ pub const Frame = struct {
         return FrameResult.new(
             ExecutionResult.new(status, gas_used),
             self.interpreter.gas.remaining,
+            gas_refunded,
         );
     }
 };
@@ -505,4 +513,6 @@ pub const testing = struct {
 test {
     _ = @import("validation.zig");
     _ = @import("validation_tests.zig");
+    _ = @import("mainnet_builder.zig");
+    _ = @import("postexecution_tests.zig");
 }

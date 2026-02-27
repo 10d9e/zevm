@@ -448,6 +448,12 @@ pub const Account = struct {
         return self.status.self_destructed;
     }
 
+    /// Increment balance in-place and mark account as touched.
+    pub fn incrBalance(self: *Self, amount: primitives.U256) void {
+        self.markTouch();
+        self.info.balance = std.math.add(primitives.U256, self.info.balance, amount) catch self.info.balance;
+    }
+
     /// Marks the account as touched
     pub fn markTouch(self: *Self) void {
         self.status.setTouched();
