@@ -85,6 +85,15 @@ pub fn opShr(ctx: *InstructionContext) void {
     stack.setTopUnsafe().* = if (shift < 256) value >> @intCast(shift) else 0;
 }
 
+/// CLZ opcode (0x1E): Count leading zeros in 256-bit value (EIP-7939, Osaka+)
+/// Stack: [x] -> [@clz(x)]   Static gas: 3 (VERYLOW, charged by dispatch)
+pub fn opClz(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    const ptr = stack.setTopUnsafe();
+    ptr.* = @as(primitives.U256, @clz(ptr.*));
+}
+
 /// SAR opcode (0x1D): Arithmetic shift right (with sign extension)
 /// Stack: [shift, value] -> [value >> shift (signed)]   Static gas: 3 (VERYLOW)
 pub fn opSar(ctx: *InstructionContext) void {

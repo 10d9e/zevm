@@ -10,7 +10,10 @@ const host_module = @import("../host.zig");
 
 fn memoryCostWords(num_words: usize) u64 {
     const n: u64 = @intCast(num_words);
-    return n * gas_costs.G_MEMORY + (n * n) / 512;
+    // Use checked arithmetic: a huge offset must yield OOG, not a panic.
+    const linear = std.math.mul(u64, n, gas_costs.G_MEMORY) catch return std.math.maxInt(u64);
+    const quadratic = (std.math.mul(u64, n, n) catch return std.math.maxInt(u64)) / 512;
+    return std.math.add(u64, linear, quadratic) catch std.math.maxInt(u64);
 }
 
 fn expandMemory(ctx: *InstructionContext, new_size: usize) bool {
@@ -18,12 +21,15 @@ fn expandMemory(ctx: *InstructionContext, new_size: usize) bool {
     const current = ctx.interpreter.memory.size();
     if (new_size <= current) return true;
     const current_words = (current + 31) / 32;
-    const new_words = (new_size + 31) / 32;
+    const new_words = (std.math.add(usize, new_size, 31) catch return false) / 32;
     if (new_words > current_words) {
         const cost = memoryCostWords(new_words) - memoryCostWords(current_words);
         if (!ctx.interpreter.gas.spend(cost)) return false;
     }
-    ctx.interpreter.memory.buffer.resize(std.heap.c_allocator, new_size) catch return false;
+    const aligned_size = new_words * 32;
+    const old_size = ctx.interpreter.memory.size();
+    ctx.interpreter.memory.buffer.resize(std.heap.c_allocator, aligned_size) catch return false;
+    @memset(ctx.interpreter.memory.buffer.items[old_size..aligned_size], 0);
     return true;
 }
 
@@ -124,8 +130,11 @@ pub fn opExtcodecopy(ctx: *InstructionContext) void {
         if (!ctx.interpreter.gas.spend(gas_costs.G_COPY * @as(u64, @intCast(num_words)))) {
             ctx.interpreter.halt(.out_of_gas); return;
         }
-        if (!expandMemory(ctx, mem_off_u + size_u)) { ctx.interpreter.halt(.out_of_gas); return; }
-        @memset(ctx.interpreter.memory.buffer.items[mem_off_u .. mem_off_u + size_u], 0);
+        const end_off = std.math.add(usize, mem_off_u, size_u) catch {
+            ctx.interpreter.halt(.memory_limit_oog); return;
+        };
+        if (!expandMemory(ctx, end_off)) { ctx.interpreter.halt(.out_of_gas); return; }
+        @memset(ctx.interpreter.memory.buffer.items[mem_off_u..end_off], 0);
         return;
     };
 
@@ -143,7 +152,9 @@ pub fn opExtcodecopy(ctx: *InstructionContext) void {
 
     const mem_off_u: usize = @intCast(mem_off);
     const size_u: usize = @intCast(size);
-    const new_size = mem_off_u + size_u;
+    const new_size = std.math.add(usize, mem_off_u, size_u) catch {
+        ctx.interpreter.halt(.memory_limit_oog); return;
+    };
 
     // Dynamic: copy cost
     const num_words = (size_u + 31) / 32;
@@ -154,7 +165,7 @@ pub fn opExtcodecopy(ctx: *InstructionContext) void {
     if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
 
     const code = info.bytecode.bytecode();
-    const dest = ctx.interpreter.memory.buffer.items[mem_off_u .. mem_off_u + size_u];
+    const dest = ctx.interpreter.memory.buffer.items[mem_off_u..new_size];
 
     if (code_off > std.math.maxInt(usize)) {
         @memset(dest, 0);
@@ -367,7 +378,10 @@ pub fn makeLogFn(comptime n: u8) *const fn (ctx: *InstructionContext) void {
 
             // Dynamic: memory expansion
             if (size_u > 0) {
-                if (!expandMemory(ctx, offset_u + size_u)) { ctx.interpreter.halt(.out_of_gas); return; }
+                const log_end = std.math.add(usize, offset_u, size_u) catch {
+                    ctx.interpreter.halt(.memory_limit_oog); return;
+                };
+                if (!expandMemory(ctx, log_end)) { ctx.interpreter.halt(.out_of_gas); return; }
             }
 
             // Collect topics into a heap-allocated slice so the pointer remains
@@ -387,9 +401,10 @@ pub fn makeLogFn(comptime n: u8) *const fn (ctx: *InstructionContext) void {
 
             stack.shrinkUnsafe(2 + n);
 
-            // Get log data from memory
+            // Get log data from memory (offset_u + size_u is safe; expandMemory verified it above)
+            const log_end = offset_u + size_u; // won't overflow: expandMemory already checked this
             const log_data: []const u8 = if (size_u > 0)
-                ctx.interpreter.memory.buffer.items[offset_u .. offset_u + size_u]
+                ctx.interpreter.memory.buffer.items[offset_u..log_end]
             else
                 &[_]u8{};
 

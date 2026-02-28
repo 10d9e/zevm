@@ -178,6 +178,7 @@ pub const MainnetHandler = struct {
                     .ctx = ctx,
                     .run_sub_call = interpreter_mod.protocol_schedule.runSubCallDefault,
                     .precompiles = &evm.precompiles.precompiles,
+                    .instruction_table = &evm.instructions.table,
                 };
                 const cr = host.create(tx.caller, tx.value, calldata, exec_gas, false, 0, true);
                 const status: main.ExecutionStatus = if (cr.success) .Success else .Revert;

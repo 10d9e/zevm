@@ -14,15 +14,20 @@ fn memoryCostWords(num_words: usize) u64 {
 fn memoryExpansionCost(current_size: usize, new_size: usize) u64 {
     if (new_size <= current_size) return 0;
     const current_words = (current_size + 31) / 32;
-    const new_words = (new_size + 31) / 32;
+    const new_words = (std.math.add(usize, new_size, 31) catch return std.math.maxInt(u64)) / 32;
     return memoryCostWords(new_words) - memoryCostWords(current_words);
 }
 
 fn expandMemory(ctx: *InstructionContext, new_size: usize) bool {
     const expansion_cost = memoryExpansionCost(ctx.interpreter.memory.size(), new_size);
     if (!ctx.interpreter.gas.spend(expansion_cost)) return false;
-    if (new_size > ctx.interpreter.memory.size()) {
-        ctx.interpreter.memory.buffer.resize(std.heap.c_allocator, new_size) catch return false;
+    // EVM memory is always a multiple of 32 bytes; new bytes must be zero-initialized.
+    const new_words = (std.math.add(usize, new_size, 31) catch return false) / 32;
+    const aligned_size = new_words * 32;
+    if (aligned_size > ctx.interpreter.memory.size()) {
+        const old_size = ctx.interpreter.memory.size();
+        ctx.interpreter.memory.buffer.resize(std.heap.c_allocator, aligned_size) catch return false;
+        @memset(ctx.interpreter.memory.buffer.items[old_size..aligned_size], 0);
     }
     return true;
 }
@@ -114,6 +119,9 @@ pub fn opMcopy(ctx: *InstructionContext) void {
     const length = stack.peekUnsafe(2);
     stack.shrinkUnsafe(3);
 
+    // Zero-length MCOPY is a no-op (no copy cost, no memory expansion) even for huge offsets.
+    if (length == 0) return;
+
     if (dest > std.math.maxInt(usize) or src > std.math.maxInt(usize) or length > std.math.maxInt(usize)) {
         ctx.interpreter.halt(.memory_limit_oog); return;
     }
@@ -123,22 +131,30 @@ pub fn opMcopy(ctx: *InstructionContext) void {
     const length_usize: usize = @intCast(length);
 
     // Dynamic: copy cost (3 gas per word)
-    const num_words = (length_usize + 31) / 32;
+    const num_words = (std.math.add(usize, length_usize, 31) catch {
+        ctx.interpreter.halt(.memory_limit_oog); return;
+    }) / 32;
     const copy_cost: u64 = gas_costs.G_COPY * @as(u64, @intCast(num_words));
     if (!ctx.interpreter.gas.spend(copy_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
 
     // Dynamic: memory expansion to cover both src and dest regions
-    if (length_usize > 0) {
-        const dest_end = dest_usize + length_usize;
-        const src_end = src_usize + length_usize;
+    {
+        const dest_end = std.math.add(usize, dest_usize, length_usize) catch {
+            ctx.interpreter.halt(.memory_limit_oog); return;
+        };
+        const src_end = std.math.add(usize, src_usize, length_usize) catch {
+            ctx.interpreter.halt(.memory_limit_oog); return;
+        };
         const max_end = @max(dest_end, src_end);
         if (!expandMemory(ctx, max_end)) { ctx.interpreter.halt(.out_of_gas); return; }
 
-        std.mem.copyForwards(
-            u8,
-            ctx.interpreter.memory.buffer.items[dest_usize..][0..length_usize],
-            ctx.interpreter.memory.buffer.items[src_usize..][0..length_usize],
-        );
+        // Use memmove semantics: copyBackwards when dest > src to handle overlap correctly.
+        const mem = ctx.interpreter.memory.buffer.items;
+        if (dest_usize > src_usize) {
+            std.mem.copyBackwards(u8, mem[dest_usize..][0..length_usize], mem[src_usize..][0..length_usize]);
+        } else {
+            std.mem.copyForwards(u8, mem[dest_usize..][0..length_usize], mem[src_usize..][0..length_usize]);
+        }
     }
 }
 

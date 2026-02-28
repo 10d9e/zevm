@@ -10,7 +10,9 @@ const host_module = @import("../host.zig");
 
 fn memoryCostWords(num_words: usize) u64 {
     const n: u64 = @intCast(num_words);
-    return n * gas_costs.G_MEMORY + (n * n) / 512;
+    const linear = std.math.mul(u64, n, gas_costs.G_MEMORY) catch return std.math.maxInt(u64);
+    const quadratic = (std.math.mul(u64, n, n) catch return std.math.maxInt(u64)) / 512;
+    return std.math.add(u64, linear, quadratic) catch std.math.maxInt(u64);
 }
 
 fn expandMemory(ctx: *InstructionContext, new_size: usize) bool {
@@ -18,12 +20,15 @@ fn expandMemory(ctx: *InstructionContext, new_size: usize) bool {
     const current = ctx.interpreter.memory.size();
     if (new_size <= current) return true;
     const current_words = (current + 31) / 32;
-    const new_words = (new_size + 31) / 32;
+    const new_words = (std.math.add(usize, new_size, 31) catch return false) / 32;
     if (new_words > current_words) {
         const cost = memoryCostWords(new_words) - memoryCostWords(current_words);
         if (!ctx.interpreter.gas.spend(cost)) return false;
     }
-    ctx.interpreter.memory.buffer.resize(std.heap.c_allocator, new_size) catch return false;
+    const aligned_size = new_words * 32;
+    const old_size = ctx.interpreter.memory.size();
+    ctx.interpreter.memory.buffer.resize(std.heap.c_allocator, aligned_size) catch return false;
+    @memset(ctx.interpreter.memory.buffer.items[old_size..aligned_size], 0);
     return true;
 }
 
@@ -110,7 +115,9 @@ pub fn opCalldatacopy(ctx: *InstructionContext) void {
 
     const mem_off_usize: usize = @intCast(mem_off);
     const size_usize: usize = @intCast(size);
-    const new_size = mem_off_usize + size_usize;
+    const new_size = std.math.add(usize, mem_off_usize, size_usize) catch {
+        ctx.interpreter.halt(.memory_limit_oog); return;
+    };
 
     // Dynamic: copy cost
     const num_words = (size_usize + 31) / 32;
@@ -120,7 +127,7 @@ pub fn opCalldatacopy(ctx: *InstructionContext) void {
     // Dynamic: memory expansion
     if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
 
-    const dest = ctx.interpreter.memory.buffer.items[mem_off_usize .. mem_off_usize + size_usize];
+    const dest = ctx.interpreter.memory.buffer.items[mem_off_usize..new_size];
     const data = ctx.interpreter.input.data;
     if (data_off > std.math.maxInt(usize)) {
         @memset(dest, 0);
@@ -165,7 +172,9 @@ pub fn opCodecopy(ctx: *InstructionContext) void {
 
     const mem_off_usize: usize = @intCast(mem_off);
     const size_usize: usize = @intCast(size);
-    const new_size = mem_off_usize + size_usize;
+    const new_size = std.math.add(usize, mem_off_usize, size_usize) catch {
+        ctx.interpreter.halt(.memory_limit_oog); return;
+    };
 
     // Dynamic: copy cost
     const num_words = (size_usize + 31) / 32;
@@ -175,7 +184,7 @@ pub fn opCodecopy(ctx: *InstructionContext) void {
     // Dynamic: memory expansion
     if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
 
-    const dest = ctx.interpreter.memory.buffer.items[mem_off_usize .. mem_off_usize + size_usize];
+    const dest = ctx.interpreter.memory.buffer.items[mem_off_usize..new_size];
     const code = ctx.interpreter.bytecode.bytecode.bytecode();
 
     if (code_off > std.math.maxInt(usize)) {
@@ -228,7 +237,9 @@ pub fn opReturndatacopy(ctx: *InstructionContext) void {
         ctx.interpreter.halt(.invalid_returndata); return;
     }
 
-    const new_size = mem_off_usize + size_usize;
+    const new_size = std.math.add(usize, mem_off_usize, size_usize) catch {
+        ctx.interpreter.halt(.memory_limit_oog); return;
+    };
 
     // Dynamic: copy cost
     const num_words = (size_usize + 31) / 32;
@@ -239,7 +250,7 @@ pub fn opReturndatacopy(ctx: *InstructionContext) void {
     if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
 
     // Use direction-safe copy: return_data may alias execution memory (e.g. identity precompile).
-    const dst = ctx.interpreter.memory.buffer.items[mem_off_usize .. mem_off_usize + size_usize];
+    const dst = ctx.interpreter.memory.buffer.items[mem_off_usize..new_size];
     const src = return_data[src_off_usize .. src_off_usize + size_usize];
     if (@intFromPtr(dst.ptr) <= @intFromPtr(src.ptr)) {
         std.mem.copyForwards(u8, dst, src);

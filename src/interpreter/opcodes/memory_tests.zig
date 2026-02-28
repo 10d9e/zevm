@@ -152,7 +152,7 @@ test "MSTORE8: auto-expands memory" {
     interp.stack.pushUnsafe(@as(U, 100)); // offset 100
     var ctx = InstructionContext{ .interpreter = &interp };
     opMstore8(&ctx);
-    try expectEqual(@as(usize, 101), interp.memory.size());
+    try expectEqual(@as(usize, 128), interp.memory.size()); // EVM memory is 32-byte aligned: ceil(101/32)*32 = 128
 }
 
 // --- MSIZE tests ---

@@ -291,6 +291,7 @@ pub const Frame = struct {
             .ctx = ctx,
             .run_sub_call = interpreter.protocol_schedule.runSubCallDefault,
             .precompiles = &self.precompiles.precompiles,
+            .instruction_table = &schedule.instructions,
         };
 
         const result = self.interpreter.runWithHost(

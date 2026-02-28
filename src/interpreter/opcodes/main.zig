@@ -22,6 +22,7 @@ pub const opByte = bitwise.opByte;
 pub const opShl = bitwise.opShl;
 pub const opShr = bitwise.opShr;
 pub const opSar = bitwise.opSar;
+pub const opClz = bitwise.opClz;
 
 // Comparison operations
 pub const comparison = @import("comparison.zig");

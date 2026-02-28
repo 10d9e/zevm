@@ -33,6 +33,13 @@ pub const ProtocolSchedule = struct {
 /// Derives the instruction table from the sub-interpreter's spec and delegates
 /// to Interpreter.runWithHost, keeping protocol_schedule.zig free of dispatch logic.
 pub fn runSubCallDefault(host: *Host, sub_interp: *Interpreter) void {
+    // Reuse the cached instruction table from the host if available.
+    // Creating a fresh 4 KB table on the native stack per recursive call
+    // exhausts the native stack at EVM depth ~1024.
+    if (host.instruction_table) |table| {
+        _ = sub_interp.runWithHost(table, host);
+        return;
+    }
     const spec = sub_interp.runtime_flags.spec_id;
     const table = makeInstructionTable(spec);
     _ = sub_interp.runWithHost(&table, host);
@@ -173,9 +180,9 @@ fn makeFrontierTable() InstructionTable {
     table[bytecode_mod.CALL] = entry(opcodes.opCall, 0);
     table[bytecode_mod.CALLCODE] = entry(opcodes.opCallcode, 0);
 
-    // CREATE (base static gas; dynamic costs computed at runtime)
+    // CREATE: all gas is dynamic (G_CREATE base + initcode word gas charged inside opCreate)
     // CREATE2 added in Constantinople (EIP-1014)
-    table[bytecode_mod.CREATE] = entry(opcodes.opCreate, gas_costs.G_CREATE);
+    table[bytecode_mod.CREATE] = entry(opcodes.opCreate, 0);
 
     return table;
 }
@@ -206,8 +213,8 @@ fn applyByzantiumChanges(table: *InstructionTable) void {
 fn applyConstantinopleChanges(table: *InstructionTable) void {
     // EXTCODEHASH added
     table[bytecode_mod.EXTCODEHASH] = entry(opcodes.opExtcodehash, 400);
-    // EIP-1014: CREATE2
-    table[bytecode_mod.CREATE2] = entry(opcodes.opCreate2, gas_costs.G_CREATE);
+    // EIP-1014: CREATE2 — all gas is dynamic (charged inside opCreate2)
+    table[bytecode_mod.CREATE2] = entry(opcodes.opCreate2, 0);
     // EIP-145: Bitwise shifts
     table[bytecode_mod.SHL] = entry(opcodes.opShl, gas_costs.G_VERYLOW);
     table[bytecode_mod.SHR] = entry(opcodes.opShr, gas_costs.G_VERYLOW);
@@ -256,8 +263,8 @@ fn applyCancunChanges(table: *InstructionTable) void {
 }
 
 fn applyOsakaChanges(table: *InstructionTable) void {
-    _ = table;
-    // No new EVM opcodes in Osaka
+    // EIP-7939: CLZ (Count Leading Zeros), gas cost = G_LOW (5)
+    table[bytecode_mod.CLZ] = entry(opcodes.opClz, gas_costs.G_LOW);
 }
 
 // ---------------------------------------------------------------------------

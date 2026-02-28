@@ -80,6 +80,9 @@ pub const Host = struct {
     run_sub_call: *const fn (host: *Host, sub_interp: *Interpreter) void,
     /// Precompile set for the current spec. Null disables precompile dispatch (benchmarks/unit tests).
     precompiles: ?*const precompile_mod.Precompiles = null,
+    /// Instruction dispatch table for the current spec. Stored here so sub-calls can reuse
+    /// the same table pointer instead of allocating a fresh 4 KB table on the native stack.
+    instruction_table: ?*const @import("interpreter.zig").InstructionTable = null,
 
     // -----------------------------------------------------------------------
     // Block / transaction environment (no state access required)
@@ -294,10 +297,19 @@ pub const Host = struct {
         // 5. Increment depth
         self.ctx.journaled_state.inner.depth += 1;
 
-        // 6. Build and run sub-interpreter
+        // 6. Build and run sub-interpreter.
+        // Heap-allocate to avoid native stack overflow on deep recursive EVM calls.
+        // The embedded Stack (32 KB) would exhaust the native stack at ~200 levels otherwise.
+        // Note: sub_interp is not freed here because return_data.data slices into
+        // sub_interp.memory.buffer.items which must remain valid for the caller.
         const spec_id = self.ctx.journaled_state.inner.spec;
         const sub_mem = Memory.new();
-        var sub_interp = Interpreter.new(
+        const sub_interp = std.heap.c_allocator.create(Interpreter) catch {
+            self.ctx.journaled_state.inner.depth -= 1;
+            self.ctx.journaled_state.checkpointRevert(checkpoint);
+            return CallResult.failure(inputs.gas_limit);
+        };
+        sub_interp.* = Interpreter.new(
             sub_mem,
             ExtBytecode.new(code),
             InputsImpl.new(
@@ -315,7 +327,7 @@ pub const Host = struct {
             inputs.gas_limit,
         );
 
-        self.run_sub_call(self, &sub_interp);
+        self.run_sub_call(self, sub_interp);
 
         // 7. Decrement depth
         self.ctx.journaled_state.inner.depth -= 1;
@@ -396,6 +408,23 @@ pub const Host = struct {
         // 5. Load target address into state (required before createAccountCheckpoint)
         _ = js.loadAccount(new_addr) catch return CreateResult.failure();
 
+        // EIP-7610: CREATE fails if target address has non-empty storage in the DB.
+        // Check loaded storage in evm_state (from prior SLOAD/SSTORE) and in DB (pre-inserted).
+        if (js.inner.evm_state.get(new_addr)) |acct| {
+            var slot_it = acct.storage.valueIterator();
+            while (slot_it.next()) |slot| {
+                if (slot.presentValue() != 0) return CreateResult.failure();
+            }
+        }
+        {
+            var db_it = js.database.storage_map.iterator();
+            while (db_it.next()) |entry| {
+                if (std.mem.eql(u8, &entry.key_ptr.@"0", &new_addr) and entry.value_ptr.* != 0) {
+                    return CreateResult.failure();
+                }
+            }
+        }
+
         // 6. Create account checkpoint: collision check, value transfer, set nonce=1 (EIP-161)
         const checkpoint = js.createAccountCheckpoint(caller, new_addr, value, spec_id) catch {
             return CreateResult.failure();
@@ -404,10 +433,16 @@ pub const Host = struct {
         // 7. Increment depth for sub-interpreter
         js.inner.depth += 1;
 
-        // 8. Build and run init-code sub-interpreter
+        // 8. Build and run init-code sub-interpreter (heap-allocated; see call() comment above).
         const sub_mem = Memory.new();
         const init_bytecode = bytecode_mod.Bytecode.newRaw(init_code);
-        var sub_interp = Interpreter.new(
+        const sub_interp = std.heap.c_allocator.create(Interpreter) catch {
+            js.inner.depth -= 1;
+            js.checkpointRevert(checkpoint);
+            return .{ .success = false, .address = [_]u8{0} ** 20,
+                       .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
+        };
+        sub_interp.* = Interpreter.new(
             sub_mem,
             ExtBytecode.new(init_bytecode),
             InputsImpl.new(
@@ -424,7 +459,7 @@ pub const Host = struct {
             spec_id,
             gas_limit,
         );
-        self.run_sub_call(self, &sub_interp);
+        self.run_sub_call(self, sub_interp);
 
         // 9. Decrement depth
         js.inner.depth -= 1;
@@ -476,11 +511,12 @@ pub const Host = struct {
         // 14. Commit sub-call state
         js.checkpointCommit();
 
+        // EIP-211: After a successful CREATE, RETURNDATASIZE is zero.
         return .{
             .success = true,
             .address = new_addr,
             .gas_remaining = gas_after_deposit,
-            .return_data = sub_interp.return_data.data,
+            .return_data = &[_]u8{},
             .gas_refunded = sub_interp.gas.refunded,
         };
     }

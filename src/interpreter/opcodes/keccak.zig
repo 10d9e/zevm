@@ -5,7 +5,9 @@ const gas_costs = @import("../gas_costs.zig");
 
 fn memoryCostWords(num_words: usize) u64 {
     const n: u64 = @intCast(num_words);
-    return n * gas_costs.G_MEMORY + (n * n) / 512;
+    const linear = std.math.mul(u64, n, gas_costs.G_MEMORY) catch return std.math.maxInt(u64);
+    const quadratic = (std.math.mul(u64, n, n) catch return std.math.maxInt(u64)) / 512;
+    return std.math.add(u64, linear, quadratic) catch std.math.maxInt(u64);
 }
 
 /// KECCAK256 opcode (0x20): Compute Keccak-256 hash of memory region
@@ -31,23 +33,28 @@ pub fn opKeccak256(ctx: *InstructionContext) void {
     if (!ctx.interpreter.gas.spend(word_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
 
     // Dynamic: memory expansion
+    const end = std.math.add(usize, offset_usize, length_usize) catch {
+        ctx.interpreter.halt(.memory_limit_oog); return;
+    };
     if (length_usize > 0) {
-        const end = offset_usize + length_usize;
         const current_words = (ctx.interpreter.memory.size() + 31) / 32;
         const new_words = (end + 31) / 32;
         if (new_words > current_words) {
             const expansion_cost = memoryCostWords(new_words) - memoryCostWords(current_words);
             if (!ctx.interpreter.gas.spend(expansion_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
         }
-        if (end > ctx.interpreter.memory.size()) {
-            ctx.interpreter.memory.buffer.resize(std.heap.c_allocator, end) catch {
+        const aligned_end = ((end + 31) / 32) * 32;
+        if (aligned_end > ctx.interpreter.memory.size()) {
+            const old_size = ctx.interpreter.memory.size();
+            ctx.interpreter.memory.buffer.resize(std.heap.c_allocator, aligned_end) catch {
                 ctx.interpreter.halt(.memory_limit_oog); return;
             };
+            @memset(ctx.interpreter.memory.buffer.items[old_size..aligned_end], 0);
         }
     }
 
     const data = if (length_usize > 0)
-        ctx.interpreter.memory.buffer.items[offset_usize .. offset_usize + length_usize]
+        ctx.interpreter.memory.buffer.items[offset_usize..end]
     else
         &[_]u8{};
 

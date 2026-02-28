@@ -11,7 +11,9 @@ const CallScheme = @import("../interpreter_action.zig").CallScheme;
 
 fn memoryCostWords(num_words: usize) u64 {
     const n: u64 = @intCast(num_words);
-    return n * gas_costs.G_MEMORY + (n * n) / 512;
+    const linear = std.math.mul(u64, n, gas_costs.G_MEMORY) catch return std.math.maxInt(u64);
+    const quadratic = (std.math.mul(u64, n, n) catch return std.math.maxInt(u64)) / 512;
+    return std.math.add(u64, linear, quadratic) catch std.math.maxInt(u64);
 }
 
 fn expandMemory(ctx: *InstructionContext, new_size: usize) bool {
@@ -19,12 +21,15 @@ fn expandMemory(ctx: *InstructionContext, new_size: usize) bool {
     const current = ctx.interpreter.memory.size();
     if (new_size <= current) return true;
     const current_words = (current + 31) / 32;
-    const new_words = (new_size + 31) / 32;
+    const new_words = (std.math.add(usize, new_size, 31) catch return false) / 32;
     if (new_words > current_words) {
         const cost = memoryCostWords(new_words) - memoryCostWords(current_words);
         if (!ctx.interpreter.gas.spend(cost)) return false;
     }
-    ctx.interpreter.memory.buffer.resize(std.heap.c_allocator, new_size) catch return false;
+    const aligned_size = new_words * 32;
+    const old_size = ctx.interpreter.memory.size();
+    ctx.interpreter.memory.buffer.resize(std.heap.c_allocator, aligned_size) catch return false;
+    @memset(ctx.interpreter.memory.buffer.items[old_size..aligned_size], 0);
     return true;
 }
 
@@ -84,11 +89,17 @@ fn callImpl(
 
     // Memory expansion for args region
     if (args_size_u > 0) {
-        if (!expandMemory(ctx, args_off_u + args_size_u)) { ctx.interpreter.halt(.out_of_gas); return; }
+        const args_end = std.math.add(usize, args_off_u, args_size_u) catch {
+            ctx.interpreter.halt(.memory_limit_oog); return;
+        };
+        if (!expandMemory(ctx, args_end)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
     // Memory expansion for return region
     if (ret_size_u > 0) {
-        if (!expandMemory(ctx, ret_off_u + ret_size_u)) { ctx.interpreter.halt(.out_of_gas); return; }
+        const ret_end = std.math.add(usize, ret_off_u, ret_size_u) catch {
+            ctx.interpreter.halt(.memory_limit_oog); return;
+        };
+        if (!expandMemory(ctx, ret_end)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
 
     // Determine warm/cold access for target address
@@ -237,7 +248,10 @@ pub fn opCreate(ctx: *InstructionContext) void {
     } else @intCast(offset);
 
     if (size_u > 0) {
-        if (!expandMemory(ctx, off_u + size_u)) { ctx.interpreter.halt(.out_of_gas); return; }
+        const create_end = std.math.add(usize, off_u, size_u) catch {
+            ctx.interpreter.halt(.memory_limit_oog); return;
+        };
+        if (!expandMemory(ctx, create_end)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
 
     // EIP-3860 (Shanghai+): initcode word gas
@@ -293,7 +307,10 @@ pub fn opCreate2(ctx: *InstructionContext) void {
     } else @intCast(offset);
 
     if (size_u > 0) {
-        if (!expandMemory(ctx, off_u + size_u)) { ctx.interpreter.halt(.out_of_gas); return; }
+        const create2_end = std.math.add(usize, off_u, size_u) catch {
+            ctx.interpreter.halt(.memory_limit_oog); return;
+        };
+        if (!expandMemory(ctx, create2_end)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
 
     // CREATE2 keccak word cost (charged for the init_code hash)
