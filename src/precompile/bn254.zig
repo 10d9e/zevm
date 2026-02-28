@@ -115,7 +115,9 @@ fn runAdd(input: []const u8, gas_cost: u64, gas_limit: u64) main.PrecompileResul
         @memset(&output, 0);
     }
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, &output) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &output) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, heap_out) };
 }
 
 /// BN254 elliptic curve scalar multiplication (Byzantium)
@@ -156,7 +158,9 @@ fn runMul(input: []const u8, gas_cost: u64, gas_limit: u64) main.PrecompileResul
         @memset(&output, 0);
     }
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, &output) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &output) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, heap_out) };
 }
 
 /// BN254 elliptic curve pairing check (Byzantium)
@@ -234,7 +238,9 @@ fn runPairing(input: []const u8, pair_per_point_cost: u64, pair_base_cost: u64, 
         output[31] = 1;
     }
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, &output) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &output) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, heap_out) };
 }
 
 /// Basic validation for G1 point (checks if coordinates are in valid range)

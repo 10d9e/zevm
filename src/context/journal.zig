@@ -672,8 +672,12 @@ pub const JournalInner = struct {
         };
         target_acc.info.balance = new_balance;
 
-        // safe to decrement for the caller as balance check is already done.
-        self.evm_state.getPtr(caller).?.info.balance = std.math.sub(u256, self.evm_state.getPtr(caller).?.info.balance, balance) catch unreachable;
+        // Decrement caller balance — if it underflows the value exceeds the caller's balance.
+        const new_caller_balance = std.math.sub(u256, self.evm_state.getPtr(caller).?.info.balance, balance) catch {
+            self.checkpointRevert(checkpoint);
+            return TransferError.OutOfFunds;
+        };
+        self.evm_state.getPtr(caller).?.info.balance = new_caller_balance;
 
         // add journal entry of transferred balance
         last_journal.append(std.heap.page_allocator, JournalEntryFactory.balanceTransfer(caller, target_address, balance)) catch {};

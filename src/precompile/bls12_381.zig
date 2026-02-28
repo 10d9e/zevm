@@ -145,9 +145,9 @@ fn removeG2Padding(padded: []const u8) ![4][FP_LENGTH]u8 {
 fn padG2Point(unpadded: []const u8) [PADDED_G2_LENGTH]u8 {
     var result: [PADDED_G2_LENGTH]u8 = [_]u8{0} ** PADDED_G2_LENGTH;
     @memcpy(result[16 .. 16 + FP_LENGTH], unpadded[0..FP_LENGTH]);
-    @memcpy(result[80 .. 80 + FP_LENGTH], unpadded[FP_LENGTH..]);
+    @memcpy(result[80 .. 80 + FP_LENGTH], unpadded[FP_LENGTH..][0..FP_LENGTH]);
     @memcpy(result[144 .. 144 + FP_LENGTH], unpadded[FP2_LENGTH..][0..FP_LENGTH]);
-    @memcpy(result[208 .. 208 + FP_LENGTH], unpadded[FP2_LENGTH..][FP_LENGTH..]);
+    @memcpy(result[208 .. 208 + FP_LENGTH], unpadded[FP2_LENGTH + FP_LENGTH ..][0..FP_LENGTH]);
     return result;
 }
 
@@ -187,7 +187,9 @@ pub fn bls12G1AddRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
     }
 
     const padded_result = padG1Point(&unpadded_result);
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(G1_ADD_BASE_GAS_FEE, &padded_result) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_result) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(G1_ADD_BASE_GAS_FEE, heap_out) };
 }
 
 /// BLS12-381 G1 multi-scalar multiplication
@@ -216,6 +218,9 @@ pub fn bls12G1MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
 
     var i: usize = 0;
     while (i < input.len) : (i += PADDED_G1_LENGTH + PADDED_FP_LENGTH) {
+        if (i + PADDED_G1_LENGTH + PADDED_FP_LENGTH > input.len) {
+            return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G1MsmInputLength };
+        }
         const point_padded = input[i..][0..PADDED_G1_LENGTH];
         const scalar_padded = input[i + PADDED_G1_LENGTH ..][0..PADDED_FP_LENGTH];
 
@@ -263,7 +268,9 @@ pub fn bls12G1MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
     }
 
     const padded_result = padG1Point(&unpadded_result);
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, &padded_result) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_result) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, heap_out) };
 }
 
 /// BLS12-381 G2 point addition
@@ -306,7 +313,9 @@ pub fn bls12G2AddRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
     }
 
     const padded_result = padG2Point(&unpadded_result);
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(G2_ADD_BASE_GAS_FEE, &padded_result) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_result) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(G2_ADD_BASE_GAS_FEE, heap_out) };
 }
 
 /// BLS12-381 G2 multi-scalar multiplication
@@ -335,6 +344,9 @@ pub fn bls12G2MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
 
     var i: usize = 0;
     while (i < input.len) : (i += PADDED_G2_LENGTH + PADDED_FP_LENGTH) {
+        if (i + PADDED_G2_LENGTH + PADDED_FP_LENGTH > input.len) {
+            return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G2MsmInputLength };
+        }
         const point_padded = input[i..][0..PADDED_G2_LENGTH];
         const scalar_padded = input[i + PADDED_G2_LENGTH ..][0..PADDED_FP_LENGTH];
 
@@ -384,7 +396,9 @@ pub fn bls12G2MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
     }
 
     const padded_result = padG2Point(&unpadded_result);
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, &padded_result) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_result) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, heap_out) };
 }
 
 /// BLS12-381 pairing check
@@ -469,7 +483,9 @@ pub fn bls12PairingRun(input: []const u8, gas_limit: u64) main.PrecompileResult 
         output[31] = 1;
     }
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, &output) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &output) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, heap_out) };
 }
 
 /// BLS12-381 map field element to G1
@@ -501,7 +517,9 @@ pub fn bls12MapFpToG1Run(input: []const u8, gas_limit: u64) main.PrecompileResul
     }
 
     const padded_result = padG1Point(&unpadded_result);
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(MAP_FP_TO_G1_BASE_GAS_FEE, &padded_result) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_result) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(MAP_FP_TO_G1_BASE_GAS_FEE, heap_out) };
 }
 
 /// BLS12-381 map field element to G2
@@ -535,5 +553,7 @@ pub fn bls12MapFp2ToG2Run(input: []const u8, gas_limit: u64) main.PrecompileResu
     }
 
     const padded_result = padG2Point(&unpadded_result);
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(MAP_FP2_TO_G2_BASE_GAS_FEE, &padded_result) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_result) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(MAP_FP2_TO_G2_BASE_GAS_FEE, heap_out) };
 }

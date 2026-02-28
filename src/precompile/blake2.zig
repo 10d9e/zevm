@@ -63,7 +63,9 @@ pub fn blake2fRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         std.mem.writeInt(u64, output[i * 8 ..][0..8], h[i], .little);
     }
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, &output) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &output) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, heap_out) };
 }
 
 /// SIGMA from spec: https://datatracker.ietf.org/doc/html/rfc7693#section-2.7

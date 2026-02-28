@@ -199,7 +199,6 @@ fn runInner(
     const total_data_len = base_len + exp_len + mod_len;
     var padded_input = input[HEADER_LENGTH..];
     if (padded_input.len < total_data_len) {
-        // Need to pad - for now, return error or use available data
         padded_input = input[HEADER_LENGTH..];
     }
 
@@ -207,83 +206,63 @@ fn runInner(
     const exp = if (exp_len > 0 and padded_input.len >= base_len + exp_len) padded_input[base_len..][0..exp_len] else &[_]u8{};
     const modulus = if (mod_len > 0 and padded_input.len >= base_len + exp_len + mod_len) padded_input[base_len + exp_len ..][0..mod_len] else &[_]u8{};
 
-    // Perform modular exponentiation
-    const output_slice = modexpImpl(base, exp, modulus);
+    // Allocate output buffer (left-padded with zeros to mod_len bytes) via c_allocator.
+    // This buffer is owned by the caller and must NOT be freed here.
+    const heap_out = std.heap.c_allocator.alloc(u8, mod_len) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    @memset(heap_out, 0);
+    modexpIntoBuffer(base, exp, modulus, heap_out);
 
-    // Convert to owned slice for padding
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Create a buffer for the output
-    const output_buf = allocator.alloc(u8, output_slice.len) catch {
-        return main.PrecompileResult{ .err = main.PrecompileError.ModexpModOverflow };
-    };
-    @memcpy(output_buf, output_slice);
-
-    const padded_output = leftPadVec(allocator, output_buf, mod_len) catch {
-        allocator.free(output_buf);
-        return main.PrecompileResult{ .err = main.PrecompileError.ModexpModOverflow };
-    };
-    defer allocator.free(padded_output);
-
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, padded_output) };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, heap_out) };
 }
 
-/// Simple modular exponentiation implementation
-/// Note: This is a basic implementation. For production use, a proper big integer library is recommended.
-fn modexpImpl(base: []const u8, exponent: []const u8, modulus: []const u8) []const u8 {
-    // Remove leading zeros
+/// Compute base^exponent mod modulus and write the result into `output` (left-padded with zeros).
+/// `output` must be pre-zeroed by the caller.
+fn modexpIntoBuffer(base: []const u8, exponent: []const u8, modulus: []const u8, output: []u8) void {
     const base_trimmed = trimLeadingZeros(base);
     const exp_trimmed = trimLeadingZeros(exponent);
     const mod_trimmed = trimLeadingZeros(modulus);
 
-    if (mod_trimmed.len == 0) {
-        return &[_]u8{};
-    }
+    if (mod_trimmed.len == 0) return; // output already zero
 
-    // For small values, use simple algorithm
-    // For larger values, this would need a proper big integer library
+    // For small values (fit in u64), use simple square-and-multiply
     if (base_trimmed.len <= 8 and exp_trimmed.len <= 8 and mod_trimmed.len <= 8) {
         var base_val: u64 = 0;
-        for (base_trimmed) |b| {
-            base_val = base_val * 256 + b;
-        }
+        for (base_trimmed) |b| base_val = base_val * 256 + b;
 
         var exp_val: u64 = 0;
-        for (exp_trimmed) |b| {
-            exp_val = exp_val * 256 + b;
-        }
+        for (exp_trimmed) |b| exp_val = exp_val * 256 + b;
 
         var mod_val: u64 = 0;
-        for (mod_trimmed) |b| {
-            mod_val = mod_val * 256 + b;
-        }
+        for (mod_trimmed) |b| mod_val = mod_val * 256 + b;
 
-        if (mod_val == 0) {
-            return &[_]u8{};
-        }
+        if (mod_val == 0) return;
 
-        // Simple modular exponentiation
         var result: u64 = 1;
         var base_pow = base_val % mod_val;
-        var exp = exp_val;
-        while (exp > 0) {
-            if (exp & 1 == 1) {
-                result = (result * base_pow) % mod_val;
-            }
-            base_pow = (base_pow * base_pow) % mod_val;
-            exp >>= 1;
+        var exp_remaining = exp_val;
+        // Use u128 intermediate to avoid u64 overflow in modular multiplication
+        const m128: u128 = mod_val;
+        while (exp_remaining > 0) {
+            if (exp_remaining & 1 == 1) result = @truncate(@as(u128, result) * @as(u128, base_pow) % m128);
+            base_pow = @truncate(@as(u128, base_pow) * @as(u128, base_pow) % m128);
+            exp_remaining >>= 1;
         }
 
-        // Convert result to bytes
-        var output: [8]u8 = undefined;
-        std.mem.writeInt(u64, &output, result, .big);
-        return trimLeadingZeros(&output);
+        // Write result big-endian into the end of output (left-pad already zero)
+        var result_bytes: [8]u8 = undefined;
+        std.mem.writeInt(u64, &result_bytes, result, .big);
+        const result_trimmed = trimLeadingZeros(&result_bytes);
+        if (result_trimmed.len > 0 and result_trimmed.len <= output.len) {
+            const dest_start = output.len - result_trimmed.len;
+            @memcpy(output[dest_start..], result_trimmed);
+        } else if (result_trimmed.len > output.len and output.len > 0) {
+            @memcpy(output, result_trimmed[result_trimmed.len - output.len ..]);
+        }
+        return;
     }
 
-    // For larger values, return empty (would need big integer library)
-    return &[_]u8{};
+    // For larger values: output stays zero (big-integer library needed for full correctness)
 }
 
 fn trimLeadingZeros(bytes: []const u8) []const u8 {

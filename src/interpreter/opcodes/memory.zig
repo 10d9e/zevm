@@ -5,7 +5,10 @@ const gas_costs = @import("../gas_costs.zig");
 
 fn memoryCostWords(num_words: usize) u64 {
     const n: u64 = @intCast(num_words);
-    return n * gas_costs.G_MEMORY + (n * n) / 512;
+    // Use saturating arithmetic: a huge offset must yield OOG, not a panic.
+    const linear = std.math.mul(u64, n, gas_costs.G_MEMORY) catch return std.math.maxInt(u64);
+    const quadratic = (std.math.mul(u64, n, n) catch return std.math.maxInt(u64)) / 512;
+    return std.math.add(u64, linear, quadratic) catch std.math.maxInt(u64);
 }
 
 fn memoryExpansionCost(current_size: usize, new_size: usize) u64 {
@@ -66,10 +69,10 @@ pub fn opMstore(ctx: *InstructionContext) void {
     if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
 
     const dest = ctx.interpreter.memory.buffer.items[offset_usize..][0..32];
-    std.mem.writeInt(u64, dest[0..8], @intCast(value >> 192), .big);
-    std.mem.writeInt(u64, dest[8..16], @intCast(value >> 128), .big);
-    std.mem.writeInt(u64, dest[16..24], @intCast(value >> 64), .big);
-    std.mem.writeInt(u64, dest[24..32], @intCast(value), .big);
+    std.mem.writeInt(u64, dest[0..8], @truncate(value >> 192), .big);
+    std.mem.writeInt(u64, dest[8..16], @truncate(value >> 128), .big);
+    std.mem.writeInt(u64, dest[16..24], @truncate(value >> 64), .big);
+    std.mem.writeInt(u64, dest[24..32], @truncate(value), .big);
 }
 
 /// MSTORE8 opcode (0x53): Store byte to memory

@@ -61,7 +61,9 @@ pub fn ecRecoverRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
             // Pad address to 32 bytes (left-padded with zeros)
             var output: [32]u8 = [_]u8{0} ** 32;
             @memcpy(output[12..32], &address);
-            return main.PrecompileResult{ .success = main.PrecompileOutput.new(ECRECOVER_BASE, &output) };
+            const heap_out = std.heap.c_allocator.dupe(u8, &output) catch
+                return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+            return main.PrecompileResult{ .success = main.PrecompileOutput.new(ECRECOVER_BASE, heap_out) };
         }
     }
 

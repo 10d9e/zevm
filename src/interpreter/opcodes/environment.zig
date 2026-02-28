@@ -238,10 +238,14 @@ pub fn opReturndatacopy(ctx: *InstructionContext) void {
     // Dynamic: memory expansion
     if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
 
-    @memcpy(
-        ctx.interpreter.memory.buffer.items[mem_off_usize .. mem_off_usize + size_usize],
-        return_data[src_off_usize .. src_off_usize + size_usize],
-    );
+    // Use direction-safe copy: return_data may alias execution memory (e.g. identity precompile).
+    const dst = ctx.interpreter.memory.buffer.items[mem_off_usize .. mem_off_usize + size_usize];
+    const src = return_data[src_off_usize .. src_off_usize + size_usize];
+    if (@intFromPtr(dst.ptr) <= @intFromPtr(src.ptr)) {
+        std.mem.copyForwards(u8, dst, src);
+    } else {
+        std.mem.copyBackwards(u8, dst, src);
+    }
 }
 
 // ---------------------------------------------------------------------------

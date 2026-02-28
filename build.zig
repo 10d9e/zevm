@@ -576,33 +576,12 @@ pub fn build(b: *std.Build) void {
     cheatcode_inspector_exe.root_module.addImport("inspector", inspector_module);
     b.installArtifact(cheatcode_inspector_exe);
 
-    // --- Spec test generator (standalone, no ZEVM deps) ---
+    // --- Spec test runner (links ZEVM modules, parses fixtures at runtime) ---
     const spec_test_types_module = b.addModule("types", .{
         .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/spec_test/types.zig" } },
         .target = target,
         .optimize = optimize,
     });
-
-    const generator_exe = b.addExecutable(.{
-        .name = "spec-test-generator",
-        .root_module = b.createModule(.{
-            .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/spec_test/generator.zig" } },
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    b.installArtifact(generator_exe);
-
-    const gen_step = b.step("spec-test-generator", "Build the spec test generator");
-    gen_step.dependOn(&b.addInstallArtifact(generator_exe, .{}).step);
-
-    // --- Spec test runner (links ZEVM modules, imports generated data) ---
-    const spec_test_data_module = b.addModule("spec_test_data", .{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "spec-tests/generated/data.zig" } },
-        .target = target,
-        .optimize = optimize,
-    });
-    spec_test_data_module.addImport("types", spec_test_types_module);
 
     const runner_exe = b.addExecutable(.{
         .name = "spec-test-runner",
@@ -612,7 +591,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    runner_exe.root_module.addImport("spec_test_data", spec_test_data_module);
     runner_exe.root_module.addImport("types", spec_test_types_module);
     runner_exe.root_module.addImport("runner", b.addModule("runner", .{
         .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/spec_test/runner.zig" } },
@@ -631,6 +609,7 @@ pub fn build(b: *std.Build) void {
     runner_mod.addImport("state", state_module);
     runner_mod.addImport("precompile", precompile_module);
 
+    addCryptoLibraries(b, runner_exe, enable_blst, enable_mcl, blst_include_path, mcl_include_path, is_windows, target_info.os.tag == .macos);
     b.installArtifact(runner_exe);
 
     const runner_step = b.step("spec-test-runner", "Build the spec test runner");

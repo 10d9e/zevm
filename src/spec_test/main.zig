@@ -1,9 +1,10 @@
 // Spec test runner entry point.
-// Imports generated test data, runs each test case, reports results.
+// Reads JSON fixture files at runtime, parses test cases, and runs them.
+// Usage: spec-test-runner [fixture-dir] [--fork=NAME] [--filter=SUBSTR] [--fail-fast] [--verbose]
 
 const std = @import("std");
-const data = @import("spec_test_data");
 const runner = @import("runner");
+const types = @import("types");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -13,6 +14,7 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
+    var fixture_dir: []const u8 = "spec-tests/fixtures/state_tests";
     var fork_filter: ?[]const u8 = null;
     var name_filter: ?[]const u8 = null;
     var fail_fast = false;
@@ -27,6 +29,8 @@ pub fn main() !void {
             fail_fast = true;
         } else if (std.mem.eql(u8, arg, "--verbose")) {
             verbose = true;
+        } else if (!std.mem.startsWith(u8, arg, "--")) {
+            fixture_dir = arg;
         }
     }
 
@@ -40,50 +44,118 @@ pub fn main() !void {
 
     var timer = try std.time.Timer.start();
 
-    for (data.test_cases) |tc| {
-        // Apply filters
-        if (fork_filter) |ff| {
-            if (!std.mem.eql(u8, tc.fork, ff)) {
-                skipped += 1;
-                continue;
-            }
+    // Collect JSON file paths first so we can open a fresh dir handle per file
+    var json_paths: std.ArrayList([]u8) = .{};
+    defer {
+        for (json_paths.items) |p| allocator.free(p);
+        json_paths.deinit(allocator);
+    }
+
+    {
+        var dir = std.fs.cwd().openDir(fixture_dir, .{ .iterate = true }) catch |err| {
+            std.debug.print("Error: Cannot open fixture directory '{s}': {}\n", .{ fixture_dir, err });
+            std.process.exit(1);
+        };
+        defer dir.close();
+
+        var walker = try dir.walk(allocator);
+        defer walker.deinit();
+
+        while (try walker.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.basename, ".json")) continue;
+            const full = try std.fs.path.join(allocator, &.{ fixture_dir, entry.path });
+            try json_paths.append(allocator, full);
         }
-        if (name_filter) |nf| {
-            if (std.mem.indexOf(u8, tc.name, nf) == null) {
-                skipped += 1;
-                continue;
+    }
+
+    for (json_paths.items) |json_path| {
+        // Arena covers all allocations for this fixture file
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        const file_data = std.fs.cwd().readFileAlloc(a, json_path, 256 * 1024 * 1024) catch |err| {
+            std.debug.print("Warning: Could not read {s}: {}\n", .{ json_path, err });
+            continue;
+        };
+
+        const parsed = std.json.parseFromSlice(std.json.Value, a, file_data, .{}) catch |err| {
+            std.debug.print("Warning: Could not parse {s}: {}\n", .{ json_path, err });
+            continue;
+        };
+
+        const root = parsed.value;
+        if (root != .object) continue;
+
+        // If any top-level key contains "fork_Osaka", skip matching "fork_Prague" entries
+        var has_osaka = false;
+        {
+            var it = root.object.iterator();
+            while (it.next()) |kv| {
+                if (std.mem.indexOf(u8, kv.key_ptr.*, "fork_Osaka") != null) {
+                    has_osaka = true;
+                    break;
+                }
             }
         }
 
-        const outcome = runner.runTestCase(tc, allocator);
-        switch (outcome.result) {
-            .pass => {
-                passed += 1;
-                if (verbose) {
-                    try stdout.print("PASS {s}\n", .{tc.name});
+        var test_iter = root.object.iterator();
+        while (test_iter.next()) |test_entry| {
+            const test_name = test_entry.key_ptr.*;
+            const test_obj = test_entry.value_ptr.*;
+            if (test_obj != .object) continue;
+            if (has_osaka and std.mem.indexOf(u8, test_name, "fork_Prague") != null) continue;
+
+            var cases: std.ArrayList(types.TestCase) = .{};
+            parseTestCases(a, test_name, &test_obj.object, &cases) catch |err| {
+                std.debug.print("Warning: Error parsing {s}: {}\n", .{ test_name, err });
+                continue;
+            };
+
+            for (cases.items) |tc| {
+                if (fork_filter) |ff| {
+                    if (!std.mem.eql(u8, tc.fork, ff)) {
+                        skipped += 1;
+                        continue;
+                    }
                 }
-            },
-            .fail => {
-                failed += 1;
-                try stdout.print("FAIL {s}\n", .{tc.name});
-                try printDetail(stdout, outcome.detail);
-                if (fail_fast) {
-                    try stdout.print("\n--fail-fast: stopping after first failure\n", .{});
-                    try printSummary(stdout, passed, failed, skipped, errors, timer.read());
-                    std.process.exit(1);
+                if (name_filter) |nf| {
+                    if (std.mem.indexOf(u8, tc.name, nf) == null) {
+                        skipped += 1;
+                        continue;
+                    }
                 }
-            },
-            .skip => skipped += 1,
-            .err => {
-                errors += 1;
-                try stdout.print("ERROR {s}\n", .{tc.name});
-                try printDetail(stdout, outcome.detail);
-                if (fail_fast) {
-                    try stdout.print("\n--fail-fast: stopping after first error\n", .{});
-                    try printSummary(stdout, passed, failed, skipped, errors, timer.read());
-                    std.process.exit(1);
+
+                const outcome = runner.runTestCase(tc, allocator);
+                switch (outcome.result) {
+                    .pass => {
+                        passed += 1;
+                        if (verbose) try stdout.print("PASS {s}\n", .{tc.name});
+                    },
+                    .fail => {
+                        failed += 1;
+                        try stdout.print("FAIL {s}\n", .{tc.name});
+                        try printDetail(stdout, outcome.detail);
+                        if (fail_fast) {
+                            try stdout.print("\n--fail-fast: stopping after first failure\n", .{});
+                            try printSummary(stdout, passed, failed, skipped, errors, timer.read());
+                            std.process.exit(1);
+                        }
+                    },
+                    .skip => skipped += 1,
+                    .err => {
+                        errors += 1;
+                        try stdout.print("ERROR {s}\n", .{tc.name});
+                        try printDetail(stdout, outcome.detail);
+                        if (fail_fast) {
+                            try stdout.print("\n--fail-fast: stopping after first error\n", .{});
+                            try printSummary(stdout, passed, failed, skipped, errors, timer.read());
+                            std.process.exit(1);
+                        }
+                    },
                 }
-            },
+            }
         }
     }
 
@@ -94,9 +166,304 @@ pub fn main() !void {
     }
 }
 
+// ---------------------------------------------------------------------------
+// JSON parsing — produces types.TestCase values from fixture objects
+// ---------------------------------------------------------------------------
+
+fn parseTestCases(
+    a: std.mem.Allocator,
+    test_name: []const u8,
+    obj: *const std.json.ObjectMap,
+    out: *std.ArrayList(types.TestCase),
+) !void {
+    const env_val = obj.get("env") orelse return;
+    if (env_val != .object) return;
+    const pre_val = obj.get("pre") orelse return;
+    if (pre_val != .object) return;
+    const tx_val = obj.get("transaction") orelse return;
+    if (tx_val != .object) return;
+    const post_val = obj.get("post") orelse return;
+    if (post_val != .object) return;
+
+    // Block env
+    const coinbase = try parseAddress(getStr(env_val.object, "currentCoinbase") orelse return);
+    const block_number = try parseU256Hex(getStr(env_val.object, "currentNumber") orelse "0x0");
+    const block_timestamp = try parseU256Hex(getStr(env_val.object, "currentTimestamp") orelse "0x0");
+    const block_gaslimit = try parseU64Hex(getStr(env_val.object, "currentGasLimit") orelse "0x0");
+    const block_basefee = try parseU64Hex(getStr(env_val.object, "currentBaseFee") orelse "0x0");
+    const block_difficulty = try parseU256Hex(getStr(env_val.object, "currentDifficulty") orelse "0x0");
+    const prevrandao = try parseU256Hex(
+        getStr(env_val.object, "currentRandom") orelse
+            getStr(env_val.object, "currentDifficulty") orelse "0x0",
+    );
+
+    // Transaction scalar fields
+    const tx_sender = try parseAddress(getStr(tx_val.object, "sender") orelse return);
+    const tx_to_str = getStr(tx_val.object, "to") orelse "";
+    const is_create = tx_to_str.len == 0;
+    const tx_to: [20]u8 = if (is_create) [_]u8{0} ** 20 else try parseAddress(tx_to_str);
+    const tx_gas_price = try parseU128Hex(getStr(tx_val.object, "gasPrice") orelse "0x0");
+
+    // Transaction arrays
+    const tx_data_arr = tx_val.object.get("data") orelse return;
+    if (tx_data_arr != .array) return;
+    const tx_gas_arr = tx_val.object.get("gasLimit") orelse return;
+    if (tx_gas_arr != .array) return;
+    const tx_value_arr = tx_val.object.get("value") orelse return;
+    if (tx_value_arr != .array) return;
+
+    // Pre-state accounts (shared across all post entries for this test)
+    var pre_list: std.ArrayList(types.PreAccount) = .{};
+    {
+        var pre_iter = pre_val.object.iterator();
+        while (pre_iter.next()) |pe| {
+            const acct = pe.value_ptr.*;
+            if (acct != .object) continue;
+            const addr = parseAddress(pe.key_ptr.*) catch continue;
+            const balance = parseU256Hex(getStr(acct.object, "balance") orelse "0x0") catch continue;
+            const nonce = parseU64Hex(getStr(acct.object, "nonce") orelse "0x0") catch continue;
+            const code = hexToBytes(a, getStr(acct.object, "code") orelse "0x") catch continue;
+
+            var stor_list: std.ArrayList(types.StorageEntry) = .{};
+            if (acct.object.get("storage")) |sv| {
+                if (sv == .object) {
+                    var si = sv.object.iterator();
+                    while (si.next()) |se| {
+                        const k = parseU256Hex(se.key_ptr.*) catch continue;
+                        const v = parseU256Hex(getJsonStr(se.value_ptr.*) orelse continue) catch continue;
+                        stor_list.append(a, .{ .key = k, .value = v }) catch continue;
+                    }
+                }
+            }
+
+            pre_list.append(a, .{
+                .address = addr,
+                .balance = balance,
+                .nonce = nonce,
+                .code = code,
+                .storage = stor_list.items,
+            }) catch continue;
+        }
+    }
+
+    // Prefer Osaka, fall back to Prague
+    const fork_priority = [_][]const u8{ "Osaka", "Prague" };
+    var fork_name: []const u8 = undefined;
+    var post_fork: std.json.Value = undefined;
+    var found = false;
+    for (fork_priority) |fn_| {
+        if (post_val.object.get(fn_)) |pf| {
+            if (pf == .array) {
+                fork_name = fn_;
+                post_fork = pf;
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found) return;
+
+    for (post_fork.array.items) |post_entry| {
+        if (post_entry != .object) continue;
+        const indexes = post_entry.object.get("indexes") orelse continue;
+        if (indexes != .object) continue;
+
+        const di = getUint(indexes.object, "data") orelse continue;
+        const gi = getUint(indexes.object, "gas") orelse continue;
+        const vi = getUint(indexes.object, "value") orelse continue;
+
+        if (di >= tx_data_arr.array.items.len) continue;
+        if (gi >= tx_gas_arr.array.items.len) continue;
+        if (vi >= tx_value_arr.array.items.len) continue;
+
+        const calldata = hexToBytes(a, getJsonStr(tx_data_arr.array.items[di]) orelse continue) catch continue;
+        const gas_limit = parseU64Hex(getJsonStr(tx_gas_arr.array.items[gi]) orelse continue) catch continue;
+        const value = parseU256Hex(getJsonStr(tx_value_arr.array.items[vi]) orelse continue) catch continue;
+
+        const expect_exception = post_entry.object.get("expectException") != null;
+
+        const expected_state = post_entry.object.get("state") orelse continue;
+        if (expected_state != .object) continue;
+
+        var exp_list: std.ArrayList(types.ExpectedAccount) = .{};
+        {
+            var ei = expected_state.object.iterator();
+            while (ei.next()) |ee| {
+                const ea = ee.value_ptr.*;
+                if (ea != .object) continue;
+                const addr2 = parseAddress(ee.key_ptr.*) catch continue;
+                const sv = ea.object.get("storage") orelse continue;
+                if (sv != .object) continue;
+                if (sv.object.count() == 0) continue;
+
+                var sl: std.ArrayList(types.StorageEntry) = .{};
+                var si2 = sv.object.iterator();
+                while (si2.next()) |se2| {
+                    const k = parseU256Hex(se2.key_ptr.*) catch continue;
+                    const v = parseU256Hex(getJsonStr(se2.value_ptr.*) orelse continue) catch continue;
+                    sl.append(a, .{ .key = k, .value = v }) catch continue;
+                }
+
+                exp_list.append(a, .{ .address = addr2, .storage = sl.items }) catch continue;
+            }
+        }
+
+        const name = try std.fmt.allocPrint(a, "{s}_{s}_{d}_{d}_{d}", .{ test_name, fork_name, di, gi, vi });
+
+        try out.append(a, .{
+            .name = name,
+            .fork = fork_name,
+            .coinbase = coinbase,
+            .block_number = block_number,
+            .block_timestamp = block_timestamp,
+            .block_gaslimit = block_gaslimit,
+            .block_basefee = block_basefee,
+            .block_difficulty = block_difficulty,
+            .prevrandao = prevrandao,
+            .caller = tx_sender,
+            .target = tx_to,
+            .is_create = is_create,
+            .value = value,
+            .calldata = calldata,
+            .gas_limit = gas_limit,
+            .gas_price = tx_gas_price,
+            .pre_accounts = pre_list.items,
+            .expected_storage = exp_list.items,
+            .expect_exception = expect_exception,
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Parsing helpers (ported from generator.zig)
+// ---------------------------------------------------------------------------
+
+fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    return getJsonStr(obj.get(key) orelse return null);
+}
+
+fn getJsonStr(val: std.json.Value) ?[]const u8 {
+    return switch (val) {
+        .string => |s| s,
+        else => null,
+    };
+}
+
+fn getUint(obj: std.json.ObjectMap, key: []const u8) ?usize {
+    return switch (obj.get(key) orelse return null) {
+        .integer => |i| @intCast(i),
+        else => null,
+    };
+}
+
+fn parseAddress(hex: []const u8) ![20]u8 {
+    const s = stripPrefix(hex);
+    var addr: [20]u8 = [_]u8{0} ** 20;
+    if (s.len == 0) return addr;
+    const start: usize = if (s.len > 40) s.len - 40 else 0;
+    const padded = s.len - start;
+    const byte_len = (padded + 1) / 2;
+    const offset = 20 - byte_len;
+    var i: usize = 0;
+    var si = start;
+    if (padded % 2 == 1) {
+        addr[offset] = try hexDigit(s[si]);
+        si += 1;
+        i = 1;
+    }
+    while (si + 1 < s.len) {
+        addr[offset + i] = (try hexDigit(s[si])) << 4 | try hexDigit(s[si + 1]);
+        si += 2;
+        i += 1;
+    }
+    return addr;
+}
+
+fn parseU256Hex(hex: []const u8) ![32]u8 {
+    const s = stripPrefix(hex);
+    var result: [32]u8 = [_]u8{0} ** 32;
+    if (s.len == 0) return result;
+    const byte_len = (s.len + 1) / 2;
+    if (byte_len > 32) return error.Overflow;
+    const offset = 32 - byte_len;
+    var i: usize = 0;
+    var si: usize = 0;
+    if (s.len % 2 == 1) {
+        result[offset] = try hexDigit(s[0]);
+        si = 1;
+        i = 1;
+    }
+    while (si + 1 < s.len) {
+        result[offset + i] = (try hexDigit(s[si])) << 4 | try hexDigit(s[si + 1]);
+        si += 2;
+        i += 1;
+    }
+    return result;
+}
+
+fn parseU64Hex(hex: []const u8) !u64 {
+    const s = stripPrefix(hex);
+    if (s.len == 0) return 0;
+    var result: u64 = 0;
+    for (s) |c| {
+        result = std.math.mul(u64, result, 16) catch return error.Overflow;
+        result = std.math.add(u64, result, try hexDigit(c)) catch return error.Overflow;
+    }
+    return result;
+}
+
+fn parseU128Hex(hex: []const u8) !u128 {
+    const s = stripPrefix(hex);
+    if (s.len == 0) return 0;
+    var result: u128 = 0;
+    for (s) |c| {
+        result = std.math.mul(u128, result, 16) catch return error.Overflow;
+        result = std.math.add(u128, result, try hexDigit(c)) catch return error.Overflow;
+    }
+    return result;
+}
+
+fn hexToBytes(a: std.mem.Allocator, hex: []const u8) ![]u8 {
+    const s = stripPrefix(hex);
+    if (s.len == 0) return a.alloc(u8, 0);
+    const byte_len = (s.len + 1) / 2;
+    const bytes = try a.alloc(u8, byte_len);
+    var i: usize = 0;
+    var si: usize = 0;
+    if (s.len % 2 == 1) {
+        bytes[0] = try hexDigit(s[0]);
+        si = 1;
+        i = 1;
+    }
+    while (si + 1 < s.len) {
+        bytes[i] = (try hexDigit(s[si])) << 4 | try hexDigit(s[si + 1]);
+        si += 2;
+        i += 1;
+    }
+    return bytes;
+}
+
+fn stripPrefix(hex: []const u8) []const u8 {
+    if (hex.len >= 2 and hex[0] == '0' and (hex[1] == 'x' or hex[1] == 'X'))
+        return hex[2..];
+    return hex;
+}
+
+fn hexDigit(c: u8) !u8 {
+    return switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => c - 'a' + 10,
+        'A'...'F' => c - 'A' + 10,
+        else => error.InvalidHexChar,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Output helpers (unchanged from original main.zig)
+// ---------------------------------------------------------------------------
+
 fn printDetail(stdout: anytype, detail: runner.FailureDetail) !void {
     if (detail.address != null and detail.storage_key != null and detail.expected != null and detail.actual != null) {
-        // Storage mismatch
         const addr_fmt = runner.fmtAddress(detail.address.?);
         var key_buf: [68]u8 = undefined;
         const key_len = runner.fmtU256Bytes(detail.storage_key.?, &key_buf);

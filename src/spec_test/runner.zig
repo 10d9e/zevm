@@ -149,6 +149,14 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
     // Build context (db is moved into Context by value)
     var ctx = context.Context.new(db, spec);
 
+    // Pre-load all pre-state accounts into the journal so that sload/sstore can
+    // find them in evm_state (they require accounts to be loaded before access).
+    for (tc.pre_accounts) |acct| {
+        _ = ctx.journaled_state.loadAccount(acct.address) catch {
+            return .{ .result = .err, .detail = .{ .reason = "OOM loading account into journal" } };
+        };
+    }
+
     // Set block env
     ctx.setBlock(context.BlockEnv{
         .number = u256FromBeBytes(tc.block_number),
@@ -218,7 +226,7 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
     // Validate expected storage by reading from the journal's evm_state.
     // Slots written during execution are in evm_state[addr].storage[key].present_value.
     // Slots not accessed fall back to the pre-populated DB.
-    const evm_state = &ctx.journaled_state.evm_state;
+    const evm_state = &ctx.journaled_state.inner.evm_state;
     for (tc.expected_storage) |expected_acct| {
         for (expected_acct.storage) |entry| {
             const key = u256FromBeBytes(entry.key);

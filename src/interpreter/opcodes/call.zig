@@ -161,13 +161,17 @@ fn callImpl(
     ctx.interpreter.gas.remaining +|= result.gas_remaining;
     ctx.interpreter.gas.refunded += result.gas_refunded;
 
-    // Copy return data to memory
+    // Copy return data to memory (use direction-safe copy: return data may alias
+    // execution memory, e.g. when the identity precompile echoes calldata).
     const actual_ret_size = @min(result.return_data.len, ret_size_u);
     if (actual_ret_size > 0) {
-        @memcpy(
-            ctx.interpreter.memory.buffer.items[ret_off_u .. ret_off_u + actual_ret_size],
-            result.return_data[0..actual_ret_size],
-        );
+        const dst = ctx.interpreter.memory.buffer.items[ret_off_u .. ret_off_u + actual_ret_size];
+        const src = result.return_data[0..actual_ret_size];
+        if (@intFromPtr(dst.ptr) <= @intFromPtr(src.ptr)) {
+            std.mem.copyForwards(u8, dst, src);
+        } else {
+            std.mem.copyBackwards(u8, dst, src);
+        }
     }
 
     // Update interpreter's return data buffer from sub-call
