@@ -54,7 +54,7 @@ pub const Secp256k1 = struct {
     ) ?[20]u8 {
         // Create recoverable signature
         var recoverable_sig: c.secp256k1_ecdsa_recoverable_signature = undefined;
-        var mut_recid: c_int = @intCast(recid);
+        const mut_recid: c_int = @intCast(recid);
 
         // Parse the compact signature with recovery ID
         if (c.secp256k1_ecdsa_recoverable_signature_parse_compact(
@@ -74,25 +74,7 @@ pub const Secp256k1 = struct {
             &recoverable_sig,
             &msg,
         ) == 0) {
-            // Recovery failed - try with flipped recovery ID (for signature normalization)
-            // This handles cases where the signature's s value needs to be normalized
-            mut_recid ^= 1;
-            if (c.secp256k1_ecdsa_recoverable_signature_parse_compact(
-                self.ctx,
-                &recoverable_sig,
-                &sig,
-                mut_recid,
-            ) == 0) {
-                return null;
-            }
-            if (c.secp256k1_ecdsa_recover(
-                self.ctx,
-                &pubkey,
-                &recoverable_sig,
-                &msg,
-            ) == 0) {
-                return null;
-            }
+            return null;
         }
 
         // Serialize public key (uncompressed, 65 bytes: 0x04 + 64 bytes)

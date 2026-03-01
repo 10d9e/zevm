@@ -5,6 +5,10 @@ const InstructionContext = @import("../instruction_context.zig").InstructionCont
 /// STOP opcode (0x00): Halt execution
 /// Stack: [] -> []   Gas: 0 (G_ZERO, charged by dispatch)
 pub fn opStop(ctx: *InstructionContext) void {
+    // Per EVM spec, STOP produces empty output. Clear return_data so:
+    // 1. RETURNDATASIZE in the caller is 0 after a STOP-terminating call.
+    // 2. For CREATE/CREATE2, deployed code is empty (not stale from a prior sub-call).
+    ctx.interpreter.return_data.data = &[_]u8{};
     ctx.interpreter.halt(.stop);
 }
 

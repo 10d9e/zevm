@@ -202,10 +202,11 @@ pub const Host = struct {
         const load = self.ctx.journaled_state.loadAccountWithCode(addr) catch return null;
         const acct = load.data;
         const hash = acct.info.code_hash;
-        // An account is empty if nonce=0, balance=0, and code is empty.
-        // EIP-7702 delegation code (23 bytes) is non-empty, so delegating accounts are NOT empty.
-        const is_empty = acct.info.nonce == 0 and acct.info.balance == 0 and
-            (acct.info.code == null or (acct.info.code.?.isEmpty()));
+        // An account is "non-existing" (returns 0) only if it was loaded as not-existing
+        // from the DB AND has never been touched during this transaction.
+        // Accounts that were touched (e.g., by EIP-7702 setCode clearing delegation to 0x0)
+        // are considered existing and return KECCAK_EMPTY (not 0) even with empty code.
+        const is_empty = acct.isLoadedAsNotExistingNotTouched();
         return .{
             .hash = hash,
             .is_cold = load.is_cold,
@@ -333,8 +334,10 @@ pub const Host = struct {
         const checkpoint = self.ctx.journaled_state.getCheckpoint();
 
         // 4. Value transfer (if any).
+        // DELEGATECALL inherits msg.value (CALLVALUE opcode) from parent but does NOT
+        // transfer ETH. Only CALL and CALLCODE actually move ETH.
         // Transfer failure means no sub-code ran → return all gas to caller.
-        if (inputs.value > 0) {
+        if (inputs.value > 0 and inputs.scheme != .delegatecall) {
             const transfer_err = self.ctx.journaled_state.transfer(inputs.caller, inputs.target, inputs.value) catch {
                 self.ctx.journaled_state.checkpointRevert(checkpoint);
                 return CallResult.preExecFailure(inputs.gas_limit);
@@ -401,7 +404,7 @@ pub const Host = struct {
             .gas_used = gas_used,
             .gas_remaining = gas_remaining,
             .gas_refunded = gas_refunded,
-            .delegation_gas = delegation_gas,
+            .delegation_gas = 0, // delegation_gas is now charged upfront in callImpl (before 63/64)
         };
     }
 
@@ -472,9 +475,8 @@ pub const Host = struct {
         {
             var db_it = js.database.storage_map.iterator();
             while (db_it.next()) |entry| {
-                if (std.mem.eql(u8, &entry.key_ptr.@"0", &new_addr) and entry.value_ptr.* != 0) {
+                if (std.mem.eql(u8, &entry.key_ptr.@"0", &new_addr) and entry.value_ptr.* != 0)
                     return CreateResult.preExecFailure(gas_limit);
-                }
             }
         }
 
@@ -491,6 +493,10 @@ pub const Host = struct {
             js.checkpointRevert(checkpoint);
             return CreateResult.preExecFailure(gas_limit);
         };
+        // Per EVM Yellow Paper: I_d (input data) is empty for CREATE/CREATE2 sub-executions.
+        // The initcode is the CODE being executed; calldata is empty. Initcode reads its own
+        // bytes via CODECOPY (not CALLDATALOAD). Passing init_code as calldata would cause
+        // CALLDATALOAD to return non-zero values, inflating gas costs (SSTORE_SET vs no-op).
         sub_interp.* = Interpreter.new(
             sub_mem,
             ExtBytecode.new(init_bytecode),
@@ -498,7 +504,7 @@ pub const Host = struct {
                 caller,
                 new_addr,
                 value,
-                @constCast(init_code),
+                @constCast(&[_]u8{}), // Empty calldata for CREATE sub-context
                 gas_limit,
                 .call,
                 false, // not static

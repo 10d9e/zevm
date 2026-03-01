@@ -118,6 +118,21 @@ fn g1ToEVM(out: *[64]u8, p: *const c.mclBnG1) void {
     for (0..32) |i| out[32 + i] = yle[31 - i];
 }
 
+// BN254 field modulus p = 21888242871839275222246405745257275088696311157297823662689037894645226208583
+// Used for strict field element validation per EIP-196/197: coordinates must be < p.
+const BN254_FIELD_MODULUS: [32]u8 = [_]u8{
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29,
+    0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d,
+    0x3c, 0x20, 0x8c, 0x16, 0xd8, 0x7c, 0xfd, 0x47,
+};
+
+/// Check if a 32-byte big-endian integer is a valid field element (strictly < p).
+/// Per EIP-196/197, inputs with coordinates >= p must be rejected.
+fn isValidFpElement(bytes: *const [32]u8) bool {
+    return std.mem.order(u8, bytes, &BN254_FIELD_MODULUS) == .lt;
+}
+
 /// Construct a G2 point from EVM 128-byte format.
 /// EIP-197 layout: x.imag(32) || x.real(32) || y.imag(32) || y.real(32)
 /// In mcl mclBnFp2: d[0]=real, d[1]=imag
@@ -130,6 +145,13 @@ fn g2FromEVM(p: *c.mclBnG2, bytes: *const [128]u8) !void {
         c.mclBnG2_clear(p);
         return;
     }
+
+    // Strict field element validation per EIP-197: each 32-byte coordinate must be < p.
+    // mclBnFp_setBigEndianMod silently reduces inputs mod p; we must reject inputs >= p explicitly.
+    if (!isValidFpElement(bytes[0..32])) return error.InvalidG2Point;   // x.imag
+    if (!isValidFpElement(bytes[32..64])) return error.InvalidG2Point;  // x.real
+    if (!isValidFpElement(bytes[64..96])) return error.InvalidG2Point;  // y.imag
+    if (!isValidFpElement(bytes[96..128])) return error.InvalidG2Point; // y.real
 
     if (c.mclBnFp_setBigEndianMod(&p.x.d[1], bytes[0..32].ptr, 32) != 0) return error.InvalidG2Point;   // x.imag
     if (c.mclBnFp_setBigEndianMod(&p.x.d[0], bytes[32..64].ptr, 32) != 0) return error.InvalidG2Point;  // x.real

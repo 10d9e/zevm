@@ -128,6 +128,15 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         }
     }
 
+    // EIP-7702: Type 4 transactions (authorization_count > 0) must have a `to` field.
+    // Contract creation (is_create = true) is not allowed for Type 4 transactions.
+    if (tc.authorization_count > 0 and tc.is_create) {
+        if (tc.expect_exception) {
+            return .{ .result = .pass, .detail = .{ .reason = "expected exception: TYPE_4_TX_CONTRACT_CREATION" } };
+        }
+        return .{ .result = .fail, .detail = .{ .reason = "EIP-7702 Type 4 tx cannot be a CREATE tx" } };
+    }
+
     // EIP-1559 fee validation: maxFeePerGas must be >= baseFee, and maxPriorityFeePerGas
     // must not exceed maxFeePerGas. These are consensus-layer validity rules.
     {
@@ -235,12 +244,13 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         effective_target = interpreter.host_module.createAddress(tc.caller, sender_nonce);
 
         // EIP-7610 / pre-existing CREATE collision check:
-        // If the target address already exists with non-empty code, nonce, balance, or storage,
-        // the CREATE fails immediately (no initcode runs). State is unchanged.
+        // If the target address already exists with non-zero nonce, non-empty code, or non-empty
+        // storage, the CREATE fails immediately (no initcode runs). State is unchanged.
+        // NOTE: balance alone does NOT constitute a collision — balance transfers to the new
+        // contract. Only nonce, code, and non-empty storage are collision conditions.
         for (tc.pre_accounts) |acct| {
             if (!std.mem.eql(u8, &acct.address, &effective_target)) continue;
-            var has_collision = u256FromBeBytes(acct.balance) != 0 or
-                acct.nonce != 0 or
+            var has_collision = acct.nonce != 0 or
                 acct.code.len > 0;
             if (!has_collision) {
                 for (acct.storage) |entry| {
@@ -338,6 +348,9 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
 
     // Build context (db is moved into Context by value)
     var ctx = context.Context.new(db, spec);
+    // InMemoryDB uses the GPA allocator; free its hash maps on all exit paths.
+    // Journal.deinit() only frees inner (page_allocator), not the database itself.
+    defer ctx.journaled_state.database.deinit();
 
     // Pre-load all pre-state accounts into the journal so that sload/sstore can
     // find them in evm_state (they require accounts to be loaded before access).
@@ -556,10 +569,18 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
             // Per EIP-7702: if nonce + 1 would overflow u64, skip this tuple.
             if (current_nonce == std.math.maxInt(u64)) continue; // nonce overflow: skip
 
-            // Steps 8+9: Valid entry — apply code delegation and bump nonce tracking.
+            // Steps 8+9: Valid entry — apply code delegation and bump nonce.
             // setCode() handles zero address → clearing code (sets KECCAK_EMPTY hash).
             const bc = bytecode_mod.Bytecode{ .eip7702 = bytecode_mod.Eip7702Bytecode.new(auth_entry.address) };
             ctx.journaled_state.inner.setCode(auth_entry.authority, bc);
+
+            // Step 9: Increment authority nonce in journal state (EIP-7702 spec requirement).
+            // The nonce increment must be applied to the actual account state so that any
+            // subsequent CREATE opcodes executed in the authority's context use the correct nonce.
+            if (ctx.journaled_state.inner.evm_state.getPtr(auth_entry.authority)) |auth_acct| {
+                auth_acct.info.nonce +|= 1;
+                ctx.journaled_state.inner.nonceBumpJournalEntry(auth_entry.authority);
+            }
 
             if (nonce_track_len < MAX_AUTH) {
                 nonce_track_addrs[nonce_track_len] = auth_entry.authority;
@@ -757,16 +778,34 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
     };
     const exec_result = interp.runWithHost(&schedule.instructions, &host);
 
+    // For CREATE transactions: check post-execution validity of deployed code.
+    // These checks mirror what host.create() does for sub-call CREATE; they apply
+    // to the top-level CREATE transaction as well.
+    const create_post_exec_fail: bool = blk: {
+        if (!tc.is_create) break :blk false;
+        if (exec_result != .@"return") break :blk false; // non-RETURN already handled below
+        const deployed = interp.return_data.data;
+        const MAX_CODE_SIZE: usize = 24576;
+        // EIP-170: code too large
+        if (deployed.len > MAX_CODE_SIZE) break :blk true;
+        // EIP-3541 (London+): reject code starting with 0xEF
+        if (deployed.len > 0 and deployed[0] == 0xEF) break :blk true;
+        // Code deposit OOG: 200 gas per byte of deployed code
+        const deposit_cost: u64 = 200 * @as(u64, @intCast(deployed.len));
+        if (interp.gas.remaining < deposit_cost) break :blk true;
+        break :blk false;
+    };
+
     // If we expect an exception, any non-success result is a pass
     if (tc.expect_exception) {
-        if (exec_result != .stop and exec_result != .@"return") {
+        if (create_post_exec_fail or (exec_result != .stop and exec_result != .@"return")) {
             return .{ .result = .pass, .detail = .{ .reason = "expected exception occurred", .exec_result = exec_result } };
         }
         return .{ .result = .fail, .detail = .{ .reason = "expected exception but execution succeeded", .exec_result = exec_result } };
     }
 
     // Check for execution errors or explicit REVERT
-    if (exec_result.isError() or exec_result == .revert) {
+    if (create_post_exec_fail or exec_result.isError() or exec_result == .revert) {
         // Top-level OOG/revert reverts ALL state changes back to pre-state.
         // Validate expected storage against the pre-state DB (not the journal).
         for (tc.expected_storage) |expected_acct| {

@@ -137,7 +137,12 @@ pub const AccountInfo = struct {
     /// - balance is zero
     /// - nonce is zero
     pub fn isEmpty(self: Self) bool {
-        const code_empty = self.isEmptyCodeHash() or self.code_hash[0] == 0;
+        // code_hash is "empty" if it is KECCAK_EMPTY or the all-zeros hash (uninitialized).
+        // Per revm: `is_empty_code_hash() || code_hash == B256::ZERO`.
+        // Note: checking only code_hash[0] == 0 is wrong — any contract whose code hashes
+        // to a value starting with 0x00 would be misclassified as empty.
+        const zero_hash = [_]u8{0} ** 32;
+        const code_empty = self.isEmptyCodeHash() or std.mem.eql(u8, &self.code_hash, &zero_hash);
         return code_empty and self.balance == 0 and self.nonce == 0;
     }
 

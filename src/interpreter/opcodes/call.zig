@@ -66,8 +66,10 @@ fn callImpl(
     const spec = ctx.interpreter.runtime_flags.spec_id;
     const is_static = ctx.interpreter.runtime_flags.is_static;
 
-    // Static call constraint: no value transfer in static context
-    if (comptime has_value) {
+    // Static call constraint per EIP-214: CALL with non-zero value is forbidden in
+    // static context and causes an exception (halt). CALLCODE is NOT in the EIP-214
+    // forbidden list because it does not transfer ETH to an external account.
+    if (comptime (has_value and scheme == .call)) {
         if (is_static and value > 0) {
             ctx.interpreter.halt(.invalid_static); return;
         }
@@ -117,8 +119,22 @@ fn callImpl(
         else => if (acct_info) |info| !info.is_empty else false,
     };
 
-    // Base call cost (warm/cold + value transfer + new account)
-    const base_cost = gas_costs.getCallGasCost(spec, is_cold, transfers_value, account_exists);
+    // EIP-7702: pre-compute delegation gas as part of the CALL upfront cost (before the 63/64
+    // rule). Per EIP-7702, loading the delegation target incurs a warm/cold access cost that is
+    // part of the CALL instruction overhead. Including it in base_cost ensures the 63/64 rule
+    // correctly limits forwarded gas (charging it after the sub-call gives the callee too much gas).
+    var delegation_gas: u64 = 0;
+    if (h.codeInfo(target_addr)) |code_info| {
+        if (code_info.bytecode.isEip7702()) {
+            const del_addr = code_info.bytecode.eip7702.address;
+            if (h.accountInfo(del_addr)) |del_info| {
+                delegation_gas = if (del_info.is_cold) gas_costs.COLD_ACCOUNT_ACCESS else gas_costs.WARM_ACCOUNT_ACCESS;
+            }
+        }
+    }
+
+    // Base call cost (warm/cold + value transfer + new account + EIP-7702 delegation target access)
+    const base_cost = gas_costs.getCallGasCost(spec, is_cold, transfers_value, account_exists) + delegation_gas;
 
     // Apply 63/64 rule to determine forwarded gas (EIP-150).
     const remaining = ctx.interpreter.gas.remaining;
@@ -178,16 +194,7 @@ fn callImpl(
     const result = h.call(inputs);
 
     // Return unused gas from sub-call and propagate any refunds it accumulated.
-    // Must be done BEFORE deducting delegation_gas, so the parent has gas to pay it.
     ctx.interpreter.gas.remaining +|= result.gas_remaining;
-
-    // EIP-7702: deduct delegation target load cost from parent frame gas (after returning sub-gas).
-    if (result.delegation_gas > 0) {
-        if (!ctx.interpreter.gas.spend(result.delegation_gas)) {
-            ctx.interpreter.halt(.out_of_gas);
-            return;
-        }
-    }
     ctx.interpreter.gas.refunded += result.gas_refunded;
 
     // Copy return data to memory (use direction-safe copy: return data may alias
@@ -272,12 +279,12 @@ pub fn opCreate(ctx: *InstructionContext) void {
         if (!expandMemory(ctx, create_end)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
 
-    // EIP-3860 (Shanghai+): reject initcode exceeding max size; push 0 (fail) without word gas
+    // EIP-3860 (Shanghai+): oversized initcode causes exceptional halt in calling frame (not push-0).
+    // Per EIP-3860 spec: "If len(initcode) > MAX_INITCODE_SIZE, raise out-of-gas exception."
+    // This aborts the current frame, so the enclosing CALL sees a failure (returns 0).
     if (primitives.isEnabledIn(spec, .shanghai)) {
         if (size_u > 49152) { // MAX_INITCODE_SIZE = 2 * 24576
-            if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
-            stack.pushUnsafe(0);
-            return;
+            ctx.interpreter.halt(.out_of_gas); return;
         }
     }
 
@@ -340,12 +347,11 @@ pub fn opCreate2(ctx: *InstructionContext) void {
         if (!expandMemory(ctx, create2_end)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
 
-    // EIP-3860 (Shanghai+): reject initcode exceeding max size; push 0 (fail) without word gas
+    // EIP-3860 (Shanghai+): oversized initcode causes exceptional halt in calling frame (not push-0).
+    // Per EIP-3860 spec: "If len(initcode) > MAX_INITCODE_SIZE, raise out-of-gas exception."
     if (primitives.isEnabledIn(spec, .shanghai)) {
         if (size_u > 49152) { // MAX_INITCODE_SIZE = 2 * 24576
-            if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
-            stack.pushUnsafe(0);
-            return;
+            ctx.interpreter.halt(.out_of_gas); return;
         }
     }
 

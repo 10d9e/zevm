@@ -16,6 +16,13 @@ pub const GAS_COST: u64 = 50_000;
 /// Versioned hash version for KZG
 pub const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
 
+/// BLS12-381 scalar field modulus (Fr order)
+/// 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
+pub const BLS_MODULUS: [32]u8 = .{
+    0x73, 0xed, 0xa7, 0x53, 0x29, 0x9d, 0x7d, 0x48, 0x33, 0x39, 0xd8, 0x08, 0x09, 0xa1, 0xd8, 0x05,
+    0x53, 0xbd, 0xa4, 0x02, 0xff, 0xfe, 0x5b, 0xfe, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
+};
+
 /// Return value: FIELD_ELEMENTS_PER_BLOB (4096) and BLS_MODULUS
 /// Format: U256(FIELD_ELEMENTS_PER_BLOB).to_be_bytes() ++ BLS_MODULUS.to_bytes32()
 pub const RETURN_VALUE: [64]u8 = .{
@@ -46,6 +53,15 @@ pub fn kzgPointEvaluationRun(input: []const u8, gas_limit: u64) main.PrecompileR
     const y = input[64..96];
     const commitment = input[96..144];
     const proof = input[144..192];
+
+    // Validate z and y are valid BLS12-381 scalar field elements (must be < BLS_MODULUS).
+    // Per EIP-4844, inputs with z >= BLS_MODULUS or y >= BLS_MODULUS must be rejected.
+    if (std.mem.order(u8, z, &BLS_MODULUS) != .lt) {
+        return main.PrecompileResult{ .err = main.PrecompileError.BlobVerifyKzgProofFailed };
+    }
+    if (std.mem.order(u8, y, &BLS_MODULUS) != .lt) {
+        return main.PrecompileResult{ .err = main.PrecompileError.BlobVerifyKzgProofFailed };
+    }
 
     // Verify commitment matches versioned_hash
     var computed_hash: [32]u8 = undefined;
