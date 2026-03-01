@@ -265,7 +265,7 @@ pub const MainnetHandler = struct {
                 if (tx.value > 0) {
                     const xfer_err = try ctx.journaled_state.transfer(tx.caller, target, tx.value);
                     if (xfer_err != null) {
-                        ctx.journaled_state.checkpointRevert(call_checkpoint);
+                        ctx.journaled_state.revertToSnapshot(call_checkpoint);
                         return main.FrameResult.new(
                             main.ExecutionResult.new(.Fail, exec_gas),
                             0,

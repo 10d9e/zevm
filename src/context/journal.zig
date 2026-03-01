@@ -466,6 +466,12 @@ pub const JournalInner = struct {
 
         const evm_state = self.evm_state;
         self.evm_state = state.EvmState.init(std.heap.page_allocator);
+        // Free heap-allocated topic slices before clearing the log list.
+        for (self.logs.items) |log| {
+            if (log.topics.len > 0) {
+                std.heap.page_allocator.free(@constCast(log.topics));
+            }
+        }
         self.logs.clearRetainingCapacity();
         self.transient_storage.clearRetainingCapacity();
         self.journal.clearRetainingCapacity();
