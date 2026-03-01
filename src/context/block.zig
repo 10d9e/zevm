@@ -103,12 +103,25 @@ pub const BlobExcessGasAndPrice = struct {
     }
 };
 
-/// Calculate blob gasprice based on excess blob gas and base fee update fraction
+/// Calculate blob gasprice using the fake_exponential function from EIP-4844.
+/// blob_gasprice = fake_exponential(MIN_BLOB_GASPRICE=1, excess_blob_gas, base_fee_update_fraction)
 fn calculateBlobGasprice(excess_blob_gas: u64, base_fee_update_fraction: u64) u64 {
-    // Simplified calculation - in practice this would be more complex
-    // This is a placeholder implementation
-    if (excess_blob_gas == 0) return 1;
-    return @min(excess_blob_gas / base_fee_update_fraction, std.math.maxInt(u64));
+    // fake_exponential(factor=1, numerator=excess_blob_gas, denominator=base_fee_update_fraction)
+    // Implements: https://eips.ethereum.org/EIPS/eip-4844#helpers
+    const factor: u128 = 1;
+    const numerator: u128 = excess_blob_gas;
+    const denominator: u128 = base_fee_update_fraction;
+    var i: u128 = 1;
+    var output: u128 = 0;
+    var numerator_accum: u128 = factor * denominator;
+    while (numerator_accum > 0) {
+        output += numerator_accum;
+        numerator_accum = (numerator_accum * numerator) / (denominator * i);
+        i += 1;
+        if (i > 512) break; // safety: large excess_blob_gas converges quickly
+    }
+    const result = output / denominator;
+    return @intCast(@min(result, @as(u128, std.math.maxInt(u64))));
 }
 
 /// Builder for constructing [`BlockEnv`] instances

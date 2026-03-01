@@ -142,13 +142,8 @@ pub const MainnetHandler = struct {
                                     journaled.account.info.nonce += 1;
                                     js.nonceBumpJournalEntry(authority_addr);
 
-                                    // Apply delegation: zero address clears code; otherwise set EIP-7702 bytecode
-                                    const zero_addr = [_]u8{0} ** 20;
-                                    const bc = if (std.mem.eql(u8, &auth.address, &zero_addr))
-                                        bytecode.Bytecode.new()
-                                    else
-                                        bytecode.Bytecode{ .eip7702 = bytecode.Eip7702Bytecode.new(auth.address) };
-
+                                    // Apply delegation. setCode() handles zero address → clearing code.
+                                    const bc = bytecode.Bytecode{ .eip7702 = bytecode.Eip7702Bytecode.new(auth.address) };
                                     js.inner.setCode(authority_addr, bc);
                                 },
                                 .Invalid => {}, // skip invalid (unrecoverable) authorities

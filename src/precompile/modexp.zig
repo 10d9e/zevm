@@ -106,12 +106,15 @@ fn byzantiumGasCalc(base_len: u64, exp_len: u64, mod_len: u64, exp_highp: primit
 
 /// Calculate gas cost for Berlin (EIP-2565)
 fn berlinGasCalc(base_len: u64, exp_len: u64, mod_len: u64, exp_highp: primitives.U256) u64 {
-    const max_len = @max(@max(base_len, exp_len), mod_len);
+    // EIP-2565: complexity uses max(base_len, mod_len), NOT exp_len
+    const max_len = @max(base_len, mod_len);
     const iteration_count = calculateIterationCount(exp_len, exp_highp, 8);
+    // EIP-2565: effective_iter = max(iter, 1) and result = max(200, complexity * effective_iter / 3)
+    const effective_iter: u64 = @max(iteration_count, 1);
     const words = (std.math.add(u64, max_len, 7) catch return std.math.maxInt(u64)) / 8;
     const complexity = std.math.mul(u64, words, words) catch return std.math.maxInt(u64);
-    const gas = std.math.mul(u64, complexity, iteration_count) catch return std.math.maxInt(u64);
-    return 200 +| (gas / 3);
+    const gas = std.math.mul(u64, complexity, effective_iter) catch return std.math.maxInt(u64);
+    return @max(200, gas / 3);
 }
 
 /// Calculate gas cost for Osaka (EIP-7823 and EIP-7883)
@@ -149,14 +152,18 @@ fn runInner(
     }
 
     const HEADER_LENGTH: usize = 96;
-    if (input.len < HEADER_LENGTH) {
-        return main.PrecompileResult{ .err = main.PrecompileError.ModexpBaseOverflow };
-    }
+
+    // EVM spec: if input is shorter than the 96-byte header, missing bytes are treated as zeros.
+    // Never error here — the precompile always succeeds (or OOGs), it never returns an error
+    // for short input.
+    var header: [HEADER_LENGTH]u8 = [_]u8{0} ** HEADER_LENGTH;
+    const header_copy = @min(input.len, HEADER_LENGTH);
+    @memcpy(header[0..header_copy], input[0..header_copy]);
 
     // Extract lengths from header (32 bytes each, big-endian)
-    const base_len_bytes = rightPad(32, input[0..32]);
-    const exp_len_bytes = rightPad(32, input[32..64]);
-    const mod_len_bytes = rightPad(32, input[64..96]);
+    const base_len_bytes = rightPad(32, header[0..32]);
+    const exp_len_bytes = rightPad(32, header[32..64]);
+    const mod_len_bytes = rightPad(32, header[64..96]);
 
     const base_len_u256 = extractU256(&base_len_bytes);
     const exp_len_u256 = extractU256(&exp_len_bytes);

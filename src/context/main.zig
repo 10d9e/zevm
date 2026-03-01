@@ -6,6 +6,7 @@ const database = @import("database");
 const ContextError = @import("context.zig").ContextError;
 
 pub const BlockEnv = @import("block.zig").BlockEnv;
+pub const BlobExcessGasAndPrice = @import("block.zig").BlobExcessGasAndPrice;
 pub const TxEnv = @import("tx.zig").TxEnv;
 pub const TxKind = @import("tx.zig").TxKind;
 pub const AccessList = @import("tx.zig").AccessList;

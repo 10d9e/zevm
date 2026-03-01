@@ -202,7 +202,24 @@ fn parseTestCases(
     const tx_to_str = getStr(tx_val.object, "to") orelse "";
     const is_create = tx_to_str.len == 0;
     const tx_to: [20]u8 = if (is_create) [_]u8{0} ** 20 else try parseAddress(tx_to_str);
-    const tx_gas_price = try parseU128Hex(getStr(tx_val.object, "gasPrice") orelse "0x0");
+    // EIP-1559 priority tip (max_priority_fee_per_gas); 0 for legacy transactions
+    const tx_max_priority_fee = parseU128Hex(
+        getStr(tx_val.object, "maxPriorityFeePerGas") orelse "0x0",
+    ) catch 0;
+    // For EIP-1559 txs (maxFeePerGas present): effective_gas_price = min(maxFeePerGas, baseFee + tip)
+    // For legacy txs (gasPrice present): effective_gas_price = gasPrice
+    // Storing the effective price ensures GASPRICE opcode and gas pre-deduction are correct.
+    const tx_gas_price: u128 = blk: {
+        if (getStr(tx_val.object, "gasPrice")) |gp| {
+            break :blk try parseU128Hex(gp);
+        } else if (getStr(tx_val.object, "maxFeePerGas")) |mfpg| {
+            const max_fee = try parseU128Hex(mfpg);
+            const base: u128 = @as(u128, block_basefee);
+            break :blk @min(max_fee, base + tx_max_priority_fee);
+        } else {
+            break :blk 0;
+        }
+    };
 
     // Transaction arrays
     const tx_data_arr = tx_val.object.get("data") orelse return;
@@ -280,6 +297,89 @@ fn parseTestCases(
         const gas_limit = parseU64Hex(getJsonStr(tx_gas_arr.array.items[gi]) orelse continue) catch continue;
         const value = parseU256Hex(getJsonStr(tx_value_arr.array.items[vi]) orelse continue) catch continue;
 
+        // EIP-2930: parse access list for this variation (per-data-index or shared)
+        var al_addr_count: u32 = 0;
+        var al_slot_count: u32 = 0;
+        var al_entries: std.ArrayList(types.AccessListEntry) = .{};
+        {
+            const al_opt: ?std.json.Value = blk: {
+                if (tx_val.object.get("accessLists")) |als| {
+                    if (als == .array and di < als.array.items.len) break :blk als.array.items[di];
+                }
+                break :blk tx_val.object.get("accessList");
+            };
+            if (al_opt) |al| {
+                if (al == .array) {
+                    al_addr_count = @intCast(al.array.items.len);
+                    for (al.array.items) |item| {
+                        if (item != .object) continue;
+                        const item_addr = parseAddress(getStr(item.object, "address") orelse continue) catch continue;
+                        var key_list: std.ArrayList([32]u8) = .{};
+                        if (item.object.get("storageKeys")) |sk| {
+                            if (sk == .array) {
+                                al_slot_count += @intCast(sk.array.items.len);
+                                for (sk.array.items) |key_val| {
+                                    const key_str = getJsonStr(key_val) orelse continue;
+                                    const key_bytes = parseU256Hex(key_str) catch continue;
+                                    key_list.append(a, key_bytes) catch continue;
+                                }
+                            }
+                        }
+                        al_entries.append(a, .{
+                            .address = item_addr,
+                            .storage_keys = key_list.items,
+                        }) catch continue;
+                    }
+                }
+            }
+        }
+
+        // EIP-7702: count authorization tuples for intrinsic gas (25000 per tuple)
+        // Extract (authority → delegation target) pairs for code setting.
+        // Also capture chain_id and nonce for validity checking in the runner.
+        var auth_count: u32 = 0;
+        var auth_entries: std.ArrayList(types.AuthorizationEntry) = .{};
+        if (tx_val.object.get("authorizationList")) |al| {
+            if (al == .array) {
+                auth_count = @intCast(al.array.items.len);
+                for (al.array.items) |entry| {
+                    if (entry != .object) continue;
+                    const signer_str = getStr(entry.object, "signer") orelse continue;
+                    const signer_addr = parseAddress(signer_str) catch continue;
+                    const delegate_str = getStr(entry.object, "address") orelse continue;
+                    const delegate_addr = parseAddress(delegate_str) catch continue;
+                    const chain_id = parseU64Hex(getStr(entry.object, "chainId") orelse "0x0") catch 0;
+                    const entry_nonce = parseU64Hex(getStr(entry.object, "nonce") orelse "0x0") catch 0;
+                    auth_entries.append(a, .{
+                        .authority = signer_addr,
+                        .address = delegate_addr,
+                        .chain_id = chain_id,
+                        .nonce = entry_nonce,
+                    }) catch {};
+                }
+            }
+        }
+
+        // EIP-4844: parse blob fields
+        var blob_hashes_count: u32 = 0;
+        var blob_hash_list: std.ArrayList([32]u8) = .{};
+        if (tx_val.object.get("blobVersionedHashes")) |bvh| {
+            if (bvh == .array) {
+                blob_hashes_count = @intCast(bvh.array.items.len);
+                for (bvh.array.items) |hash_val| {
+                    const hash_str = getJsonStr(hash_val) orelse continue;
+                    const hash_bytes = parseU256Hex(hash_str) catch continue;
+                    blob_hash_list.append(a, hash_bytes) catch continue;
+                }
+            }
+        }
+        const max_fee_per_blob_gas = parseU128Hex(
+            getStr(tx_val.object, "maxFeePerBlobGas") orelse "0x0",
+        ) catch 0;
+        const excess_blob_gas = parseU64Hex(
+            getStr(env_val.object, "currentExcessBlobGas") orelse "0x0",
+        ) catch 0;
+
         const expect_exception = post_entry.object.get("expectException") != null;
 
         const expected_state = post_entry.object.get("state") orelse continue;
@@ -327,6 +427,16 @@ fn parseTestCases(
             .calldata = calldata,
             .gas_limit = gas_limit,
             .gas_price = tx_gas_price,
+            .max_priority_fee_per_gas = tx_max_priority_fee,
+            .access_list_addr_count = al_addr_count,
+            .access_list_slot_count = al_slot_count,
+            .access_list = al_entries.items,
+            .authorization_count = auth_count,
+            .authorization_entries = auth_entries.items,
+            .blob_versioned_hashes_count = blob_hashes_count,
+            .blob_versioned_hashes = blob_hash_list.items,
+            .max_fee_per_blob_gas = max_fee_per_blob_gas,
+            .excess_blob_gas = excess_blob_gas,
             .pre_accounts = pre_list.items,
             .expected_storage = exp_list.items,
             .expect_exception = expect_exception,

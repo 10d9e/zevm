@@ -194,11 +194,13 @@ pub fn bls12G1AddRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
 
 /// BLS12-381 G1 multi-scalar multiplication
 pub fn bls12G1MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
-    if (input.len < PADDED_G1_LENGTH + PADDED_FP_LENGTH) {
+    // EIP-2537: G1MSM pair = 128-byte padded G1 point + 32-byte scalar = 160 bytes
+    const PAIR_LENGTH = PADDED_G1_LENGTH + SCALAR_LENGTH; // 160
+    if (input.len < PAIR_LENGTH) {
         return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G1MsmInputLength };
     }
 
-    const k = input.len / (PADDED_G1_LENGTH + PADDED_FP_LENGTH);
+    const k = input.len / PAIR_LENGTH;
     if (k == 0) {
         return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G1MsmInputLength };
     }
@@ -217,12 +219,12 @@ pub fn bls12G1MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
     };
 
     var i: usize = 0;
-    while (i < input.len) : (i += PADDED_G1_LENGTH + PADDED_FP_LENGTH) {
-        if (i + PADDED_G1_LENGTH + PADDED_FP_LENGTH > input.len) {
+    while (i < input.len) : (i += PAIR_LENGTH) {
+        if (i + PAIR_LENGTH > input.len) {
             return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G1MsmInputLength };
         }
         const point_padded = input[i..][0..PADDED_G1_LENGTH];
-        const scalar_padded = input[i + PADDED_G1_LENGTH ..][0..PADDED_FP_LENGTH];
+        const scalar_raw = input[i + PADDED_G1_LENGTH ..][0..SCALAR_LENGTH];
 
         // Remove padding from point (128 bytes -> 96 bytes)
         const point_coords = removeG1Padding(point_padded) catch {
@@ -234,9 +236,9 @@ pub fn bls12G1MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         @memcpy(point[0..48], &point_coords[0]);
         @memcpy(point[48..96], &point_coords[1]);
 
-        // Extract scalar (skip 16-byte padding, take 32 bytes)
+        // Scalar is 32 bytes, no padding
         var scalar: [32]u8 = undefined;
-        @memcpy(&scalar, scalar_padded[16..48]);
+        @memcpy(&scalar, scalar_raw);
 
         pairs.append(std.heap.c_allocator, .{ .point = point, .scalar = scalar }) catch {
             return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
@@ -320,11 +322,13 @@ pub fn bls12G2AddRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
 
 /// BLS12-381 G2 multi-scalar multiplication
 pub fn bls12G2MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
-    if (input.len < PADDED_G2_LENGTH + PADDED_FP_LENGTH) {
+    // EIP-2537: G2MSM pair = 256-byte padded G2 point + 32-byte scalar = 288 bytes
+    const PAIR_LENGTH = PADDED_G2_LENGTH + SCALAR_LENGTH; // 288
+    if (input.len < PAIR_LENGTH) {
         return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G2MsmInputLength };
     }
 
-    const k = input.len / (PADDED_G2_LENGTH + PADDED_FP_LENGTH);
+    const k = input.len / PAIR_LENGTH;
     if (k == 0) {
         return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G2MsmInputLength };
     }
@@ -343,12 +347,12 @@ pub fn bls12G2MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
     };
 
     var i: usize = 0;
-    while (i < input.len) : (i += PADDED_G2_LENGTH + PADDED_FP_LENGTH) {
-        if (i + PADDED_G2_LENGTH + PADDED_FP_LENGTH > input.len) {
+    while (i < input.len) : (i += PAIR_LENGTH) {
+        if (i + PAIR_LENGTH > input.len) {
             return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G2MsmInputLength };
         }
         const point_padded = input[i..][0..PADDED_G2_LENGTH];
-        const scalar_padded = input[i + PADDED_G2_LENGTH ..][0..PADDED_FP_LENGTH];
+        const scalar_raw = input[i + PADDED_G2_LENGTH ..][0..SCALAR_LENGTH];
 
         // Remove padding from point (256 bytes -> 192 bytes)
         const point_coords = removeG2Padding(point_padded) catch {
@@ -362,9 +366,9 @@ pub fn bls12G2MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         @memcpy(point[96..144], &point_coords[2]);
         @memcpy(point[144..192], &point_coords[3]);
 
-        // Extract scalar (skip 16-byte padding, take 32 bytes)
+        // Scalar is 32 bytes, no padding
         var scalar: [32]u8 = undefined;
-        @memcpy(&scalar, scalar_padded[16..48]);
+        @memcpy(&scalar, scalar_raw);
 
         pairs.append(std.heap.c_allocator, .{ .point = point, .scalar = scalar }) catch {
             return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };

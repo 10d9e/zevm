@@ -75,17 +75,21 @@ fn callImpl(
 
     const target_addr = host_module.u256ToAddress(addr_val);
 
-    // Memory bounds validation
-    if (args_off > std.math.maxInt(usize) or args_size > std.math.maxInt(usize) or
-        ret_off > std.math.maxInt(usize) or ret_size > std.math.maxInt(usize))
+    // Sizes must always fit in usize (otherwise the memory requirement is impossible).
+    // Offsets only need to fit when the corresponding size is non-zero; a giant offset
+    // with size=0 is valid (no memory is touched).
+    if (args_size > std.math.maxInt(usize) or ret_size > std.math.maxInt(usize)) {
+        ctx.interpreter.halt(.memory_limit_oog); return;
+    }
+    const args_size_u: usize = @intCast(args_size);
+    const ret_size_u: usize = @intCast(ret_size);
+    if ((args_size_u > 0 and args_off > std.math.maxInt(usize)) or
+        (ret_size_u > 0 and ret_off > std.math.maxInt(usize)))
     {
         ctx.interpreter.halt(.memory_limit_oog); return;
     }
-
-    const args_off_u: usize = @intCast(args_off);
-    const args_size_u: usize = @intCast(args_size);
-    const ret_off_u: usize = @intCast(ret_off);
-    const ret_size_u: usize = @intCast(ret_size);
+    const args_off_u: usize = if (args_size_u > 0) @intCast(args_off) else 0;
+    const ret_off_u: usize = if (ret_size_u > 0) @intCast(ret_off) else 0;
 
     // Memory expansion for args region
     if (args_size_u > 0) {
@@ -102,11 +106,16 @@ fn callImpl(
         if (!expandMemory(ctx, ret_end)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
 
-    // Determine warm/cold access for target address
+    // Determine warm/cold access for target address (code source)
     const acct_info = h.accountInfo(target_addr);
     const is_cold = if (acct_info) |info| info.is_cold else true;
-    const account_exists = if (acct_info) |info| !info.is_empty else false;
     const transfers_value = has_value and value > 0;
+    // G_NEWACCOUNT applies to the ETH *recipient*, not the code source.
+    // For CALLCODE/DELEGATECALL, ETH goes to self (always exists). Otherwise ETH goes to target_addr.
+    const account_exists = switch (scheme) {
+        .callcode, .delegatecall => true, // self always exists
+        else => if (acct_info) |info| !info.is_empty else false,
+    };
 
     // Base call cost (warm/cold + value transfer + new account)
     const base_cost = gas_costs.getCallGasCost(spec, is_cold, transfers_value, account_exists);
@@ -169,7 +178,16 @@ fn callImpl(
     const result = h.call(inputs);
 
     // Return unused gas from sub-call and propagate any refunds it accumulated.
+    // Must be done BEFORE deducting delegation_gas, so the parent has gas to pay it.
     ctx.interpreter.gas.remaining +|= result.gas_remaining;
+
+    // EIP-7702: deduct delegation target load cost from parent frame gas (after returning sub-gas).
+    if (result.delegation_gas > 0) {
+        if (!ctx.interpreter.gas.spend(result.delegation_gas)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
+    }
     ctx.interpreter.gas.refunded += result.gas_refunded;
 
     // Copy return data to memory (use direction-safe copy: return data may alias
@@ -254,6 +272,15 @@ pub fn opCreate(ctx: *InstructionContext) void {
         if (!expandMemory(ctx, create_end)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
 
+    // EIP-3860 (Shanghai+): reject initcode exceeding max size; push 0 (fail) without word gas
+    if (primitives.isEnabledIn(spec, .shanghai)) {
+        if (size_u > 49152) { // MAX_INITCODE_SIZE = 2 * 24576
+            if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+            stack.pushUnsafe(0);
+            return;
+        }
+    }
+
     // EIP-3860 (Shanghai+): initcode word gas
     if (primitives.isEnabledIn(spec, .shanghai)) {
         const word_cost: u64 = 2 * @as(u64, @intCast((size_u + 31) / 32));
@@ -311,6 +338,15 @@ pub fn opCreate2(ctx: *InstructionContext) void {
             ctx.interpreter.halt(.memory_limit_oog); return;
         };
         if (!expandMemory(ctx, create2_end)) { ctx.interpreter.halt(.out_of_gas); return; }
+    }
+
+    // EIP-3860 (Shanghai+): reject initcode exceeding max size; push 0 (fail) without word gas
+    if (primitives.isEnabledIn(spec, .shanghai)) {
+        if (size_u > 49152) { // MAX_INITCODE_SIZE = 2 * 24576
+            if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+            stack.pushUnsafe(0);
+            return;
+        }
     }
 
     // CREATE2 keccak word cost (charged for the init_code hash)

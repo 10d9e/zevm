@@ -639,12 +639,10 @@ pub const JournalInner = struct {
         const target_acc = self.evm_state.getPtr(target_address).?;
         const last_journal = &self.journal;
 
-        // New account can be created if:
-        // Bytecode is not empty.
-        // Nonce is not zero
-        // Account is not precompile.
+        // EIP-7610: CREATE fails if the target address already has non-empty code or non-zero nonce.
+        // Pre-existing balance does NOT cause a collision — it is inherited by the new contract.
         if (!std.mem.eql(u8, &target_acc.info.code_hash, &primitives.KECCAK_EMPTY) or
-            target_acc.info.nonce != 0 or target_acc.info.balance != 0) {
+            target_acc.info.nonce != 0) {
             self.checkpointRevert(checkpoint);
             return TransferError.CreateCollision;
         }
@@ -830,7 +828,6 @@ pub const JournalInner = struct {
                     existing.selfdestruct();
                     existing.unmarkSelfdestructedLocally();
                 }
-                existing.unmarkCreatedLocally();
             }
             is_cold = acct_is_cold;
             account_ptr = existing;

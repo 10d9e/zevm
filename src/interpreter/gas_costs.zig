@@ -145,6 +145,10 @@ pub fn getSstoreCost(
     // EIP-2200 (Istanbul) and EIP-2929 (Berlin) gas model
     const cold_cost: u64 = if (primitives.isEnabledIn(spec, .berlin) and is_cold) COLD_SLOAD else 0;
 
+    // EIP-2929: Berlin+ reduces the base SSTORE_RESET by COLD_SLOAD to avoid
+    // double-counting when cold_cost is separately added. Pre-Berlin uses 5000.
+    const sstore_reset_cost: u64 = if (primitives.isEnabledIn(spec, .berlin)) SSTORE_RESET - COLD_SLOAD else SSTORE_RESET;
+
     if (current == new) {
         // No change
         return .{ .gas_cost = WARM_SLOAD + cold_cost, .gas_refund = 0 };
@@ -163,10 +167,10 @@ pub fn getSstoreCost(
                     @as(i64, SSTORE_CLEARS_SCHEDULE) - @as(i64, COLD_SLOAD)
                 else
                     @as(i64, SSTORE_CLEARS_SCHEDULE);
-                return .{ .gas_cost = SSTORE_RESET + cold_cost, .gas_refund = refund };
+                return .{ .gas_cost = sstore_reset_cost + cold_cost, .gas_refund = refund };
             } else {
                 // Non-zero to non-zero
-                return .{ .gas_cost = SSTORE_RESET + cold_cost, .gas_refund = 0 };
+                return .{ .gas_cost = sstore_reset_cost + cold_cost, .gas_refund = 0 };
             }
         }
     }
@@ -189,7 +193,7 @@ pub fn getSstoreCost(
         if (original == 0) {
             refund += SSTORE_SET - WARM_SLOAD;
         } else {
-            refund += SSTORE_RESET - WARM_SLOAD;
+            refund += @as(i64, @intCast(sstore_reset_cost - WARM_SLOAD));
         }
     }
 

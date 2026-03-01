@@ -521,13 +521,24 @@ pub const Bytecode = union(enum) {
 
     /// Calculates hash of the bytecode.
     pub fn hashSlow(self: Self) primitives.Hash {
-        if (self.isEmpty()) {
-            return primitives.KECCAK_EMPTY;
-        } else {
-            const bytes = self.originalBytes();
-            var hash: primitives.Hash = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(bytes, &hash, .{});
-            return hash;
+        switch (self) {
+            .eip7702 => |eip7702| {
+                // Hash the 23-byte delegation pointer directly from the switch-arm copy.
+                // Avoids the dangling-pointer that arises when routing through raw() which
+                // takes Self by value and returns &self.raw_bytes into its own stack frame.
+                var hash: primitives.Hash = undefined;
+                std.crypto.hash.sha3.Keccak256.hash(&eip7702.raw_bytes, &hash, .{});
+                return hash;
+            },
+            .legacy_analyzed => {
+                if (self.isEmpty()) {
+                    return primitives.KECCAK_EMPTY;
+                }
+                const bytes = self.originalBytes();
+                var hash: primitives.Hash = undefined;
+                std.crypto.hash.sha3.Keccak256.hash(bytes, &hash, .{});
+                return hash;
+            },
         }
     }
 
@@ -605,7 +616,7 @@ pub const LegacyAnalyzedBytecode = struct {
     pub fn default() Self {
         return Self{
             .bytecode = &[_]u8{STOP},
-            .original_len = 1,
+            .original_len = 0,
             .jump_table = JumpTable.fromBytes(&[_]u8{0}, 1),
         };
     }

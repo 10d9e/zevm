@@ -221,19 +221,29 @@ pub fn opReturndatacopy(ctx: *InstructionContext) void {
     const size = stack.peekUnsafe(2);
     stack.shrinkUnsafe(3);
 
+    // Bounds check returndata BEFORE the size==0 early return.
+    // EIP-211: if src_offset + size > returndata.len, the call frame reverts.
+    // When size==0, this reduces to: src_offset > returndata.len.
+    if (src_off > std.math.maxInt(usize)) {
+        ctx.interpreter.halt(.invalid_returndata); return;
+    }
+    const src_off_usize: usize = @intCast(src_off);
+    const return_data = ctx.interpreter.return_data.data;
+    if (src_off_usize > return_data.len) {
+        ctx.interpreter.halt(.invalid_returndata); return;
+    }
+
     if (size == 0) return;
 
-    if (mem_off > std.math.maxInt(usize) or src_off > std.math.maxInt(usize) or size > std.math.maxInt(usize)) {
+    if (mem_off > std.math.maxInt(usize) or size > std.math.maxInt(usize)) {
         ctx.interpreter.halt(.memory_limit_oog); return;
     }
 
     const mem_off_usize: usize = @intCast(mem_off);
-    const src_off_usize: usize = @intCast(src_off);
     const size_usize: usize = @intCast(size);
 
     // Bounds check: src_off + size must be within return data
-    const return_data = ctx.interpreter.return_data.data;
-    if (src_off_usize > return_data.len or size_usize > return_data.len - src_off_usize) {
+    if (size_usize > return_data.len - src_off_usize) {
         ctx.interpreter.halt(.invalid_returndata); return;
     }
 

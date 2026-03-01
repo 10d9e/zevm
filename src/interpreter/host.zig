@@ -20,9 +20,19 @@ pub const CallResult = struct {
     /// Refund counter accumulated inside the sub-call (SSTORE clears, etc.).
     /// Must be added to the parent frame's gas.refunded on return.
     gas_refunded: i64,
+    /// EIP-7702: gas charged for loading the delegation target (if any).
+    /// Must be deducted from the parent frame's remaining gas after the call.
+    delegation_gas: u64,
 
+    /// Sub-call failed after execution (all gas consumed).
     pub fn failure(gas_limit: u64) CallResult {
-        return .{ .success = false, .return_data = &[_]u8{}, .gas_used = gas_limit, .gas_remaining = 0, .gas_refunded = 0 };
+        return .{ .success = false, .return_data = &[_]u8{}, .gas_used = gas_limit, .gas_remaining = 0, .gas_refunded = 0, .delegation_gas = 0 };
+    }
+
+    /// Sub-call failed BEFORE execution (depth limit, value-transfer failure).
+    /// Per EVM spec: when no sub-code runs, all forwarded gas is returned to caller.
+    pub fn preExecFailure(gas_limit: u64) CallResult {
+        return .{ .success = false, .return_data = &[_]u8{}, .gas_used = 0, .gas_remaining = gas_limit, .gas_refunded = 0, .delegation_gas = 0 };
     }
 };
 
@@ -63,6 +73,12 @@ pub const CreateResult = struct {
     /// Refund counter accumulated inside the init-code sub-interpreter.
     gas_refunded: i64,
 
+    /// Pre-execution failure: no sub-interpreter ran, return all forwarded gas.
+    pub fn preExecFailure(gas_limit: u64) CreateResult {
+        return .{ .success = false, .address = [_]u8{0} ** 20, .gas_remaining = gas_limit, .return_data = &[_]u8{}, .gas_refunded = 0 };
+    }
+
+    /// Post-execution failure: sub-interpreter ran and consumed gas.
     pub fn failure() CreateResult {
         return .{ .success = false, .address = [_]u8{0} ** 20, .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
     }
@@ -165,24 +181,35 @@ pub const Host = struct {
     }
 
     /// Load account with code. Returns null on database error.
+    /// Per EIP-7702: EXTCODESIZE/EXTCODECOPY/EXTCODEHASH operate on the delegation POINTER bytes
+    /// (23-byte 0xef0100||addr), NOT the delegation target's code. Return as-is.
     pub fn codeInfo(self: *Host, addr: primitives.Address) ?struct { bytecode: bytecode_mod.Bytecode, code_hash: primitives.Hash, is_cold: bool } {
         const load = self.ctx.journaled_state.loadAccountWithCode(addr) catch return null;
         const acc = load.data;
         const code = if (acc.info.code) |c| c else bytecode_mod.Bytecode.new();
+        const code_hash = acc.info.code_hash;
         return .{
             .bytecode = code,
-            .code_hash = acc.info.code_hash,
+            .code_hash = code_hash,
             .is_cold = load.is_cold,
         };
     }
 
     /// Load account for external code hash. Returns null on database error.
+    /// Per EIP-7702: EXTCODEHASH returns keccak256 of the delegation pointer bytes (not the target).
+    /// code_hash is already stored as keccak256(delegation_pointer) when the account is loaded.
     pub fn extCodeHash(self: *Host, addr: primitives.Address) ?struct { hash: primitives.Hash, is_cold: bool, is_empty: bool } {
-        const load = self.ctx.journaled_state.loadAccountInfoSkipColdLoad(addr, false, false) catch return null;
+        const load = self.ctx.journaled_state.loadAccountWithCode(addr) catch return null;
+        const acct = load.data;
+        const hash = acct.info.code_hash;
+        // An account is empty if nonce=0, balance=0, and code is empty.
+        // EIP-7702 delegation code (23 bytes) is non-empty, so delegating accounts are NOT empty.
+        const is_empty = acct.info.nonce == 0 and acct.info.balance == 0 and
+            (acct.info.code == null or (acct.info.code.?.isEmpty()));
         return .{
-            .hash = load.info.code_hash,
+            .hash = hash,
             .is_cold = load.is_cold,
-            .is_empty = load.is_empty,
+            .is_empty = is_empty,
         };
     }
 
@@ -230,9 +257,9 @@ pub const Host = struct {
     pub fn call(self: *Host, inputs: CallInputs) CallResult {
         const MAX_CALL_DEPTH = 1024;
 
-        // 1. Depth check
+        // 1. Depth check: no sub-code ran → return all gas to caller.
         if (self.ctx.journaled_state.depth() >= MAX_CALL_DEPTH) {
-            return CallResult.failure(inputs.gas_limit);
+            return CallResult.preExecFailure(inputs.gas_limit);
         }
 
         // 1b. Precompile dispatch: if the callee is a precompile, run it instead of the interpreter.
@@ -257,12 +284,12 @@ pub const Host = struct {
                         if (out.reverted) {
                             self.ctx.journaled_state.checkpointRevert(checkpoint);
                             return .{ .success = false, .return_data = out.bytes,
-                                       .gas_used = inputs.gas_limit, .gas_remaining = 0, .gas_refunded = 0 };
+                                       .gas_used = inputs.gas_limit, .gas_remaining = 0, .gas_refunded = 0, .delegation_gas = 0 };
                         }
                         self.ctx.journaled_state.checkpointCommit();
                         return .{ .success = true, .return_data = out.bytes,
                                    .gas_used = out.gas_used,
-                                   .gas_remaining = inputs.gas_limit - out.gas_used, .gas_refunded = 0 };
+                                   .gas_remaining = inputs.gas_limit - out.gas_used, .gas_refunded = 0, .delegation_gas = 0 };
                     },
                     .err => {
                         self.ctx.journaled_state.checkpointRevert(checkpoint);
@@ -277,37 +304,58 @@ pub const Host = struct {
             return CallResult.failure(inputs.gas_limit);
         };
         const callee_acc = callee_load.data;
-        const code = if (callee_acc.info.code) |c| c else bytecode_mod.Bytecode.new();
+        var code = if (callee_acc.info.code) |c| c else bytecode_mod.Bytecode.new();
+
+        // EIP-7702: if callee has delegation code, follow it to get the code to execute.
+        // The call context (ADDRESS, storage) still refers to the authority (callee),
+        // but the bytecode executed comes from the delegation target. No recursive following.
+        // Per EIP-7702: loading the delegation target incurs warm/cold access cost,
+        // charged to the parent frame (returned as delegation_gas in CallResult).
+        var delegation_gas: u64 = 0;
+        if (code.isEip7702()) {
+            const delegation_addr = code.eip7702.address;
+            if (self.ctx.journaled_state.loadAccountWithCode(delegation_addr)) |del_load| {
+                delegation_gas = if (del_load.is_cold)
+                    gas_costs.COLD_ACCOUNT_ACCESS
+                else
+                    gas_costs.WARM_ACCOUNT_ACCESS;
+                code = if (del_load.data.info.code) |del_code|
+                    if (del_code.isEip7702()) bytecode_mod.Bytecode.new() // no recursive delegation
+                    else del_code
+                else
+                    bytecode_mod.Bytecode.new();
+            } else |_| {
+                code = bytecode_mod.Bytecode.new();
+            }
+        }
 
         // 3. Checkpoint before state changes
         const checkpoint = self.ctx.journaled_state.getCheckpoint();
 
-        // 4. Value transfer (if any)
+        // 4. Value transfer (if any).
+        // Transfer failure means no sub-code ran → return all gas to caller.
         if (inputs.value > 0) {
             const transfer_err = self.ctx.journaled_state.transfer(inputs.caller, inputs.target, inputs.value) catch {
                 self.ctx.journaled_state.checkpointRevert(checkpoint);
-                return CallResult.failure(inputs.gas_limit);
+                return CallResult.preExecFailure(inputs.gas_limit);
             };
             if (transfer_err != null) {
                 self.ctx.journaled_state.checkpointRevert(checkpoint);
-                return CallResult.failure(inputs.gas_limit);
+                return CallResult.preExecFailure(inputs.gas_limit);
             }
         }
 
-        // 5. Increment depth
-        self.ctx.journaled_state.inner.depth += 1;
-
-        // 6. Build and run sub-interpreter.
+        // 5. Build and run sub-interpreter.
         // Heap-allocate to avoid native stack overflow on deep recursive EVM calls.
         // The embedded Stack (32 KB) would exhaust the native stack at ~200 levels otherwise.
         // Note: sub_interp is not freed here because return_data.data slices into
         // sub_interp.memory.buffer.items which must remain valid for the caller.
+        // Depth is already incremented by getCheckpoint() above; no manual adjustment needed.
         const spec_id = self.ctx.journaled_state.inner.spec;
         const sub_mem = Memory.new();
         const sub_interp = std.heap.c_allocator.create(Interpreter) catch {
-            self.ctx.journaled_state.inner.depth -= 1;
             self.ctx.journaled_state.checkpointRevert(checkpoint);
-            return CallResult.failure(inputs.gas_limit);
+            return CallResult.preExecFailure(inputs.gas_limit);
         };
         sub_interp.* = Interpreter.new(
             sub_mem,
@@ -329,10 +377,7 @@ pub const Host = struct {
 
         self.run_sub_call(self, sub_interp);
 
-        // 7. Decrement depth
-        self.ctx.journaled_state.inner.depth -= 1;
-
-        // 8. Commit or revert state changes
+        // 6. Commit or revert state changes
         const result = sub_interp.result;
         if (result.isSuccess()) {
             self.ctx.journaled_state.checkpointCommit();
@@ -340,7 +385,12 @@ pub const Host = struct {
             self.ctx.journaled_state.checkpointRevert(checkpoint);
         }
 
-        const gas_remaining = sub_interp.gas.remaining;
+        // EVM gas return rules:
+        //   - Success (stop/return/selfdestruct): return unused gas to caller
+        //   - REVERT: return unused gas to caller
+        //   - Any error (stack underflow/overflow, bad opcode, bad jump, etc.):
+        //     all remaining gas is consumed; return 0
+        const gas_remaining: u64 = if (result.isSuccess() or result == .revert) sub_interp.gas.remaining else 0;
         const gas_used = if (inputs.gas_limit > gas_remaining) inputs.gas_limit - gas_remaining else 0;
         // Propagate sub-call refund counter (SSTORE clears, etc.) to caller frame.
         const gas_refunded: i64 = if (result.isSuccess()) sub_interp.gas.refunded else 0;
@@ -351,6 +401,7 @@ pub const Host = struct {
             .gas_used = gas_used,
             .gas_remaining = gas_remaining,
             .gas_refunded = gas_refunded,
+            .delegation_gas = delegation_gas,
         };
     }
 
@@ -376,24 +427,26 @@ pub const Host = struct {
         const spec_id = js.inner.spec;
 
         // 1. Depth check
-        if (js.depth() >= MAX_CALL_DEPTH) return CreateResult.failure();
+        if (js.depth() >= MAX_CALL_DEPTH) return CreateResult.preExecFailure(gas_limit);
 
         // 2. EIP-3860 (Shanghai+): init code size limit
         if (primitives.isEnabledIn(spec_id, .shanghai)) {
-            if (init_code.len > MAX_INITCODE_SIZE) return CreateResult.failure();
+            if (init_code.len > MAX_INITCODE_SIZE) return CreateResult.preExecFailure(gas_limit);
         }
 
         // 3. Manage caller nonce BEFORE checkpoint (nonce bump is never reverted by CREATE failure).
         //    skip_nonce_bump=true means tx validation already bumped the nonce from N to N+1;
         //    we still need N for address derivation.
-        const caller_acc = js.inner.evm_state.getPtr(caller) orelse return CreateResult.failure();
+        const caller_acc = js.inner.evm_state.getPtr(caller) orelse return CreateResult.preExecFailure(gas_limit);
         const caller_nonce: u64 = if (skip_nonce_bump)
             // Already bumped: current nonce is N+1, use N for address derivation
             caller_acc.info.nonce -| 1
         else blk: {
             // Normal opcode path: read N, bump to N+1, record journal entry
             const n = caller_acc.info.nonce;
-            caller_acc.info.nonce = n +| 1;
+            // EIP-2681: nonce must not overflow u64
+            if (n == std.math.maxInt(u64)) return CreateResult.preExecFailure(gas_limit);
+            caller_acc.info.nonce = n + 1;
             js.nonceBumpJournalEntry(caller);
             break :blk n;
         };
@@ -406,41 +459,37 @@ pub const Host = struct {
         } else createAddress(caller, caller_nonce);
 
         // 5. Load target address into state (required before createAccountCheckpoint)
-        _ = js.loadAccount(new_addr) catch return CreateResult.failure();
+        _ = js.loadAccount(new_addr) catch return CreateResult.preExecFailure(gas_limit);
 
         // EIP-7610: CREATE fails if target address has non-empty storage in the DB.
         // Check loaded storage in evm_state (from prior SLOAD/SSTORE) and in DB (pre-inserted).
         if (js.inner.evm_state.get(new_addr)) |acct| {
             var slot_it = acct.storage.valueIterator();
             while (slot_it.next()) |slot| {
-                if (slot.presentValue() != 0) return CreateResult.failure();
+                if (slot.presentValue() != 0) return CreateResult.preExecFailure(gas_limit);
             }
         }
         {
             var db_it = js.database.storage_map.iterator();
             while (db_it.next()) |entry| {
                 if (std.mem.eql(u8, &entry.key_ptr.@"0", &new_addr) and entry.value_ptr.* != 0) {
-                    return CreateResult.failure();
+                    return CreateResult.preExecFailure(gas_limit);
                 }
             }
         }
 
         // 6. Create account checkpoint: collision check, value transfer, set nonce=1 (EIP-161)
         const checkpoint = js.createAccountCheckpoint(caller, new_addr, value, spec_id) catch {
-            return CreateResult.failure();
+            return CreateResult.preExecFailure(gas_limit);
         };
 
-        // 7. Increment depth for sub-interpreter
-        js.inner.depth += 1;
-
-        // 8. Build and run init-code sub-interpreter (heap-allocated; see call() comment above).
+        // 7. Build and run init-code sub-interpreter (heap-allocated; see call() comment above).
+        // Depth is already incremented by createAccountCheckpoint() → getCheckpoint() above.
         const sub_mem = Memory.new();
         const init_bytecode = bytecode_mod.Bytecode.newRaw(init_code);
         const sub_interp = std.heap.c_allocator.create(Interpreter) catch {
-            js.inner.depth -= 1;
             js.checkpointRevert(checkpoint);
-            return .{ .success = false, .address = [_]u8{0} ** 20,
-                       .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
+            return CreateResult.preExecFailure(gas_limit);
         };
         sub_interp.* = Interpreter.new(
             sub_mem,
@@ -461,16 +510,17 @@ pub const Host = struct {
         );
         self.run_sub_call(self, sub_interp);
 
-        // 9. Decrement depth
-        js.inner.depth -= 1;
-
-        // 10. Handle sub-interpreter failure
+        // 8. Handle sub-interpreter failure
         if (!sub_interp.result.isSuccess()) {
             js.checkpointRevert(checkpoint);
+            // EVM gas return rules for CREATE:
+            //   - REVERT: return unused gas to caller
+            //   - Any error (invalid opcode, stack underflow, OOG, etc.): all gas consumed, return 0
+            const gas_rem = if (sub_interp.result == .revert) sub_interp.gas.remaining else @as(u64, 0);
             return .{
                 .success = false,
                 .address = [_]u8{0} ** 20,
-                .gas_remaining = sub_interp.gas.remaining,
+                .gas_remaining = gas_rem,
                 .return_data = sub_interp.return_data.data,
                 .gas_refunded = 0,
             };
@@ -479,16 +529,17 @@ pub const Host = struct {
         // 11. Validate deployed code
         const deployed = sub_interp.return_data.data;
         if (deployed.len > MAX_CODE_SIZE) {
+            // EIP-170: code too large → all remaining gas consumed (treated as error, not revert)
             js.checkpointRevert(checkpoint);
             return .{ .success = false, .address = [_]u8{0} ** 20,
-                       .gas_remaining = sub_interp.gas.remaining, .return_data = &[_]u8{}, .gas_refunded = 0 };
+                       .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
         }
-        // EIP-3541 (London+): reject code starting with 0xEF
+        // EIP-3541 (London+): reject code starting with 0xEF (all gas consumed)
         if (primitives.isEnabledIn(spec_id, .london)) {
             if (deployed.len > 0 and deployed[0] == 0xEF) {
                 js.checkpointRevert(checkpoint);
                 return .{ .success = false, .address = [_]u8{0} ** 20,
-                           .gas_remaining = sub_interp.gas.remaining, .return_data = &[_]u8{}, .gas_refunded = 0 };
+                           .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
             }
         }
 

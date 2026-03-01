@@ -1,12 +1,77 @@
 const std = @import("std");
 
 /// RIPEMD-160 hash function implementation
-/// Based on the RIPEMD-160 specification
+/// Full two-line (left + right) RIPEMD-160 per the Dobbertin/Bosselaers/Preneel spec.
 pub fn ripemd160(input: []const u8) [20]u8 {
     var ctx = Context.init();
     ctx.update(input);
     return ctx.final();
 }
+
+// ─── Round message-word permutations ────────────────────────────────────────
+
+// Left line
+const RL = [80]u32{
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, // r1
+    7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8, // r2
+    3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12, // r3
+    1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2, // r4
+    4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13, // r5
+};
+
+// Right line
+const RR = [80]u32{
+    5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12, // r'1
+    6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2, // r'2
+    15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13, // r'3
+    8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14, // r'4
+    12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11, // r'5
+};
+
+// ─── Shift amounts ───────────────────────────────────────────────────────────
+
+// Left line
+const SL = [80]u32{
+    11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8, // r1
+    7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12, // r2
+    11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5, // r3
+    11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12, // r4
+    9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6, // r5
+};
+
+// Right line
+const SR = [80]u32{
+    8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6, // r'1
+    9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11, // r'2
+    9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5, // r'3
+    15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8, // r'4
+    8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11, // r'5
+};
+
+// ─── Round constants ─────────────────────────────────────────────────────────
+
+const KL = [5]u32{ 0x00000000, 0x5A827999, 0x6ED9EBA1, 0x8F1BBCDC, 0xA953FD4E };
+const KR = [5]u32{ 0x50A28BE6, 0x5C4DD124, 0x6D703EF3, 0x7A6D76E9, 0x00000000 };
+
+// ─── Boolean functions ───────────────────────────────────────────────────────
+
+inline fn f1(x: u32, y: u32, z: u32) u32 {
+    return x ^ y ^ z;
+}
+inline fn f2(x: u32, y: u32, z: u32) u32 {
+    return (x & y) | (~x & z);
+}
+inline fn f3(x: u32, y: u32, z: u32) u32 {
+    return (x | ~y) ^ z;
+}
+inline fn f4(x: u32, y: u32, z: u32) u32 {
+    return (x & z) | (y & ~z);
+}
+inline fn f5(x: u32, y: u32, z: u32) u32 {
+    return x ^ (y | ~z);
+}
+
+// ─── Context ─────────────────────────────────────────────────────────────────
 
 const Context = struct {
     h: [5]u32,
@@ -47,28 +112,26 @@ const Context = struct {
     }
 
     pub fn final(self: *Context) [20]u8 {
-        // Append padding
-        var padding: [64]u8 = undefined;
-        const pad_len = 64 - self.buflen;
-        padding[0] = 0x80;
-        @memset(padding[1..pad_len], 0);
+        // Append 0x80 padding byte
+        self.buf[self.buflen] = 0x80;
+        self.buflen += 1;
 
-        if (self.buflen < 56) {
-            @memcpy(self.buf[self.buflen..][0..pad_len], padding[0..pad_len]);
-            self.buflen += pad_len;
-        } else {
-            @memcpy(self.buf[self.buflen..][0..pad_len], padding[0..pad_len]);
+        // If not enough room for the 8-byte length, flush and start new block
+        if (self.buflen > 56) {
+            @memset(self.buf[self.buflen..64], 0);
             self.processBlock();
             self.buflen = 0;
-            @memset(&self.buf, 0);
         }
 
-        // Append length (in bits, little-endian)
+        // Zero-pad up to byte 56
+        @memset(self.buf[self.buflen..56], 0);
+
+        // Append bit length as little-endian u64
         const bit_len = self.total * 8;
         std.mem.writeInt(u64, self.buf[56..64], bit_len, .little);
         self.processBlock();
 
-        // Output
+        // Serialize hash state as little-endian u32 words
         var output: [20]u8 = undefined;
         for (0..5) |i| {
             std.mem.writeInt(u32, output[i * 4 ..][0..4], self.h[i], .little);
@@ -77,121 +140,91 @@ const Context = struct {
     }
 
     fn processBlock(self: *Context) void {
+        // Load message words (little-endian u32)
         var w: [16]u32 = undefined;
         for (0..16) |i| {
             w[i] = std.mem.readInt(u32, self.buf[i * 4 ..][0..4], .little);
         }
 
-        var a = self.h[0];
-        var b = self.h[1];
-        var c = self.h[2];
-        var d = self.h[3];
-        var e = self.h[4];
+        // ── Left line ──────────────────────────────────────────────────────
+        var al = self.h[0];
+        var bl = self.h[1];
+        var cl = self.h[2];
+        var dl = self.h[3];
+        var el = self.h[4];
 
-        // Round 1
-        inline for ([_]u32{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }) |i| {
-            const s = ROUND1_SHIFTS[i];
-            const k = ROUND1_CONSTANTS[i];
-            const tmp = std.math.rotl(u32, a +% f1(b, c, d) +% w[ROUND1_INDICES[i]] +% k, s) +% e;
-            a = e;
-            e = d;
-            d = std.math.rotl(u32, c, 10);
-            c = b;
-            b = tmp;
+        for (0..80) |i| {
+            const round: u32 = @intCast(i / 16);
+            const f = switch (round) {
+                0 => f1(bl, cl, dl),
+                1 => f2(bl, cl, dl),
+                2 => f3(bl, cl, dl),
+                3 => f4(bl, cl, dl),
+                else => f5(bl, cl, dl),
+            };
+            const t = std.math.rotl(u32, al +% f +% w[RL[i]] +% KL[round], SL[i]) +% el;
+            al = el;
+            el = dl;
+            dl = std.math.rotl(u32, cl, 10);
+            cl = bl;
+            bl = t;
         }
 
-        // Round 2
-        inline for ([_]u32{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }) |i| {
-            const s = ROUND2_SHIFTS[i];
-            const k = ROUND2_CONSTANTS[i];
-            const tmp = std.math.rotl(u32, a +% f2(b, c, d) +% w[ROUND2_INDICES[i]] +% k, s) +% e;
-            a = e;
-            e = d;
-            d = std.math.rotl(u32, c, 10);
-            c = b;
-            b = tmp;
+        // ── Right line ─────────────────────────────────────────────────────
+        var ar = self.h[0];
+        var br = self.h[1];
+        var cr = self.h[2];
+        var dr = self.h[3];
+        var er = self.h[4];
+
+        for (0..80) |i| {
+            const round: u32 = @intCast(i / 16);
+            const f = switch (round) {
+                0 => f5(br, cr, dr),
+                1 => f4(br, cr, dr),
+                2 => f3(br, cr, dr),
+                3 => f2(br, cr, dr),
+                else => f1(br, cr, dr),
+            };
+            const t = std.math.rotl(u32, ar +% f +% w[RR[i]] +% KR[round], SR[i]) +% er;
+            ar = er;
+            er = dr;
+            dr = std.math.rotl(u32, cr, 10);
+            cr = br;
+            br = t;
         }
 
-        // Round 3
-        inline for ([_]u32{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }) |i| {
-            const s = ROUND3_SHIFTS[i];
-            const k = ROUND3_CONSTANTS[i];
-            const tmp = std.math.rotl(u32, a +% f3(b, c, d) +% w[ROUND3_INDICES[i]] +% k, s) +% e;
-            a = e;
-            e = d;
-            d = std.math.rotl(u32, c, 10);
-            c = b;
-            b = tmp;
-        }
-
-        // Round 4
-        inline for ([_]u32{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }) |i| {
-            const s = ROUND4_SHIFTS[i];
-            const k = ROUND4_CONSTANTS[i];
-            const tmp = std.math.rotl(u32, a +% f4(b, c, d) +% w[ROUND4_INDICES[i]] +% k, s) +% e;
-            a = e;
-            e = d;
-            d = std.math.rotl(u32, c, 10);
-            c = b;
-            b = tmp;
-        }
-
-        // Round 5
-        inline for ([_]u32{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }) |i| {
-            const s = ROUND5_SHIFTS[i];
-            const k = ROUND5_CONSTANTS[i];
-            const tmp = std.math.rotl(u32, a +% f5(b, c, d) +% w[ROUND5_INDICES[i]] +% k, s) +% e;
-            a = e;
-            e = d;
-            d = std.math.rotl(u32, c, 10);
-            c = b;
-            b = tmp;
-        }
-
-        // Parallel rounds (simplified - full implementation would have all 5 rounds)
-        // For now, we'll use a simplified version that processes the right line
-        // Note: Full RIPEMD-160 requires parallel processing of both left and right lines
-        // This is a simplified implementation
-    }
-
-    fn f1(x: u32, y: u32, z: u32) u32 {
-        return x ^ y ^ z;
-    }
-
-    fn f2(x: u32, y: u32, z: u32) u32 {
-        return (x & y) | (~x & z);
-    }
-
-    fn f3(x: u32, y: u32, z: u32) u32 {
-        return (x | ~y) ^ z;
-    }
-
-    fn f4(x: u32, y: u32, z: u32) u32 {
-        return (x & z) | (y & ~z);
-    }
-
-    fn f5(x: u32, y: u32, z: u32) u32 {
-        return x ^ (y | ~z);
+        // ── Combine both lines with initial state ──────────────────────────
+        const t = self.h[1] +% cl +% dr;
+        self.h[1] = self.h[2] +% dl +% er;
+        self.h[2] = self.h[3] +% el +% ar;
+        self.h[3] = self.h[4] +% al +% br;
+        self.h[4] = self.h[0] +% bl +% cr;
+        self.h[0] = t;
     }
 };
 
-// RIPEMD-160 constants and indices (simplified - full spec has more complexity)
-const ROUND1_SHIFTS = [_]u32{ 11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8 };
-const ROUND1_CONSTANTS = [_]u32{0x00000000} ** 16;
-const ROUND1_INDICES = [_]u32{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+// ─── Test vectors ─────────────────────────────────────────────────────────────
 
-const ROUND2_SHIFTS = [_]u32{ 7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12 };
-const ROUND2_CONSTANTS = [_]u32{0x5A827999} ** 16;
-const ROUND2_INDICES = [_]u32{ 7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8 };
+test "RIPEMD-160: empty string" {
+    const result = ripemd160(&.{});
+    // RIPEMD-160("") = 9c1185a5c5e9fc54612808977ee8f548b2258d31
+    const expected = [20]u8{ 0x9c, 0x11, 0x85, 0xa5, 0xc5, 0xe9, 0xfc, 0x54, 0x61, 0x28, 0x08, 0x97, 0x7e, 0xe8, 0xf5, 0x48, 0xb2, 0x25, 0x8d, 0x31 };
+    try std.testing.expectEqual(expected, result);
+}
 
-const ROUND3_SHIFTS = [_]u32{ 11, 13, 14, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5 };
-const ROUND3_CONSTANTS = [_]u32{0x6ED9EBA1} ** 16;
-const ROUND3_INDICES = [_]u32{ 3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12 };
+test "RIPEMD-160: abc" {
+    const result = ripemd160("abc");
+    // RIPEMD-160("abc") = 8eb208f7e05d987a9b044a8e98c6b087f15a0bfc
+    const expected = [20]u8{ 0x8e, 0xb2, 0x08, 0xf7, 0xe0, 0x5d, 0x98, 0x7a, 0x9b, 0x04, 0x4a, 0x8e, 0x98, 0xc6, 0xb0, 0x87, 0xf1, 0x5a, 0x0b, 0xfc };
+    try std.testing.expectEqual(expected, result);
+}
 
-const ROUND4_SHIFTS = [_]u32{ 9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5 };
-const ROUND4_CONSTANTS = [_]u32{0x8F1BBCDC} ** 16;
-const ROUND4_INDICES = [_]u32{ 1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2 };
-
-const ROUND5_SHIFTS = [_]u32{ 8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6 };
-const ROUND5_CONSTANTS = [_]u32{0xA953FD4E} ** 16;
-const ROUND5_INDICES = [_]u32{ 4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13 };
+test "RIPEMD-160: message longer than one block" {
+    // "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+    // = 84983e441c3bd26ebaae4aa1f95129e5e54670f1
+    const input = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    const result = ripemd160(input);
+    const expected = [20]u8{ 0x84, 0x98, 0x3e, 0x44, 0x1c, 0x3b, 0xd2, 0x6e, 0xba, 0xae, 0x4a, 0xa1, 0xf9, 0x51, 0x29, 0xe5, 0xe5, 0x46, 0x70, 0xf1 };
+    try std.testing.expectEqual(expected, result);
+}

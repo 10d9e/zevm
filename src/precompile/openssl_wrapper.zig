@@ -7,11 +7,31 @@ const c = @cImport({
     @cInclude("openssl/obj_mac.h");
 });
 
+/// P-256 (secp256r1) field prime p = 2^256 - 2^224 + 2^192 + 2^96 - 1
+const P256_FIELD_PRIME: [32]u8 = .{
+    0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+};
+
+/// Returns true if val (big-endian 32 bytes) is in [0, P256_FIELD_PRIME - 1].
+fn isValidFieldElement(val: *const [32]u8) bool {
+    for (val, &P256_FIELD_PRIME) |v, p| {
+        if (v < p) return true;
+        if (v > p) return false;
+    }
+    return false; // val == prime, which is out of range
+}
+
 /// Verify secp256r1 (P-256) ECDSA signature
 /// msg: 32-byte message hash
 /// sig: 64-byte signature (r || s, each 32 bytes)
 /// pk: 64-byte public key (x || y, each 32 bytes)
 pub fn verifyP256(msg: [32]u8, sig: [64]u8, pk: [64]u8) bool {
+    // Validate public key coordinates are in the valid field range [0, p-1].
+    // OpenSSL reduces coordinates mod p, which would accept invalid inputs.
+    if (!isValidFieldElement(pk[0..32]) or !isValidFieldElement(pk[32..64])) return false;
     // Create EC key
     const group = c.EC_GROUP_new_by_curve_name(c.NID_X9_62_prime256v1);
     if (group == null) return false;
