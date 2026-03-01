@@ -152,7 +152,7 @@ fn testDatabase() !void {
 
     try db.insertCode(code_hash, zevm.bytecode.Bytecode.new());
     const retrieved_code = try db.codeByHash(code_hash);
-    std.debug.assert(retrieved_code.len() == 1); // Default bytecode has 1 byte (STOP)
+    std.debug.assert(retrieved_code.len() == 0); // Default bytecode is empty (STOP is execution padding, original_len=0)
 
     std.log.info("✓ Database tests passed", .{});
 }

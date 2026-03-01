@@ -126,13 +126,20 @@ pub const Validation = struct {
             }
         }
 
-        // Calculate maximum gas fee: gas_limit * gas_price
-        // Value transfer happens separately during frame execution.
-        // Use u256 arithmetic to avoid overflow
-        const max_gas_fee: primitives.U256 = @as(primitives.U256, tx.gas_limit) * @as(primitives.U256, tx.gas_price);
+        // Compute effective gas price (EIP-1559): min(max_fee, basefee + priority_fee).
+        // Balance validation uses max_fee (worst-case affordability).
+        // Deduction uses effective_gas_price so the refund in postExecution balances correctly.
+        const effective_gas_price: u128 = if (tx.gas_priority_fee) |tip|
+            @min(tx.gas_price, @as(u128, ctx.block.basefee) + tip)
+        else
+            tx.gas_price;
 
-        // Validate balance covers gas fee + value (to ensure sender can afford the tx),
-        // but only deduct the gas fee here; value transfer is applied in executeFrame.
+        // Maximum gas fee at worst-case price (for balance validation only)
+        const max_gas_fee: primitives.U256 = @as(primitives.U256, tx.gas_limit) * @as(primitives.U256, tx.gas_price);
+        // Effective gas fee deducted upfront (reimbursed proportionally in postExecution)
+        const effective_gas_fee: primitives.U256 = @as(primitives.U256, tx.gas_limit) * @as(primitives.U256, effective_gas_price);
+
+        // Validate balance covers worst-case gas fee + value (affordability check at max_fee).
         const max_cost = std.math.add(primitives.U256, max_gas_fee, tx.value) catch {
             return ValidationError.BalanceOverflow;
         };
@@ -154,8 +161,8 @@ pub const Validation = struct {
         const old_balance = account_info.balance;
         js.callerAccountingJournalEntry(tx.caller, old_balance, true);
 
-        // Deduct only the gas fee from caller balance (not the value — handled in executeFrame)
-        account_info.balance = old_balance - max_gas_fee;
+        // Deduct effective gas fee from caller balance (not the value — handled in executeFrame)
+        account_info.balance = old_balance - effective_gas_fee;
 
         // Bump nonce
         account_info.nonce += 1;

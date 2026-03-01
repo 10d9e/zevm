@@ -126,13 +126,13 @@ test "postExecution: caller reimbursed for unused gas, coinbase receives tip" {
     try std.testing.expectEqual(handler_main.ExecutionStatus.Success, result.status);
 
     // Intrinsic gas = 21000, STOP costs 0 → gas_used = 21000, gas_returned = 79_000
-    // Phase 1 deducts at max_fee (tx.gas_price = 10*gwei): 100_000 * 10*gwei
-    // Phase 2 reimburses at effective_gas_price = min(10*gwei, 1*gwei+2*gwei) = 3*gwei: 79_000 * 3*gwei
+    // EIP-1559 fix: deduction and reimbursement both at effective_gas_price = min(10,1+2) = 3*gwei.
+    // Net cost = gas_used * effective_gas_price = 21000 * 3*gwei = 63_000 gwei.
     const effective_price = 3 * gwei;
     const gas_returned: u64 = 79_000;
     const expected_caller: primitives.U256 = initial_caller_balance
-        - @as(primitives.U256, parts.ctx.tx.gas_price) * parts.ctx.tx.gas_limit
-        + @as(primitives.U256, effective_price) * gas_returned;
+        - @as(primitives.U256, effective_price) * parts.ctx.tx.gas_limit   // deduct at effective
+        + @as(primitives.U256, effective_price) * gas_returned;             // reimburse at effective
     const actual_caller = try readBalance(&parts.ctx, caller);
     try std.testing.expectEqual(expected_caller, actual_caller);
 

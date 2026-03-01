@@ -8,50 +8,76 @@ const interpreter_mod = @import("interpreter");
 const main = @import("main.zig");
 const validation = @import("validation.zig");
 
-/// Mainnet EVM type alias
-pub const MainnetEvm = main.Evm;
+/// Mainnet EVM — heap-allocated wrapper that owns its Instructions, Precompiles, and FrameStack.
+///
+/// `buildMainnet` / `buildMainnetWithInspector` return `*MainnetEvm`.  Because the struct is
+/// heap-allocated the addresses of `instructions`, `precompiles`, and `frame_stack` are stable
+/// for the lifetime of the object, so the internal `Evm` can hold `&self.instructions` etc.
+/// without dangling pointers.
+///
+/// Call `evm.destroy()` when done to free the heap allocation.
+pub const MainnetEvm = struct {
+    /// Owned instruction table and precompile set (stable addresses — do NOT move this struct).
+    instructions: main.Instructions,
+    precompiles: main.Precompiles,
+    frame_stack: main.FrameStack,
+    /// Inner Evm whose `instructions`/`precompiles`/`frame_stack` pointers reference the fields above.
+    evm: main.Evm,
+
+    /// Get the execution context.
+    pub fn getContext(self: *MainnetEvm) *context.Context {
+        return self.evm.ctx;
+    }
+
+    /// Create an execution frame.
+    pub fn createFrame(self: *MainnetEvm, frame_data: main.FrameData) !main.Frame {
+        return self.evm.createFrame(frame_data);
+    }
+
+    /// Execute a frame (delegates to the inner Evm).
+    pub fn executeFrame(self: *MainnetEvm, frame: *main.Frame) !main.FrameResult {
+        return self.evm.executeFrame(frame);
+    }
+
+    /// Execute a full transaction through validate → pre-exec → exec → post-exec.
+    /// Convenience wrapper over `ExecuteEvm.execute(&self.evm)`.
+    pub fn execute(self: *MainnetEvm) !main.ExecutionResult {
+        return ExecuteEvm.execute(&self.evm);
+    }
+
+    /// Free the heap allocation created by `buildMainnet` / `buildMainnetWithInspector`.
+    pub fn destroy(self: *MainnetEvm) void {
+        std.heap.c_allocator.destroy(self);
+    }
+};
 
 /// Mainnet context type alias
 pub const MainnetContext = context.Context;
 
 /// Main builder
 pub const MainBuilder = struct {
-    /// Build mainnet EVM without inspector
-    pub fn buildMainnet(self: *MainnetContext) MainnetEvm {
-        // Extract spec from context configuration
+    /// Build mainnet EVM without inspector.
+    /// Returns a heap-allocated `*MainnetEvm`; call `evm.destroy()` when done.
+    pub fn buildMainnet(self: *MainnetContext) *MainnetEvm {
         const spec = self.cfg.spec;
-
-        // Initialize instruction table and precompiles for this spec
-        var instructions = main.Instructions.new(spec);
-        var precompiles = main.Precompiles.new(spec);
-        var frame_stack = main.FrameStack.newPrealloc(8);
-
-        return main.Evm.init(
-            self,
-            null,
-            &instructions,
-            &precompiles,
-            &frame_stack,
-        );
+        const owned = std.heap.c_allocator.create(MainnetEvm) catch @panic("OOM in buildMainnet");
+        owned.instructions = main.Instructions.new(spec);
+        owned.precompiles = main.Precompiles.new(spec);
+        owned.frame_stack = main.FrameStack.newPrealloc(8);
+        owned.evm = main.Evm.init(self, null, &owned.instructions, &owned.precompiles, &owned.frame_stack);
+        return owned;
     }
 
-    /// Build mainnet EVM with inspector
-    pub fn buildMainnetWithInspector(self: *MainnetContext, inspector: *main.Inspector) MainnetEvm {
-        // Extract spec from context configuration
+    /// Build mainnet EVM with inspector.
+    /// Returns a heap-allocated `*MainnetEvm`; call `evm.destroy()` when done.
+    pub fn buildMainnetWithInspector(self: *MainnetContext, inspector: *main.Inspector) *MainnetEvm {
         const spec = self.cfg.spec;
-
-        // Initialize instruction table and precompiles for this spec
-        var instructions = main.Instructions.new(spec);
-        var precompiles = main.Precompiles.new(spec);
-        var frame_stack = main.FrameStack.newPrealloc(8);
-
-        return main.Evm.init(
-            self,
-            inspector,
-            &instructions,
-            &precompiles,
-            &frame_stack,
-        );
+        const owned = std.heap.c_allocator.create(MainnetEvm) catch @panic("OOM in buildMainnetWithInspector");
+        owned.instructions = main.Instructions.new(spec);
+        owned.precompiles = main.Precompiles.new(spec);
+        owned.frame_stack = main.FrameStack.newPrealloc(8);
+        owned.evm = main.Evm.init(self, inspector, &owned.instructions, &owned.precompiles, &owned.frame_stack);
+        return owned;
     }
 };
 
@@ -65,9 +91,11 @@ pub const MainContext = struct {
 };
 
 /// Mainnet handler — stateless, all methods are free functions grouped in a namespace.
+/// All functions accept `*main.Evm` so they work with both the heap-allocated `*MainnetEvm`
+/// (call `evm.execute()` or pass `&mevm.evm`) and stack-allocated test helpers.
 pub const MainnetHandler = struct {
     /// Validate transaction — environment checks (no DB access) then caller state check.
-    pub fn validate(evm: *MainnetEvm, initial_gas: *validation.InitialAndFloorGas) !void {
+    pub fn validate(evm: *main.Evm, initial_gas: *validation.InitialAndFloorGas) !void {
         const ctx = evm.getContext();
 
         // 1. Validate block/tx/cfg fields (chain ID, gas cap, priority fee ordering)
@@ -89,7 +117,7 @@ pub const MainnetHandler = struct {
     /// Pre-execution phase — warm addresses and mark access-list items.
     ///
     /// Must run after validate() so the caller is already loaded and nonce bumped.
-    pub fn preExecution(evm: *MainnetEvm) !void {
+    pub fn preExecution(evm: *main.Evm) !void {
         const ctx = evm.getContext();
         const tx = &ctx.tx;
         const spec = ctx.cfg.spec;
@@ -157,7 +185,7 @@ pub const MainnetHandler = struct {
     }
 
     /// Execute the transaction frame — runs the interpreter against bytecode.
-    pub fn executeFrame(evm: *MainnetEvm, initial_gas: u64) !main.FrameResult {
+    pub fn executeFrame(evm: *main.Evm, initial_gas: u64) !main.FrameResult {
         const ctx = evm.getContext();
         const tx = &ctx.tx;
 
@@ -186,10 +214,14 @@ pub const MainnetHandler = struct {
                 const callee_load = try ctx.journaled_state.loadAccountWithCode(target);
                 const callee_code = if (callee_load.data.info.code) |c| c else bytecode.Bytecode.new();
 
+                // Checkpoint before value transfer so journal state can be rolled back on REVERT.
+                const call_checkpoint = ctx.journaled_state.getCheckpoint();
+
                 // Value transfer for top-level CALL (pre-execution, not through sub-call opcode).
                 if (tx.value > 0) {
                     const xfer_err = try ctx.journaled_state.transfer(tx.caller, target, tx.value);
                     if (xfer_err != null) {
+                        ctx.journaled_state.checkpointRevert(call_checkpoint);
                         return main.FrameResult.new(
                             main.ExecutionResult.new(.Fail, exec_gas),
                             0,
@@ -210,7 +242,17 @@ pub const MainnetHandler = struct {
                 var frame = try evm.createFrame(frame_data);
                 // Set the actual target bytecode on the interpreter (Frame.init uses empty bytecode).
                 frame.interpreter.bytecode.setBytecode(callee_code);
-                return evm.executeFrame(&frame);
+                const call_result = try evm.executeFrame(&frame);
+
+                // Revert all journaled state (transfer + execution effects) on REVERT/Halt;
+                // commit on success so postExecution can commitTx cleanly.
+                if (call_result.result.status != .Success) {
+                    ctx.journaled_state.checkpointRevert(call_checkpoint);
+                } else {
+                    ctx.journaled_state.checkpointCommit();
+                }
+
+                return call_result;
             },
         }
     }
@@ -218,7 +260,7 @@ pub const MainnetHandler = struct {
     /// Post-execution phase — gas refund capping (EIP-3529), EIP-7623 floor, reimburse caller,
     /// reward beneficiary, and commit journal.
     pub fn postExecution(
-        evm: *MainnetEvm,
+        evm: *main.Evm,
         result: *main.FrameResult,
         initial_gas: validation.InitialAndFloorGas,
     ) !void {
@@ -230,10 +272,13 @@ pub const MainnetHandler = struct {
 
         const is_london = primitives.isEnabledIn(spec, .london);
 
-        // 1. EIP-3529: cap gas refund
+        // 1. EIP-3529: cap gas refund; discard refund counter on REVERT/Halt (EVM spec).
         const exec_gas = tx.gas_limit - initial_gas.initial_gas;
         const gas_spent = exec_gas - result.gas_remaining;
-        const raw_refund = @as(u64, @intCast(@max(0, result.gas_refunded)));
+        const raw_refund: u64 = if (result.result.status == .Revert or result.result.status == .Halt)
+            0
+        else
+            @as(u64, @intCast(@max(0, result.gas_refunded)));
         const quotient: u64 = if (is_london) 5 else 2;
         var capped_refund = @min(raw_refund, gas_spent / quotient);
 
@@ -253,8 +298,9 @@ pub const MainnetHandler = struct {
         else
             tx.gas_price;
 
-        // 4. Reimburse caller: (gas_remaining + capped_refund) * effective_gas_price
-        const gas_returned: u64 = result.gas_remaining + capped_refund;
+        // 4. Reimburse caller: gas_returned = exec_gas - effective_exec_gas_used (uniform formula,
+        //    handles EIP-7623 floor gas override correctly).
+        const gas_returned: u64 = exec_gas - effective_exec_gas_used;
         const reimburse_amount: primitives.U256 = @as(primitives.U256, effective_gas_price) * @as(primitives.U256, gas_returned);
         try js.balanceIncr(tx.caller, reimburse_amount);
 
@@ -273,7 +319,7 @@ pub const MainnetHandler = struct {
     }
 
     /// Handle errors — revert journal, discard tx.
-    pub fn catchError(evm: *MainnetEvm, _: anyerror) void {
+    pub fn catchError(evm: *main.Evm, _: anyerror) void {
         const ctx = evm.getContext();
         // Revert all state changes from this transaction
         ctx.journaled_state.discardTx();
@@ -281,31 +327,33 @@ pub const MainnetHandler = struct {
 };
 
 /// Execute EVM — run a full transaction through validate → pre-exec → exec → post-exec.
+/// Accepts `*main.Evm` so it works with both heap-allocated `*MainnetEvm` (pass `&mevm.evm`)
+/// and stack-allocated test patterns (pass `&evm` directly).
 pub const ExecuteEvm = struct {
-    pub fn execute(self: *MainnetEvm) !main.ExecutionResult {
+    pub fn execute(evm: *main.Evm) !main.ExecutionResult {
         var initial_gas = validation.InitialAndFloorGas{ .initial_gas = 0, .floor_gas = 0 };
 
         // Validate (env checks + caller deduction)
-        MainnetHandler.validate(self, &initial_gas) catch |err| {
-            MainnetHandler.catchError(self, err);
+        MainnetHandler.validate(evm, &initial_gas) catch |err| {
+            MainnetHandler.catchError(evm, err);
             return main.ExecutionResult.new(.Fail, 0);
         };
 
         // Pre-execution (warm access lists)
-        MainnetHandler.preExecution(self) catch |err| {
-            MainnetHandler.catchError(self, err);
+        MainnetHandler.preExecution(evm) catch |err| {
+            MainnetHandler.catchError(evm, err);
             return main.ExecutionResult.new(.Fail, 0);
         };
 
         // Execute frame
-        var frame_result = MainnetHandler.executeFrame(self, initial_gas.initial_gas) catch |err| {
-            MainnetHandler.catchError(self, err);
+        var frame_result = MainnetHandler.executeFrame(evm, initial_gas.initial_gas) catch |err| {
+            MainnetHandler.catchError(evm, err);
             return main.ExecutionResult.new(.Fail, 0);
         };
 
         // Post-execution: refund capping, floor gas, reimburse caller, reward beneficiary, commit
-        MainnetHandler.postExecution(self, &frame_result, initial_gas) catch |err| {
-            MainnetHandler.catchError(self, err);
+        MainnetHandler.postExecution(evm, &frame_result, initial_gas) catch |err| {
+            MainnetHandler.catchError(evm, err);
             return main.ExecutionResult.new(.Fail, 0);
         };
 
@@ -316,8 +364,8 @@ pub const ExecuteEvm = struct {
 /// Execute commit EVM — execute then commit state to the underlying database.
 /// Note: commitTx() is called inside postExecution; no second commit needed here.
 pub const ExecuteCommitEvm = struct {
-    pub fn executeAndCommit(self: *MainnetEvm) !main.ExecutionResult {
-        return ExecuteEvm.execute(self);
+    pub fn executeAndCommit(evm: *main.Evm) !main.ExecutionResult {
+        return ExecuteEvm.execute(evm);
     }
 };
 
@@ -345,10 +393,11 @@ pub const testing = struct {
         const ctx = MainContext.mainnet();
         std.debug.assert(ctx.cfg.spec == primitives.SpecId.prague);
 
-        // Test EVM building
+        // Test EVM building — buildMainnet returns *MainnetEvm (heap-allocated).
         const evm = MainBuilder.buildMainnet(@constCast(&ctx));
-        std.debug.assert(evm.ctx == &ctx);
-        std.debug.assert(evm.inspector == null);
+        defer evm.destroy();
+        std.debug.assert(evm.getContext() == @constCast(&ctx));
+        std.debug.assert(evm.evm.inspector == null);
 
         std.log.info("Mainnet builder test passed!", .{});
     }
@@ -356,16 +405,16 @@ pub const testing = struct {
     pub fn testMainnetHandler() !void {
         std.log.info("Testing mainnet handler...", .{});
 
-        // Create test context
+        // Create test context — buildMainnet returns *MainnetEvm (heap-allocated).
         var ctx = MainContext.mainnet();
         const evm = MainBuilder.buildMainnet(&ctx);
+        defer evm.destroy();
 
         // Test handler in isolation — validate/preExecution are NOOPs when
         // called directly without a properly-populated context, so just test
         // the struct construction.
         const handler = MainnetHandler{};
         _ = handler;
-        _ = evm;
 
         std.log.info("Mainnet handler test passed!", .{});
     }
