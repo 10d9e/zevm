@@ -715,6 +715,31 @@ pub const JournalInner = struct {
         }
     }
 
+    /// Snapshot the current journal position WITHOUT incrementing the call depth counter.
+    /// Use this for top-level transaction frames that should not consume an EVM call depth slot.
+    /// Pair with revertToSnapshot() to undo state changes without affecting call depth tracking.
+    pub fn snapshotPosition(self: *JournalInner) JournalCheckpoint {
+        return JournalCheckpoint{
+            .log_i = self.logs.items.len,
+            .journal_i = self.journal.items.len,
+        };
+    }
+
+    /// Revert journal entries back to a snapshot position WITHOUT decrementing call depth.
+    /// Companion to snapshotPosition() — does not affect the depth counter.
+    pub fn revertToSnapshot(self: *JournalInner, checkpoint: JournalCheckpoint) void {
+        const is_spurious_dragon_enabled = primitives.isEnabledIn(self.spec, .spurious_dragon);
+        self.logs.shrinkRetainingCapacity(checkpoint.log_i);
+        if (checkpoint.journal_i < self.journal.items.len) {
+            var i = self.journal.items.len;
+            while (i > checkpoint.journal_i) {
+                i -= 1;
+                const entry = self.journal.swapRemove(i);
+                entry.revert(&self.evm_state, &self.transient_storage, is_spurious_dragon_enabled);
+            }
+        }
+    }
+
     /// Performs selfdestruct action.
     /// Transfers balance from address to target. Check if target exist/is_cold
     ///
@@ -1136,6 +1161,14 @@ pub fn Journal(comptime DB: type) type {
 
         pub fn checkpointRevert(self: *@This(), checkpoint: JournalCheckpoint) void {
             self.inner.checkpointRevert(checkpoint);
+        }
+
+        pub fn snapshotPosition(self: *@This()) JournalCheckpoint {
+            return self.inner.snapshotPosition();
+        }
+
+        pub fn revertToSnapshot(self: *@This(), checkpoint: JournalCheckpoint) void {
+            self.inner.revertToSnapshot(checkpoint);
         }
 
         pub fn setCodeWithHash(self: *@This(), address: primitives.Address, code: bytecode.Bytecode, hash: primitives.Hash) void {

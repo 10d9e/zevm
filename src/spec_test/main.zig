@@ -202,25 +202,29 @@ fn parseTestCases(
     const tx_to_str = getStr(tx_val.object, "to") orelse "";
     const is_create = tx_to_str.len == 0;
     const tx_to: [20]u8 = if (is_create) [_]u8{0} ** 20 else try parseAddress(tx_to_str);
-    // EIP-1559 priority tip (max_priority_fee_per_gas); 0 for legacy transactions
-    const tx_max_priority_fee = parseU128Hex(
-        getStr(tx_val.object, "maxPriorityFeePerGas") orelse "0x0",
-    ) catch 0;
-    // For EIP-1559 txs (maxFeePerGas present): effective_gas_price = min(maxFeePerGas, baseFee + tip)
-    // For legacy txs (gasPrice present): effective_gas_price = gasPrice
-    // Storing the effective price ensures GASPRICE opcode and gas pre-deduction are correct.
+    // For EIP-1559 txs (maxFeePerGas present): store max_fee and tip separately.
+    // The handler computes effective_gas_price = min(max_fee, baseFee + tip) internally.
+    // Balance validation must use max_fee (worst-case), not effective price.
+    // For legacy txs (gasPrice present): gas_price = gasPrice, max_priority_fee = null.
     const tx_gas_price: u128 = blk: {
         if (getStr(tx_val.object, "gasPrice")) |gp| {
-            // Saturate on overflow: gasPrice > u128.max means gas cost is definitely
-            // unaffordable. The balance check in the runner will reject it (expect_exception).
+            // Legacy tx: gas_price is the single gasPrice field.
+            // Saturate on overflow so balance check will reject (expect_exception).
             break :blk parseU128Hex(gp) catch std.math.maxInt(u128);
         } else if (getStr(tx_val.object, "maxFeePerGas")) |mfpg| {
-            const max_fee = parseU128Hex(mfpg) catch std.math.maxInt(u128);
-            const base: u128 = @as(u128, block_basefee);
-            break :blk @min(max_fee, base + tx_max_priority_fee);
+            // EIP-1559 tx: store maxFeePerGas (not effective price) for correct balance validation.
+            break :blk parseU128Hex(mfpg) catch std.math.maxInt(u128);
         } else {
             break :blk 0;
         }
+    };
+    // max_priority_fee: null for legacy txs, Some(tip) for EIP-1559 (even when tip == 0).
+    // The ?u128 type lets the runner distinguish legacy from EIP-1559 with zero tip.
+    const tx_max_priority_fee: ?u128 = blk: {
+        if (getStr(tx_val.object, "maxPriorityFeePerGas")) |tip_str| {
+            break :blk parseU128Hex(tip_str) catch 0;
+        }
+        break :blk null; // legacy tx — no priority fee field
     };
 
     // Transaction arrays
@@ -339,10 +343,14 @@ fn parseTestCases(
         // EIP-7702: count authorization tuples for intrinsic gas (25000 per tuple)
         // Extract (authority → delegation target) pairs for code setting.
         // Also capture chain_id and nonce for validity checking in the runner.
+        // has_authorization_list: true when the JSON field exists (even for empty lists),
+        // so the runner can set tx.authorization_list = Some([]) and trigger empty-list rejection.
         var auth_count: u32 = 0;
+        var has_authorization_list = false;
         var auth_entries: std.ArrayList(types.AuthorizationEntry) = .{};
         if (tx_val.object.get("authorizationList")) |al| {
             if (al == .array) {
+                has_authorization_list = true;
                 auth_count = @intCast(al.array.items.len);
                 for (al.array.items) |entry| {
                     if (entry != .object) continue;
@@ -434,6 +442,7 @@ fn parseTestCases(
             .access_list_slot_count = al_slot_count,
             .access_list = al_entries.items,
             .authorization_count = auth_count,
+            .has_authorization_list = has_authorization_list,
             .authorization_entries = auth_entries.items,
             .blob_versioned_hashes_count = blob_hashes_count,
             .blob_versioned_hashes = blob_hash_list.items,

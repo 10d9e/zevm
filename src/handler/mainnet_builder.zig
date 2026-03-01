@@ -123,6 +123,20 @@ pub const MainnetHandler = struct {
         const spec = ctx.cfg.spec;
         const js = &ctx.journaled_state;
 
+        // EIP-2929: Pre-warm precompile addresses (precompiles are always warm at tx start).
+        {
+            var addr_buf: [32]primitives.Address = undefined;
+            var count: usize = 0;
+            var it = evm.precompiles.precompiles.addresses.keyIterator();
+            while (it.next()) |addr| {
+                if (count < addr_buf.len) {
+                    addr_buf[count] = addr.*;
+                    count += 1;
+                }
+            }
+            try js.warmPrecompiles(addr_buf[0..count]);
+        }
+
         // EIP-3651 (Shanghai+): Pre-warm coinbase so CALL to coinbase is not cold
         if (primitives.isEnabledIn(spec, .shanghai)) {
             js.warmCoinbaseAccount(ctx.block.beneficiary);
@@ -159,14 +173,25 @@ pub const MainnetHandler = struct {
                                         auth.chain_id == @as(primitives.U256, ctx.cfg.chain_id);
                                     if (!chain_id_valid) continue;
 
-                                    // Load authority account (marks it warm)
+                                    // Load authority account (marks it warm; EIP-7702 spec: always access
+                                    // the signer's account even if the authorization is ultimately invalid)
                                     const load_result = js.loadAccountMutOptionalCode(authority_addr, true, false) catch continue;
                                     const journaled = load_result.data;
+
+                                    // Per EIP-7702: skip if authority has non-empty, non-EIP-7702 code.
+                                    // Only EOAs (empty code) or accounts already holding an EIP-7702
+                                    // delegation designator may re-delegate.
+                                    if (journaled.account.info.code) |existing_code| {
+                                        if (!existing_code.isEip7702() and !existing_code.isEmpty()) continue;
+                                    }
 
                                     // Nonce must match exactly — skip if stale
                                     if (journaled.account.info.nonce != auth.nonce) continue;
 
-                                    // Bump authority nonce (journaled, revertable)
+                                    // Per EIP-7702: skip if nonce is at maxInt(u64) — bumping would overflow.
+                                    if (journaled.account.info.nonce == std.math.maxInt(u64)) continue;
+
+                                    // Bump authority nonce (journaled, revertable).
                                     journaled.account.info.nonce += 1;
                                     js.nonceBumpJournalEntry(authority_addr);
 
@@ -212,10 +237,29 @@ pub const MainnetHandler = struct {
             .Call => |target| {
                 // Load target account and its code before executing.
                 const callee_load = try ctx.journaled_state.loadAccountWithCode(target);
-                const callee_code = if (callee_load.data.info.code) |c| c else bytecode.Bytecode.new();
+                var callee_code = if (callee_load.data.info.code) |c| c else bytecode.Bytecode.new();
 
-                // Checkpoint before value transfer so journal state can be rolled back on REVERT.
-                const call_checkpoint = ctx.journaled_state.getCheckpoint();
+                // EIP-7702: top-level CALL to a delegation account — follow the delegation to
+                // get the actual code to execute. The CALL context (ADDRESS, storage) still
+                // refers to the target (authority), but bytecode comes from the delegate.
+                // No recursive delegation (flat one-hop per EIP-7702 spec).
+                if (callee_code.isEip7702()) {
+                    const del_addr = callee_code.eip7702.address;
+                    if (ctx.journaled_state.loadAccountWithCode(del_addr)) |del_load| {
+                        callee_code = if (del_load.data.info.code) |del_code|
+                            if (del_code.isEip7702()) bytecode.Bytecode.new() // no nested delegation
+                            else del_code
+                        else
+                            bytecode.Bytecode.new();
+                    } else |_| {
+                        callee_code = bytecode.Bytecode.new();
+                    }
+                }
+
+                // Snapshot journal position before value transfer so state can be rolled back on REVERT.
+                // Use snapshotPosition (not getCheckpoint) to avoid consuming an EVM call depth slot —
+                // getCheckpoint increments depth, which would reduce the available recursive call depth by 1.
+                const call_checkpoint = ctx.journaled_state.snapshotPosition();
 
                 // Value transfer for top-level CALL (pre-execution, not through sub-call opcode).
                 if (tx.value > 0) {
@@ -244,12 +288,10 @@ pub const MainnetHandler = struct {
                 frame.interpreter.bytecode.setBytecode(callee_code);
                 const call_result = try evm.executeFrame(&frame);
 
-                // Revert all journaled state (transfer + execution effects) on REVERT/Halt;
-                // commit on success so postExecution can commitTx cleanly.
+                // Revert all journaled state (transfer + execution effects) on REVERT/Halt.
+                // On success, no action needed — postExecution.commitTx() will finalize state.
                 if (call_result.result.status != .Success) {
-                    ctx.journaled_state.checkpointRevert(call_checkpoint);
-                } else {
-                    ctx.journaled_state.checkpointCommit();
+                    ctx.journaled_state.revertToSnapshot(call_checkpoint);
                 }
 
                 return call_result;
@@ -282,11 +324,21 @@ pub const MainnetHandler = struct {
         const quotient: u64 = if (is_london) 5 else 2;
         var capped_refund = @min(raw_refund, gas_spent / quotient);
 
-        // 2. EIP-7623: floor gas (Prague+)
-        var effective_exec_gas_used = gas_spent - capped_refund;
-        if (primitives.isEnabledIn(spec, .prague)) {
-            if (effective_exec_gas_used < initial_gas.floor_gas) {
-                effective_exec_gas_used = initial_gas.floor_gas;
+        // 2. Compute total gas spent (intrinsic + execution) and apply EIP-7623 floor (Prague+).
+        //
+        // The floor is compared against the TOTAL transaction cost (not just exec portion) because
+        // EIP-7623 defines: floor_cost = TX_BASE_COST + tokens*10. The floor applies when
+        //   (total_spent - refund) < (21000 + floor_tokens*10)
+        //
+        // Using exec-only arithmetic would cause underflow when floor_tokens*10 > exec_gas
+        // (which is common: floor=40/nonzero-byte vs standard=16/nonzero-byte calldata gas).
+        const total_gas_spent = initial_gas.initial_gas + gas_spent;
+        var final_cost = total_gas_spent - capped_refund;
+        if (primitives.isEnabledIn(spec, .prague) and initial_gas.floor_gas > 0) {
+            // floor_total = TX_BASE_COST + floor_exec_gas (validated: gas_limit >= floor_total)
+            const floor_total = 21000 + initial_gas.floor_gas;
+            if (final_cost < floor_total) {
+                final_cost = floor_total;
                 capped_refund = 0;
             }
         }
@@ -298,23 +350,24 @@ pub const MainnetHandler = struct {
         else
             tx.gas_price;
 
-        // 4. Reimburse caller: gas_returned = exec_gas - effective_exec_gas_used (uniform formula,
-        //    handles EIP-7623 floor gas override correctly).
-        const gas_returned: u64 = exec_gas - effective_exec_gas_used;
+        // 4. Reimburse caller: gas_returned = gas_limit - final_cost (always >= 0).
+        //    In the normal case (no floor): final_cost = initial_gas + gas_spent - capped_refund,
+        //    so gas_returned = exec_gas - gas_spent + capped_refund = gas_remaining + capped_refund.
+        //    In the floor case: gas_returned = gas_limit - floor_total.
+        const gas_returned: u64 = tx.gas_limit - final_cost;
         const reimburse_amount: primitives.U256 = @as(primitives.U256, effective_gas_price) * @as(primitives.U256, gas_returned);
         try js.balanceIncr(tx.caller, reimburse_amount);
 
         // 5. Pay beneficiary (only tip portion post-London)
-        const total_gas_used = initial_gas.initial_gas + effective_exec_gas_used;
         const coinbase_price: u128 = if (is_london) effective_gas_price -| basefee else effective_gas_price;
-        const beneficiary_amount: primitives.U256 = @as(primitives.U256, coinbase_price) * @as(primitives.U256, total_gas_used);
+        const beneficiary_amount: primitives.U256 = @as(primitives.U256, coinbase_price) * @as(primitives.U256, final_cost);
         try js.balanceIncr(block.beneficiary, beneficiary_amount);
 
         // 6. Commit transaction state
         js.commitTx();
 
         // 7. Update ExecutionResult with final accounting
-        result.result.gas_used = total_gas_used;
+        result.result.gas_used = final_cost;
         result.result.gas_refunded = capped_refund;
     }
 

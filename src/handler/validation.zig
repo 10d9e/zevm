@@ -11,8 +11,13 @@ const CALLDATA_ZERO_BYTE_COST: u64 = 4;
 const CALLDATA_NONZERO_BYTE_COST: u64 = 16;
 const ACCESS_LIST_ADDRESS_COST: u64 = 2400;
 const ACCESS_LIST_STORAGE_KEY_COST: u64 = 1900;
-// EIP-7702: per-authorization intrinsic gas (PER_AUTH_BASE_COST)
-const TX_EIP7702_AUTH_COST: u64 = 12500;
+// EIP-7702: per-authorization intrinsic gas (PER_EMPTY_ACCOUNT_COST per EIP-7702 spec)
+const TX_EIP7702_AUTH_COST: u64 = 25000;
+// EIP-7623: token costs (different from calldata gas costs)
+const FLOOR_ZERO_TOKEN_COST: u64 = 1;
+const FLOOR_NONZERO_TOKEN_COST: u64 = 4;
+// EIP-3860: max initcode size = 2 * MAX_CODE_SIZE
+const MAX_INITCODE_SIZE: usize = 49152;
 
 /// Validation utilities
 pub const Validation = struct {
@@ -28,6 +33,13 @@ pub const Validation = struct {
 
         // Validate configuration environment
         try validateCfgEnv(&ctx.cfg);
+
+        // Block gas limit: tx gas_limit must not exceed block gas_limit
+        if (!ctx.cfg.disable_block_gas_limit) {
+            if (ctx.tx.gas_limit > ctx.block.gas_limit) {
+                return ValidationError.TxGasLimitExceedsBlockLimit;
+            }
+        }
     }
 
     /// Validate block environment
@@ -48,10 +60,12 @@ pub const Validation = struct {
             }
         }
 
-        // EIP-7825: Transaction gas limit cap (30,000,000 by default)
-        const gas_cap = cfg.tx_gas_limit_cap orelse primitives.TX_GAS_LIMIT_CAP;
-        if (tx.gas_limit > gas_cap) {
-            return ValidationError.GasLimitExceedsCap;
+        // EIP-7825: Transaction gas limit cap (opt-in — null = no cap).
+        // Set cfg.tx_gas_limit_cap explicitly to enforce a cap (e.g. 1<<24 for Osaka EIP-7825).
+        if (cfg.tx_gas_limit_cap) |gas_cap| {
+            if (tx.gas_limit > gas_cap) {
+                return ValidationError.GasLimitExceedsCap;
+            }
         }
 
         // EIP-1559: priority fee must not exceed max fee per gas
@@ -71,21 +85,40 @@ pub const Validation = struct {
 
     /// Calculate the initial (intrinsic) gas and EIP-7623 floor gas for a transaction.
     ///
-    /// Returns `InsufficientGas` if gas_limit < initial_gas.
+    /// Returns `InsufficientGas` if gas_limit < initial_gas or < floor total.
+    /// Returns `CreateInitcodeOverLimit` if CREATE initcode exceeds EIP-3860 limit (Shanghai+).
     pub fn validateInitialTxGas(evm: *main.Evm) !InitialAndFloorGas {
         const ctx = evm.getContext();
         const tx = &ctx.tx;
         const spec = ctx.cfg.spec;
 
+        // EIP-3860 (Shanghai+): initcode size limit for CREATE transactions
+        if (primitives.isEnabledIn(spec, .shanghai)) {
+            if (tx.kind == .Create) {
+                const calldata_len = if (tx.data) |d| d.items.len else 0;
+                if (calldata_len > MAX_INITCODE_SIZE) {
+                    return ValidationError.CreateInitcodeOverLimit;
+                }
+            }
+        }
+
         // Calculate initial gas cost
         const initial_gas = calculateInitialGas(tx, spec);
 
-        // Calculate floor gas (EIP-7623: tokens * 10)
+        // Calculate floor gas exec-portion (EIP-7623: tokens * 10, only calldata tokens)
         const floor_gas = calculateFloorGas(tx, spec);
 
         // Validate gas limit covers intrinsic gas
         if (tx.gas_limit < initial_gas) {
             return ValidationError.InsufficientGas;
+        }
+
+        // EIP-7623 (Prague+): gas_limit must also cover the floor (21000 base + floor exec gas).
+        // floor_gas is the exec-portion only; the 21000 base is the fixed floor minimum.
+        if (primitives.isEnabledIn(spec, .prague)) {
+            if (floor_gas > 0 and tx.gas_limit < TX_BASE_COST + floor_gas) {
+                return ValidationError.InsufficientGas;
+            }
         }
 
         return InitialAndFloorGas{
@@ -97,25 +130,37 @@ pub const Validation = struct {
     /// Validate caller account state and deduct the maximum gas fee + value.
     ///
     /// - Loads caller from the DB (cold load, records journal warming entry)
-    /// - Validates EIP-3607 (reject if caller has code)
+    /// - Validates EIP-3607 (reject if caller has code; EIP-7702 delegation accounts are exempt)
+    /// - Validates EIP-2681 (nonce overflow for CREATE)
     /// - Validates nonce matches tx.nonce (unless disabled)
-    /// - Validates caller balance >= gas_limit * gas_price + value
-    /// - Deducts maximum fee from caller and bumps nonce (journaled, revertable)
+    /// - Validates caller balance >= gas_limit * gas_price + value + blob fees
+    /// - Deducts effective gas fee + blob fee from caller and bumps nonce (journaled, revertable)
     pub fn validateAgainstStateAndDeductCaller(evm: *main.Evm, initial_gas: u64) !void {
         const ctx = evm.getContext();
         const tx = &ctx.tx;
         const cfg = &ctx.cfg;
         const js = &ctx.journaled_state;
 
-        // Load caller account (marks it warm, creates journal entry)
+        // Load caller account with code (need code to check EIP-7702 delegation exception in EIP-3607)
         const load_result = try js.loadAccountMutOptionalCode(tx.caller, true, false);
         const journaled_account = load_result.data;
         const account_info = &journaled_account.account.info;
 
-        // EIP-3607: Reject transactions from senders with deployed code
+        // EIP-3607: Reject transactions from senders with deployed code.
+        // EIP-7702 exception: delegation accounts (code is an EIP-7702 designator) may send txs.
         if (!cfg.disable_eip3607) {
             if (!std.mem.eql(u8, &account_info.code_hash, &primitives.KECCAK_EMPTY)) {
-                return ValidationError.SenderHasCode;
+                const is_delegation = if (account_info.code) |code| code.isEip7702() else false;
+                if (!is_delegation) {
+                    return ValidationError.SenderHasCode;
+                }
+            }
+        }
+
+        // EIP-2681: CREATE tx with sender nonce at u64 max is invalid
+        if (tx.kind == .Create) {
+            if (account_info.nonce == std.math.maxInt(u64)) {
+                return ValidationError.NonceIsMax;
             }
         }
 
@@ -139,9 +184,33 @@ pub const Validation = struct {
         // Effective gas fee deducted upfront (reimbursed proportionally in postExecution)
         const effective_gas_fee: primitives.U256 = @as(primitives.U256, tx.gas_limit) * @as(primitives.U256, effective_gas_price);
 
-        // Validate balance covers worst-case gas fee + value (affordability check at max_fee).
-        const max_cost = std.math.add(primitives.U256, max_gas_fee, tx.value) catch {
+        // EIP-4844: compute blob fees — balance validation uses max_fee_per_blob_gas (worst-case),
+        // upfront deduction uses actual blob_gasprice (what the user actually pays).
+        // Blob fees are NOT reimbursed in postExecution (separate fee market).
+        var max_blob_fee: primitives.U256 = 0; // for balance validation (worst-case)
+        var blob_fee: primitives.U256 = 0; // for upfront deduction (actual price)
+        if (tx.blob_hashes) |blob_hashes| {
+            if (blob_hashes.items.len > 0) {
+                const blob_count = blob_hashes.items.len;
+                // Balance validation: use tx.max_fee_per_blob_gas (the max the user agreed to pay)
+                max_blob_fee = @as(primitives.U256, blob_count) *
+                    @as(primitives.U256, primitives.GAS_PER_BLOB) *
+                    @as(primitives.U256, tx.max_fee_per_blob_gas);
+                // Upfront deduction: use actual blob_gasprice from the block
+                if (ctx.block.blob_excess_gas_and_price) |blob_info| {
+                    blob_fee = @as(primitives.U256, blob_count) *
+                        @as(primitives.U256, primitives.GAS_PER_BLOB) *
+                        @as(primitives.U256, blob_info.blob_gasprice);
+                }
+            }
+        }
+
+        // Validate balance covers worst-case gas fee + value + blob fee.
+        var max_cost = std.math.add(primitives.U256, max_gas_fee, tx.value) catch {
             return ValidationError.BalanceOverflow;
+        };
+        max_cost = std.math.add(primitives.U256, max_cost, max_blob_fee) catch {
+            return ValidationError.BlobFeeOverflow;
         };
         if (account_info.balance < max_cost) {
             return ValidationError.InsufficientBalance;
@@ -161,8 +230,9 @@ pub const Validation = struct {
         const old_balance = account_info.balance;
         js.callerAccountingJournalEntry(tx.caller, old_balance, true);
 
-        // Deduct effective gas fee from caller balance (not the value — handled in executeFrame)
-        account_info.balance = old_balance - effective_gas_fee;
+        // Deduct effective gas fee + blob fee from caller balance upfront.
+        // (Value transfer is handled in executeFrame, not here.)
+        account_info.balance = old_balance - effective_gas_fee - blob_fee;
 
         // Bump nonce
         account_info.nonce += 1;
@@ -200,6 +270,13 @@ pub const Validation = struct {
             }
         }
 
+        // EIP-3860 (Shanghai+): initcode word gas for CREATE transactions
+        // 2 gas per 32-byte word of initcode (rounds up)
+        if (tx.kind == .Create and primitives.isEnabledIn(spec, .shanghai)) {
+            const calldata_len: u64 = if (tx.data) |d| @intCast(d.items.len) else 0;
+            gas += 2 * ((calldata_len + 31) / 32);
+        }
+
         // EIP-2930 / EIP-2929: Access list gas
         if (tx.access_list.items) |items| {
             for (items.items) |item| {
@@ -208,10 +285,9 @@ pub const Validation = struct {
             }
         }
 
-        // EIP-4844: blob intrinsic gas (GAS_PER_BLOB per blob)
-        if (tx.blob_hashes) |blob_hashes| {
-            gas += @as(u64, blob_hashes.items.len) * primitives.GAS_PER_BLOB;
-        }
+        // EIP-4844: blob gas is a SEPARATE fee market paid from sender balance,
+        // NOT counted in the transaction gas_limit intrinsic gas.
+        // Blob fees are deducted in validateAgainstStateAndDeductCaller.
 
         // EIP-7702: authorization list intrinsic gas (Prague+)
         if (primitives.isEnabledIn(spec, .prague)) {
@@ -227,11 +303,17 @@ pub const Validation = struct {
     ///
     /// - Rejects if Prague is not enabled
     /// - Rejects if the authorization list is empty
+    /// - Rejects Type 4 (EIP-7702) transactions that are also CREATE transactions
     pub fn validateEip7702Tx(tx: *const context.TxEnv, spec: primitives.SpecId) !void {
         if (!primitives.isEnabledIn(spec, .prague)) return;
 
         // Only applies to transactions that carry an authorization list
         const auth_list = tx.authorization_list orelse return;
+
+        // EIP-7702: Type 4 tx with authorization list cannot be CREATE
+        if (tx.kind == .Create) {
+            return ValidationError.Type4TxContractCreation;
+        }
 
         // EIP-7702: authorization list must be non-empty
         if (auth_list.items.len == 0) {
@@ -250,6 +332,11 @@ pub const Validation = struct {
         // EIP-4844: blob transactions cannot be CREATE
         if (tx.kind == .Create) {
             return ValidationError.BlobCreateTransaction;
+        }
+
+        // Blob transactions must carry at least one blob hash
+        if (blob_hashes.items.len == 0) {
+            return ValidationError.EmptyBlobList;
         }
 
         // Blob count limit
@@ -272,23 +359,24 @@ pub const Validation = struct {
         }
     }
 
-    /// Calculates the EIP-7623 floor gas (tokens * 10).
+    /// Calculates the EIP-7623 floor gas exec-portion (tokens * 10).
     ///
-    /// Floor gas ensures a minimum amount of gas is spent on calldata-heavy txs.
+    /// Returns only the exec-portion of floor gas (excludes 21000 base).
+    /// Used in postExecution to enforce minimum exec gas spent.
+    /// Token costs: 1 per zero byte, 4 per nonzero byte (EIP-7623 token definition).
     pub fn calculateFloorGas(tx: *const context.TxEnv, spec: primitives.SpecId) u64 {
         if (!primitives.isEnabledIn(spec, .prague)) {
             return 0;
         }
 
-        // EIP-7623: token_cost * 10 where token_cost is calldata tokens
-        // (same zero/nonzero byte distinction)
+        // EIP-7623: tokens = sum(1 per zero byte, 4 per nonzero byte); floor_exec = tokens * 10
         var tokens: u64 = 0;
         if (tx.data) |data| {
             for (data.items) |byte| {
                 if (byte == 0) {
-                    tokens += CALLDATA_ZERO_BYTE_COST;
+                    tokens += FLOOR_ZERO_TOKEN_COST;
                 } else {
-                    tokens += CALLDATA_NONZERO_BYTE_COST;
+                    tokens += FLOOR_NONZERO_TOKEN_COST;
                 }
             }
         }
@@ -308,21 +396,27 @@ pub const InitialAndFloorGas = struct {
 pub const ValidationError = error{
     InvalidChainId,
     GasLimitExceedsCap,
+    TxGasLimitExceedsBlockLimit,
     PriorityFeeGreaterThanMaxFee,
     InsufficientGas,
     SenderHasCode,
     NonceMismatch,
+    NonceIsMax,
     BalanceOverflow,
+    BlobFeeOverflow,
     InsufficientBalance,
     GasPriceLessThanBaseFee,
     CallerLoadFailed,
+    CreateInitcodeOverLimit,
     // EIP-4844 blob transaction errors
+    EmptyBlobList,
     TooManyBlobs,
     InvalidBlobVersionedHash,
     BlobGasPriceTooLow,
     BlobCreateTransaction,
     // EIP-7702 set-code transaction errors
     EmptyAuthorizationList,
+    Type4TxContractCreation,
 };
 
 test {

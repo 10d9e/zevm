@@ -1,4 +1,4 @@
-// Spec test runner: sets up pre-state, executes bytecode, validates storage.
+// Spec test runner: sets up pre-state, executes via MainnetHandler, validates storage.
 
 const std = @import("std");
 const primitives = @import("primitives");
@@ -8,9 +8,12 @@ const context = @import("context");
 const database = @import("database");
 const state_mod = @import("state");
 const types = @import("types");
+const handler_mod = @import("handler");
 
 const U256 = primitives.U256;
 const InstructionResult = interpreter.InstructionResult;
+const MainnetHandler = handler_mod.MainnetHandler;
+const ValidationError = handler_mod.ValidationError;
 
 /// Convert a big-endian [32]u8 to U256
 fn u256FromBeBytes(bytes: [32]u8) U256 {
@@ -103,155 +106,28 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
 
     const spec: primitives.SpecId = if (std.mem.eql(u8, tc.fork, "Prague")) .prague else .osaka;
 
-    // EIP-3607: Transaction sender must be an EOA (not a contract).
-    // Exception: EIP-7702 delegation accounts (0xef0100 || 20-byte-addr = 23 bytes) are treated
-    // as EOAs and may send transactions. Any other non-empty sender code => SENDER_NOT_EOA.
-    {
-        var sender_code: []const u8 = &.{};
-        for (tc.pre_accounts) |acct| {
-            if (std.mem.eql(u8, &acct.address, &tc.caller)) {
-                sender_code = acct.code;
-                break;
-            }
-        }
-        if (sender_code.len > 0) {
-            const is_delegation = sender_code.len == 23 and
-                sender_code[0] == 0xef and
-                sender_code[1] == 0x01 and
-                sender_code[2] == 0x00;
-            if (!is_delegation) {
-                if (tc.expect_exception) {
-                    return .{ .result = .pass, .detail = .{ .reason = "expected exception: SENDER_NOT_EOA" } };
-                }
-                return .{ .result = .fail, .detail = .{ .reason = "sender has contract code (EIP-3607)" } };
-            }
-        }
-    }
-
-    // EIP-7702: Type 4 transactions (authorization_count > 0) must have a `to` field.
-    // Contract creation (is_create = true) is not allowed for Type 4 transactions.
-    if (tc.authorization_count > 0 and tc.is_create) {
-        if (tc.expect_exception) {
-            return .{ .result = .pass, .detail = .{ .reason = "expected exception: TYPE_4_TX_CONTRACT_CREATION" } };
-        }
-        return .{ .result = .fail, .detail = .{ .reason = "EIP-7702 Type 4 tx cannot be a CREATE tx" } };
-    }
-
-    // EIP-1559 fee validation: maxFeePerGas must be >= baseFee, and maxPriorityFeePerGas
-    // must not exceed maxFeePerGas. These are consensus-layer validity rules.
-    {
-        if (tc.gas_price < @as(u128, tc.block_basefee)) {
-            if (tc.expect_exception) {
-                return .{ .result = .pass, .detail = .{ .reason = "expected exception: INSUFFICIENT_MAX_FEE_PER_GAS" } };
-            }
-            return .{ .result = .fail, .detail = .{ .reason = "maxFeePerGas below baseFee" } };
-        }
-        if (tc.max_priority_fee_per_gas > tc.gas_price) {
-            if (tc.expect_exception) {
-                return .{ .result = .pass, .detail = .{ .reason = "expected exception: PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS" } };
-            }
-            return .{ .result = .fail, .detail = .{ .reason = "maxPriorityFeePerGas exceeds maxFeePerGas" } };
-        }
-    }
-
-    // EIP-7825 (Osaka+): transaction gas limit cap at 2^24 = 16_777_216
-    if (spec == .osaka and tc.gas_limit > (1 << 24)) {
-        if (tc.expect_exception) {
-            return .{ .result = .pass, .detail = .{ .reason = "expected exception: EIP-7825 gas limit cap" } };
-        }
-        return .{ .result = .fail, .detail = .{ .reason = "EIP-7825 gas limit exceeded" } };
-    }
-
-    // Block gas limit: transaction gas limit must not exceed block gas limit.
-    if (tc.gas_limit > tc.block_gaslimit) {
-        if (tc.expect_exception) {
-            return .{ .result = .pass, .detail = .{ .reason = "expected exception: tx gas limit exceeds block gas limit" } };
-        }
-        return .{ .result = .fail, .detail = .{ .reason = "tx gas limit exceeds block gas limit" } };
-    }
-
-    // EIP-4844 blob tx validity:
-    //   1. A blob tx (has maxFeePerBlobGas) must have at least one blob versioned hash.
-    //   2. A blob tx cannot be a CREATE transaction.
-    //   3. All blob versioned hashes must have version byte 0x01.
-    if (tc.max_fee_per_blob_gas > 0 and tc.blob_versioned_hashes_count == 0) {
-        if (tc.expect_exception) {
-            return .{ .result = .pass, .detail = .{ .reason = "expected exception: blob tx with no blobs" } };
-        }
-        return .{ .result = .fail, .detail = .{ .reason = "blob tx missing versioned hashes" } };
-    }
-    if (tc.is_create and tc.blob_versioned_hashes_count > 0) {
-        if (tc.expect_exception) {
-            return .{ .result = .pass, .detail = .{ .reason = "expected exception: blob CREATE tx" } };
-        }
-        return .{ .result = .fail, .detail = .{ .reason = "blob tx cannot be CREATE" } };
-    }
-    for (tc.blob_versioned_hashes) |hash| {
-        if (hash[0] != 0x01) {
-            if (tc.expect_exception) {
-                return .{ .result = .pass, .detail = .{ .reason = "expected exception: invalid blob hash version" } };
-            }
-            return .{ .result = .fail, .detail = .{ .reason = "invalid blob hash version" } };
-        }
-    }
-
-    // EIP-2681: for CREATE transactions, sender nonce must not be at u64 maximum.
-    // A tx with nonce == MaxNonce would attempt to bump to MaxNonce+1, which is invalid.
-    if (tc.is_create) {
-        var sender_nonce: u64 = 0;
-        for (tc.pre_accounts) |acct| {
-            if (std.mem.eql(u8, &acct.address, &tc.caller)) {
-                sender_nonce = acct.nonce;
-                break;
-            }
-        }
-        if (sender_nonce == std.math.maxInt(u64)) {
-            if (tc.expect_exception) {
-                return .{ .result = .pass, .detail = .{ .reason = "expected exception: NONCE_IS_MAX" } };
-            }
-            return .{ .result = .fail, .detail = .{ .reason = "CREATE with max sender nonce (EIP-2681)" } };
-        }
-    }
-
-    // For CREATE transactions: the bytecode is the init code (calldata), run in context of the
-    // newly created contract. For CALL transactions: the bytecode is the code at the target address.
-    // NOTE: This is the initial pre-EIP-7702 code. For CALL txs where the target is an EIP-7702
-    // authority, run_code will be updated below after EIP-7702 processing.
-    var run_code: []const u8 = if (tc.is_create) tc.calldata else blk: {
-        var target_code: []const u8 = &.{};
-        for (tc.pre_accounts) |acct| {
-            if (std.mem.eql(u8, &acct.address, &tc.target)) {
-                target_code = acct.code;
-                break;
-            }
-        }
-        break :blk target_code;
-    };
-
     const tx_value = u256FromBeBytes(tc.value);
 
     // For CREATE transactions, compute the created contract address from sender + nonce
     // before building the DB (so we can pre-populate the account).
     var effective_target: [20]u8 = tc.target;
-    if (tc.is_create) {
-        var sender_nonce: u64 = 0;
-        for (tc.pre_accounts) |acct| {
-            if (std.mem.eql(u8, &acct.address, &tc.caller)) {
-                sender_nonce = acct.nonce;
-                break;
-            }
+    var sender_nonce: u64 = 0;
+    for (tc.pre_accounts) |acct| {
+        if (std.mem.eql(u8, &acct.address, &tc.caller)) {
+            sender_nonce = acct.nonce;
+            break;
         }
+    }
+
+    if (tc.is_create) {
         effective_target = interpreter.host_module.createAddress(tc.caller, sender_nonce);
 
-        // EIP-7610 / pre-existing CREATE collision check:
+        // EIP-7610 / pre-existing CREATE collision check (must run before DB build):
         // If the target address already exists with non-zero nonce, non-empty code, or non-empty
-        // storage, the CREATE fails immediately (no initcode runs). State is unchanged.
-        // NOTE: balance alone does NOT constitute a collision — balance transfers to the new
-        // contract. Only nonce, code, and non-empty storage are collision conditions.
+        // storage, the CREATE fails immediately. Balance alone does NOT cause collision.
         for (tc.pre_accounts) |acct| {
             if (!std.mem.eql(u8, &acct.address, &effective_target)) continue;
-            var has_collision = acct.nonce != 0 or
-                acct.code.len > 0;
+            var has_collision = acct.nonce != 0 or acct.code.len > 0;
             if (!has_collision) {
                 for (acct.storage) |entry| {
                     if (!std.mem.eql(u8, &entry.value, &([_]u8{0} ** 32))) {
@@ -264,12 +140,10 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
                 if (tc.expect_exception) {
                     return .{ .result = .pass, .detail = .{ .reason = "expected CREATE collision" } };
                 }
-                // No exception expected: CREATE fails silently, pre-state is unchanged.
-                // Validate expected storage against pre-state accounts (no initcode ran).
+                // No exception expected: CREATE fails silently, validate against pre-state.
                 for (tc.expected_storage) |expected_acct| {
                     for (expected_acct.storage) |entry| {
                         const expected_val = u256FromBeBytes(entry.value);
-                        // Look for the slot in pre_accounts
                         var pre_val: U256 = 0;
                         for (tc.pre_accounts) |pa| {
                             if (!std.mem.eql(u8, &pa.address, &expected_acct.address)) continue;
@@ -335,33 +209,23 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         }
     }
 
-    // For CREATE transactions, pre-insert the new contract account so the journal can find it.
-    if (tc.is_create) {
-        const created_info = state_mod.AccountInfo{
-            .balance = tx_value,
-            .nonce = 1,
-            .code_hash = primitives.KECCAK_EMPTY,
-            .code = bytecode_mod.Bytecode.new(),
-        };
-        db.insertAccount(effective_target, created_info) catch {};
-    }
-
     // Build context (db is moved into Context by value)
     var ctx = context.Context.new(db, spec);
     // InMemoryDB uses the GPA allocator; free its hash maps on all exit paths.
-    // Journal.deinit() only frees inner (page_allocator), not the database itself.
     defer ctx.journaled_state.database.deinit();
 
-    // Pre-load all pre-state accounts into the journal so that sload/sstore can
-    // find them in evm_state (they require accounts to be loaded before access).
+    // Osaka: EIP-7825 transaction gas limit cap = 2^24
+    if (spec == .osaka) {
+        ctx.cfg.tx_gas_limit_cap = 1 << 24;
+    }
+    // Disable tx chain_id check — spec test transactions don't carry chain_id
+    ctx.cfg.tx_chain_id_check = false;
+
+    // Pre-load all pre-state accounts into the journal so that sload/sstore can find them.
     for (tc.pre_accounts) |acct| {
         _ = ctx.journaled_state.loadAccount(acct.address) catch {
             return .{ .result = .err, .detail = .{ .reason = "OOM loading account into journal" } };
         };
-    }
-    // Also pre-load the CREATE target (if any) into the journal.
-    if (tc.is_create) {
-        _ = ctx.journaled_state.loadAccount(effective_target) catch {};
     }
 
     // EIP-7702: Pre-load authority accounts into journal BEFORE the transaction_id bump.
@@ -372,50 +236,10 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
     }
 
     // Bump transaction_id so pre-loaded accounts appear cold on first EVM access.
-    // EIP-2929: only tx sender, recipient, precompiles, and access list entries are warm at
-    // tx start. Pre-loaded accounts get transaction_id=0; incrementing the journal's
-    // transaction_id to 1 causes isColdTransactionId(1) to return true for those accounts.
-    // Addresses in warm_addresses (precompiles, coinbase) override this and stay warm.
+    // EIP-2929: only tx sender, recipient, precompiles, and access list entries are warm at tx start.
     ctx.journaled_state.inner.transaction_id += 1;
 
-    // Apply tx value transfer: credit effective_target with tc.value (debit from caller).
-    // This models the ETH transfer that occurs when a transaction with value is processed.
-    // (For CREATE, the value is already included in the created account's balance above.)
-    if (tx_value > 0 and !tc.is_create) {
-        if (ctx.journaled_state.inner.evm_state.getPtr(effective_target)) |acct| {
-            acct.info.balance += tx_value;
-        }
-        if (ctx.journaled_state.inner.evm_state.getPtr(tc.caller)) |acct| {
-            acct.info.balance -|= tx_value;
-        }
-    }
-
-    // Pre-deduct gas cost from sender balance before execution, and bump sender nonce.
-    // EVM spec: sender pays gas_limit * effective_gas_price upfront, before any code runs.
-    // The nonce increment makes the sender "non-empty" even if balance drops to 0, preventing
-    // incorrect 25000 "new account" charges in CALL/SELFDESTRUCT to the sender address.
-    {
-        const gas_cost: U256 = @as(U256, tc.gas_limit) * @as(U256, tc.gas_price);
-        if (ctx.journaled_state.inner.evm_state.getPtr(tc.caller)) |acct| {
-            acct.info.balance -|= gas_cost;
-            acct.info.nonce +|= 1; // Tx sender nonce is always incremented before execution
-        }
-    }
-
-    // EIP-4844: deduct blob fee from sender balance before execution.
-    // Tests that read address(sender).balance during execution expect it to already reflect
-    // the blob fee deduction. blob_fee = blob_count * GAS_PER_BLOB * blob_gasprice.
-    if (tc.blob_versioned_hashes_count > 0) {
-        const bp = context.BlobExcessGasAndPrice.new(tc.excess_blob_gas, primitives.BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE);
-        const blob_fee: U256 = @as(U256, tc.blob_versioned_hashes_count) *
-            @as(U256, primitives.GAS_PER_BLOB) *
-            @as(U256, bp.blob_gasprice);
-        if (ctx.journaled_state.inner.evm_state.getPtr(tc.caller)) |acct| {
-            acct.info.balance -|= blob_fee;
-        }
-    }
-
-    // Set block env (include blob gas info when relevant for EIP-4844)
+    // Set block env
     const blob_excess_gas_and_price: ?context.BlobExcessGasAndPrice =
         if (tc.blob_versioned_hashes_count > 0 or tc.excess_blob_gas > 0)
             context.BlobExcessGasAndPrice.new(tc.excess_blob_gas, primitives.BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE)
@@ -432,382 +256,148 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         .blob_excess_gas_and_price = blob_excess_gas_and_price,
     });
 
-    // Set tx env
-    var tx_env = context.TxEnv.default();
-    tx_env.gas_price = tc.gas_price;
-    // EIP-1559: set priority fee so GASPRICE opcode returns min(basefee+tip, maxFee).
-    // For legacy txs, max_priority_fee_per_gas == 0 and gas_priority_fee stays null.
-    if (tc.max_priority_fee_per_gas > 0) {
-        tx_env.gas_priority_fee = tc.max_priority_fee_per_gas;
+    // Build access list for TxEnv
+    var access_list_items = std.ArrayList(context.AccessListItem){};
+    for (tc.access_list) |entry| {
+        var al_item = context.AccessListItem{
+            .address = entry.address,
+            .storage_keys = std.ArrayList(primitives.StorageKey){},
+        };
+        for (entry.storage_keys) |key_bytes| {
+            al_item.storage_keys.append(std.heap.page_allocator, u256FromBeBytes(key_bytes)) catch {};
+        }
+        access_list_items.append(std.heap.page_allocator, al_item) catch {};
     }
-    tx_env.caller = tc.caller;
-    // EIP-4844: set blob versioned hashes so BLOBHASH opcode returns the correct values.
-    if (tc.blob_versioned_hashes.len > 0) {
+
+    // Build authorization list for TxEnv.
+    // Pad with Invalid entries so items.len == authorization_count (for correct intrinsic gas).
+    var auth_list_items = std.ArrayList(context.Either){};
+    for (tc.authorization_entries) |auth_entry| {
+        const recovered = context.RecoveredAuthorization.newUnchecked(
+            context.Authorization{
+                .chain_id = @as(primitives.U256, auth_entry.chain_id),
+                .address = auth_entry.address,
+                .nonce = auth_entry.nonce,
+            },
+            context.RecoveredAuthority{ .Valid = auth_entry.authority },
+        );
+        auth_list_items.append(std.heap.page_allocator, context.Either{ .Right = recovered }) catch {};
+    }
+    // Pad invalid entries to ensure len == authorization_count for intrinsic gas calculation
+    while (auth_list_items.items.len < @as(usize, tc.authorization_count)) {
+        const invalid_auth = context.RecoveredAuthorization.newUnchecked(
+            context.Authorization{ .chain_id = 0, .address = [_]u8{0} ** 20, .nonce = 0 },
+            context.RecoveredAuthority.Invalid,
+        );
+        auth_list_items.append(std.heap.page_allocator, context.Either{ .Right = invalid_auth }) catch break;
+    }
+
+    // Build blob hashes list.
+    // Set to Some([]) (not null) when max_fee_per_blob_gas > 0 OR hashes exist, so that
+    // type_3 transactions with 0 blob hashes are detected and rejected by validateBlobTx.
+    var blob_hashes_list: ?std.ArrayList(primitives.Hash) = null;
+    if (tc.blob_versioned_hashes.len > 0 or tc.max_fee_per_blob_gas > 0) {
         var bh_list = std.ArrayList(primitives.Hash){};
         for (tc.blob_versioned_hashes) |hash| {
             bh_list.append(std.heap.page_allocator, hash) catch {};
         }
-        tx_env.blob_hashes = bh_list;
+        blob_hashes_list = bh_list;
     }
+
+    // Build calldata list
+    var calldata_list: ?std.ArrayList(u8) = null;
+    if (tc.calldata.len > 0) {
+        var cd_list = std.ArrayList(u8){};
+        cd_list.appendSlice(std.heap.page_allocator, tc.calldata) catch {};
+        calldata_list = cd_list;
+    }
+
+    // Build TxEnv with all required fields
+    const tx_env = context.TxEnv{
+        .tx_type = 0,
+        .caller = tc.caller,
+        .gas_limit = tc.gas_limit,
+        .gas_price = tc.gas_price,
+        .kind = if (tc.is_create) context.TxKind.Create else context.TxKind{ .Call = effective_target },
+        .value = tx_value,
+        .data = calldata_list,
+        .nonce = sender_nonce,
+        .chain_id = null, // chain_id check disabled via cfg.tx_chain_id_check = false
+        .access_list = context.AccessList{ .items = if (access_list_items.items.len > 0) access_list_items else null },
+        .gas_priority_fee = tc.max_priority_fee_per_gas,
+        .blob_hashes = blob_hashes_list,
+        .max_fee_per_blob_gas = tc.max_fee_per_blob_gas,
+        .authorization_list = if (tc.has_authorization_list) auth_list_items else null,
+    };
     ctx.setTx(tx_env);
 
-    // Get protocol schedule (instruction table + precompiles)
-    const schedule = interpreter.ProtocolSchedule.forSpec(spec);
+    // Build Evm (stack-allocated — instructions, precompiles, frame_stack are locals here)
+    var instructions = handler_mod.Instructions.new(spec);
+    var precompiles = handler_mod.Precompiles.new(spec);
+    var frame_stack = handler_mod.FrameStack.new();
+    var evm = handler_mod.Evm.init(&ctx, null, &instructions, &precompiles, &frame_stack);
 
-    // Pre-warm precompile addresses (EIP-2929: precompiles are always warm at tx start)
-    {
-        var addr_buf: [32]primitives.Address = undefined;
-        var count: usize = 0;
-        var it = schedule.precompiles.addresses.keyIterator();
-        while (it.next()) |addr| {
-            if (count < addr_buf.len) {
-                addr_buf[count] = addr.*;
-                count += 1;
-            }
+    // ---------------------------------------------------------------------------
+    // Validate: env checks, intrinsic gas, nonce, balance, blob fees
+    // ---------------------------------------------------------------------------
+    var initial_gas = handler_mod.InitialAndFloorGas{ .initial_gas = 0, .floor_gas = 0 };
+    MainnetHandler.validate(&evm, &initial_gas) catch |err| {
+        // Any validation error → expect_exception determines pass/fail
+        if (tc.expect_exception) {
+            return .{ .result = .pass, .detail = .{ .reason = "expected exception: validation" } };
         }
-        ctx.journaled_state.warmPrecompiles(addr_buf[0..count]) catch {};
-    }
-
-    // Pre-warm coinbase (EIP-3651: warm coinbase since Shanghai, which Prague/Osaka include)
-    ctx.journaled_state.warmCoinbaseAccount(tc.coinbase);
-
-    // Pre-warm EIP-2929: tx sender and destination are always warm at tx start
-    {
-        const warm_addresses = &ctx.journaled_state.inner.warm_addresses.access_list;
-        for ([_][20]u8{ tc.caller, effective_target }) |addr| {
-            const gop = warm_addresses.getOrPut(addr) catch continue;
-            if (!gop.found_existing) {
-                gop.value_ptr.* = std.ArrayList(primitives.StorageKey){};
-            }
-        }
-    }
-
-    // Pre-warm EIP-2930 access list addresses and storage keys
-    {
-        const warm_addresses = &ctx.journaled_state.inner.warm_addresses.access_list;
-        for (tc.access_list) |entry| {
-            const gop = warm_addresses.getOrPut(entry.address) catch continue;
-            if (!gop.found_existing) {
-                gop.value_ptr.* = std.ArrayList(primitives.StorageKey){};
-            }
-            for (entry.storage_keys) |key_bytes| {
-                const key: primitives.StorageKey = u256FromBeBytes(key_bytes);
-                gop.value_ptr.append(std.heap.page_allocator, key) catch {};
-            }
-        }
-    }
-
-    // EIP-7702: Apply code delegation and pre-warm authority addresses.
-    // Per EIP-7702 spec, processing order for each tuple:
-    //   Step 1: Verify chain_id == 0 or current chain (if wrong, skip entirely)
-    //   Step 4: Add authority to accessed_addresses UNCONDITIONALLY (before code/nonce checks)
-    //   Step 5: Verify authority code is empty or existing EIP-7702 delegation (if not, skip code setting)
-    //   Step 6: Verify authority nonce matches (if wrong, skip code setting but authority already warmed)
-    //   Step 8: Set code delegation
-    //   Step 9: Increment authority nonce
-    {
-        // Track per-authority nonce bumps: after a valid entry, nonce increments.
-        // Use a small stack buffer since authorization lists are typically short.
-        const MAX_AUTH = 256;
-        var nonce_track_addrs: [MAX_AUTH][20]u8 = undefined;
-        var nonce_track_vals: [MAX_AUTH]u64 = undefined;
-        var nonce_track_len: usize = 0;
-
-        const warm_addresses = &ctx.journaled_state.inner.warm_addresses.access_list;
-
-        for (tc.authorization_entries) |auth_entry| {
-            // Step 1: chain_id must be 0 (any chain) or 1 (mainnet) - wrong chain skips entirely
-            if (auth_entry.chain_id != 0 and auth_entry.chain_id != 1) continue;
-
-            // Step 4: Add authority to accessed_addresses UNCONDITIONALLY for valid chain_id.
-            // Even if nonce or code check fails, the authority is already in the access list.
-            if (warm_addresses.getOrPut(auth_entry.authority)) |gop| {
-                if (!gop.found_existing) {
-                    gop.value_ptr.* = std.ArrayList(primitives.StorageKey){};
-                }
-            } else |_| {}
-
-            // Step 5: authority must have empty code OR existing EIP-7702 delegation code.
-            // Contract code (non-empty, non-delegation) makes the entry invalid for code setting.
-            var auth_has_contract_code = false;
-            for (tc.pre_accounts) |pa| {
-                if (std.mem.eql(u8, &pa.address, &auth_entry.authority)) {
-                    if (pa.code.len > 0) {
-                        // EIP-7702 delegation designator: exactly 23 bytes starting with 0xef0100
-                        const is_delegation = pa.code.len == 23 and
-                            pa.code[0] == 0xef and
-                            pa.code[1] == 0x01 and
-                            pa.code[2] == 0x00;
-                        auth_has_contract_code = !is_delegation;
-                    }
-                    break;
-                }
-            }
-            if (auth_has_contract_code) continue; // authority already warmed above
-
-            // Step 6: nonce must match authority's current nonce.
-            // Start from pre_accounts nonce, then add any bumps from prior valid entries.
-            var current_nonce: u64 = 0;
-            for (tc.pre_accounts) |pa| {
-                if (std.mem.eql(u8, &pa.address, &auth_entry.authority)) {
-                    current_nonce = pa.nonce;
-                    break;
-                }
-            }
-            // Self-sponsored: if authority == tx sender, their nonce was already bumped
-            // by tx validation before auth list processing begins.
-            if (std.mem.eql(u8, &auth_entry.authority, &tc.caller)) {
-                current_nonce +|= 1;
-            }
-            // Add bumps from prior valid entries targeting same authority
-            for (0..nonce_track_len) |i| {
-                if (std.mem.eql(u8, &nonce_track_addrs[i], &auth_entry.authority)) {
-                    current_nonce +|= nonce_track_vals[i];
-                }
-            }
-            if (auth_entry.nonce != current_nonce) continue; // authority already warmed above
-            // Per EIP-7702: if nonce + 1 would overflow u64, skip this tuple.
-            if (current_nonce == std.math.maxInt(u64)) continue; // nonce overflow: skip
-
-            // Steps 8+9: Valid entry — apply code delegation and bump nonce.
-            // setCode() handles zero address → clearing code (sets KECCAK_EMPTY hash).
-            const bc = bytecode_mod.Bytecode{ .eip7702 = bytecode_mod.Eip7702Bytecode.new(auth_entry.address) };
-            ctx.journaled_state.inner.setCode(auth_entry.authority, bc);
-
-            // Step 9: Increment authority nonce in journal state (EIP-7702 spec requirement).
-            // The nonce increment must be applied to the actual account state so that any
-            // subsequent CREATE opcodes executed in the authority's context use the correct nonce.
-            if (ctx.journaled_state.inner.evm_state.getPtr(auth_entry.authority)) |auth_acct| {
-                auth_acct.info.nonce +|= 1;
-                ctx.journaled_state.inner.nonceBumpJournalEntry(auth_entry.authority);
-            }
-
-            if (nonce_track_len < MAX_AUTH) {
-                nonce_track_addrs[nonce_track_len] = auth_entry.authority;
-                nonce_track_vals[nonce_track_len] = 1;
-                nonce_track_len += 1;
-            }
-        }
-    }
-
-    // After EIP-7702 processing: for CALL transactions, update run_code to follow delegation.
-    // The TX target may be an authority that just got delegation code set (e.g., self-delegating
-    // tx where `to` = the authority). In that case, the effective code is the delegation target's.
-    if (!tc.is_create) {
-        if (ctx.journaled_state.inner.evm_state.getPtr(effective_target)) |acct| {
-            if (acct.info.code) |code| {
-                if (code.isEip7702()) {
-                    const delegation_addr = code.eip7702.address;
-                    // Look up the delegation target's code (journal first, then pre_accounts)
-                    run_code = blk: {
-                        if (ctx.journaled_state.inner.evm_state.getPtr(delegation_addr)) |del_acct| {
-                            if (del_acct.info.code) |del_bc| {
-                                // Nested delegation = empty per spec
-                                if (del_bc.isEip7702()) break :blk &.{};
-                                break :blk del_bc.originalBytes();
-                            }
-                        }
-                        for (tc.pre_accounts) |pa| {
-                            if (std.mem.eql(u8, &pa.address, &delegation_addr)) {
-                                // Nested delegation not allowed
-                                if (pa.code.len == 23 and pa.code[0] == 0xef and pa.code[1] == 0x01 and pa.code[2] == 0x00) {
-                                    break :blk &.{};
-                                }
-                                break :blk pa.code;
-                            }
-                        }
-                        break :blk &.{};
-                    };
-                }
-            }
-        }
-        // Deferred "no code" check (now after EIP-7702 delegation is resolved)
-        if (run_code.len == 0) {
-            if (tc.expect_exception) {
-                return .{ .result = .pass, .detail = .{ .reason = "expected exception with no code" } };
-            }
-            if (tc.expected_storage.len == 0) {
-                return .{ .result = .pass, .detail = .{ .reason = "no code, no expectations" } };
-            }
-            // No code runs: storage is unchanged from pre-state.
-            // Validate expected storage against pre-state DB.
-            for (tc.expected_storage) |expected_acct| {
-                for (expected_acct.storage) |entry| {
-                    const key = u256FromBeBytes(entry.key);
-                    const expected_val = u256FromBeBytes(entry.value);
-                    const actual_val = ctx.journaled_state.database.getStorage(expected_acct.address, key) catch 0;
-                    if (actual_val != expected_val) {
-                        return .{ .result = .fail, .detail = .{
-                            .reason = "storage mismatch (no code target)",
-                            .address = expected_acct.address,
-                            .storage_key = entry.key,
-                            .expected = entry.value,
-                            .actual = u256ToBeBytes(actual_val),
-                        } };
-                    }
-                }
-            }
-            return .{ .result = .pass, .detail = .{ .reason = "no code, storage preserved" } };
-        }
-    }
-
-    // Intrinsic gas validation: reject transactions whose gas_limit is below the minimum cost.
-    // EIP-7623 (Prague+): Two separate minimums apply, gas_limit must satisfy both:
-    //   1. standard_intrinsic = base + 4*zero + 16*nonzero + access_list_gas + auth_gas
-    //   2. floor_gas = base + 10*zero + 40*nonzero  (calldata ONLY, no access list, no auth)
-    // gas_limit must be >= max(standard_intrinsic, floor_gas).
-    // standard_intrinsic is also used below to set the interpreter's starting gas correctly.
-    const standard_intrinsic: u64 = blk: {
-        const base_gas: u64 = if (tc.is_create) 53000 else 21000;
-        var standard_calldata_gas: u64 = 0;
-        var floor_calldata_gas: u64 = 0;
-        for (tc.calldata) |byte| {
-            if (byte == 0) {
-                standard_calldata_gas += 4;
-                floor_calldata_gas += 10;
-            } else {
-                standard_calldata_gas += 16;
-                floor_calldata_gas += 40;
-            }
-        }
-        const access_list_gas: u64 =
-            @as(u64, tc.access_list_addr_count) * 2400 +
-            @as(u64, tc.access_list_slot_count) * 1900;
-        const auth_gas: u64 = @as(u64, tc.authorization_count) * 25000;
-        // EIP-3860: initcode gas is part of intrinsic gas for CREATE (Shanghai+)
-        const initcode_words: u64 = if (tc.is_create) @as(u64, @intCast((tc.calldata.len + 31) / 32)) else 0;
-        const initcode_intrinsic: u64 = initcode_words * 2;
-        // Note: EIP-4844 blob gas is a separate fee market, NOT part of execution intrinsic gas.
-        // Blob fees are validated separately in the sender balance check below.
-        const si = base_gas + standard_calldata_gas + access_list_gas + auth_gas + initcode_intrinsic;
-        // EIP-7623 floor: always 21000 + floor_calldata (fixed base, excludes CREATE's extra
-        // 32000, access list gas, and auth gas). Per EIP-7623 spec.
-        const floor_gas = 21000 + floor_calldata_gas;
-        const min_gas = @max(si, floor_gas);
-
-        if (tc.gas_limit < min_gas) {
-            if (tc.expect_exception) {
-                return .{ .result = .pass, .detail = .{ .reason = "expected exception: intrinsic gas" } };
-            }
-            return .{ .result = .fail, .detail = .{ .reason = "gas_limit below intrinsic" } };
-        }
-        break :blk si;
+        return .{ .result = .fail, .detail = .{ .reason = @errorName(err) } };
     };
 
-    // Sender balance check: sender must have sufficient ETH to cover gas cost + tx value + blob cost.
-    // Sender not in pre-state has balance 0.
-    {
-        var sender_balance: U256 = 0;
-        for (tc.pre_accounts) |acct| {
-            if (std.mem.eql(u8, &acct.address, &tc.caller)) {
-                sender_balance = u256FromBeBytes(acct.balance);
-                break;
-            }
+    // ---------------------------------------------------------------------------
+    // Pre-execution: warm precompiles, coinbase, access list, EIP-7702 delegation
+    // ---------------------------------------------------------------------------
+    MainnetHandler.preExecution(&evm) catch {
+        if (tc.expect_exception) {
+            return .{ .result = .pass, .detail = .{ .reason = "expected exception: preExecution" } };
         }
-        const gas_cost: U256 = @as(U256, tc.gas_limit) * @as(U256, tc.gas_price);
-        var total_cost = gas_cost + tx_value;
-        // EIP-4844: blob cost = blob_count * GAS_PER_BLOB * blob_gasprice
-        if (tc.blob_versioned_hashes_count > 0) {
-            const blob_gasprice = context.BlobExcessGasAndPrice.new(
-                tc.excess_blob_gas,
-                primitives.BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE,
-            ).blob_gasprice;
-            const blob_cost: U256 = @as(U256, tc.blob_versioned_hashes_count) *
-                @as(U256, primitives.GAS_PER_BLOB) *
-                @as(U256, blob_gasprice);
-            total_cost += blob_cost;
-        }
-        if (total_cost > sender_balance) {
-            if (tc.expect_exception) {
-                return .{ .result = .pass, .detail = .{ .reason = "expected exception: insufficient balance" } };
-            }
-            return .{ .result = .fail, .detail = .{ .reason = "insufficient sender balance" } };
-        }
-    }
-
-    // EIP-3860: initcode size limit (Shanghai+, applies to Prague/Osaka).
-    if (tc.is_create) {
-        const MAX_INITCODE_SIZE: usize = 49152; // 2 * MAX_CODE_SIZE
-        if (run_code.len > MAX_INITCODE_SIZE) {
-            if (tc.expect_exception) {
-                return .{ .result = .pass, .detail = .{ .reason = "expected initcode too large" } };
-            }
-            return .{ .result = .fail, .detail = .{ .reason = "initcode too large" } };
-        }
-    }
-
-    // The interpreter starts with gas_limit minus the full intrinsic cost.
-    // This ensures gas measurements (GAS opcode) reflect the actual execution budget
-    // and that EVM execution does not "see" the gas used for intrinsic overhead.
-    // standard_intrinsic already includes initcode_intrinsic for CREATE transactions.
-    // EIP-4844: blob gas is a separate fee market and does NOT reduce the execution gas limit.
-    const effective_gas_limit = tc.gas_limit - standard_intrinsic;
-
-    // Build interpreter inputs
-    const inputs = interpreter.InputsImpl{
-        .caller = tc.caller,
-        .target = effective_target,
-        .value = tx_value,
-        .data = @constCast(tc.calldata),
-        .gas_limit = effective_gas_limit,
-        .scheme = .call,
-        .is_static = false,
-        .depth = 0,
+        return .{ .result = .fail, .detail = .{ .reason = "unexpected preExecution failure" } };
     };
 
-    // Build interpreter
-    const ext_bytecode = interpreter.ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(run_code));
-    var interp = interpreter.Interpreter.new(
-        interpreter.Memory.new(),
-        ext_bytecode,
-        inputs,
-        false,
-        spec,
-        effective_gas_limit,
-    );
-    defer interp.deinit();
-
-    // Build host and execute
-    var host = interpreter.Host{
-        .ctx = &ctx,
-        .run_sub_call = interpreter.protocol_schedule.runSubCallDefault,
-        .precompiles = &schedule.precompiles,
-        // Cache the instruction table pointer so sub-calls reuse it instead of
-        // allocating a fresh 4 KB table on the native stack per recursive EVM call.
-        .instruction_table = &schedule.instructions,
+    // ---------------------------------------------------------------------------
+    // Execute frame
+    // ---------------------------------------------------------------------------
+    var frame_result = MainnetHandler.executeFrame(&evm, initial_gas.initial_gas) catch {
+        if (tc.expect_exception) {
+            return .{ .result = .pass, .detail = .{ .reason = "expected exception: execution error" } };
+        }
+        return .{ .result = .fail, .detail = .{ .reason = "unexpected execution error" } };
     };
-    const exec_result = interp.runWithHost(&schedule.instructions, &host);
 
-    // For CREATE transactions: check post-execution validity of deployed code.
-    // These checks mirror what host.create() does for sub-call CREATE; they apply
-    // to the top-level CREATE transaction as well.
-    const create_post_exec_fail: bool = blk: {
-        if (!tc.is_create) break :blk false;
-        if (exec_result != .@"return") break :blk false; // non-RETURN already handled below
-        const deployed = interp.return_data.data;
-        const MAX_CODE_SIZE: usize = 24576;
-        // EIP-170: code too large
-        if (deployed.len > MAX_CODE_SIZE) break :blk true;
-        // EIP-3541 (London+): reject code starting with 0xEF
-        if (deployed.len > 0 and deployed[0] == 0xEF) break :blk true;
-        // Code deposit OOG: 200 gas per byte of deployed code
-        const deposit_cost: u64 = 200 * @as(u64, @intCast(deployed.len));
-        if (interp.gas.remaining < deposit_cost) break :blk true;
-        break :blk false;
+    // ---------------------------------------------------------------------------
+    // Post-execution: gas refund, floor gas, reimburse caller, pay beneficiary, commit
+    // ---------------------------------------------------------------------------
+    MainnetHandler.postExecution(&evm, &frame_result, initial_gas) catch {
+        if (tc.expect_exception) {
+            return .{ .result = .pass, .detail = .{ .reason = "expected exception: postExecution" } };
+        }
+        return .{ .result = .fail, .detail = .{ .reason = "unexpected postExecution failure" } };
     };
+
+    // ---------------------------------------------------------------------------
+    // Result handling
+    // ---------------------------------------------------------------------------
+
+    const exec_status = frame_result.result.status;
+    const exec_succeeded = exec_status == .Success;
 
     // If we expect an exception, any non-success result is a pass
     if (tc.expect_exception) {
-        if (create_post_exec_fail or (exec_result != .stop and exec_result != .@"return")) {
-            return .{ .result = .pass, .detail = .{ .reason = "expected exception occurred", .exec_result = exec_result } };
+        if (!exec_succeeded) {
+            return .{ .result = .pass, .detail = .{ .reason = "expected exception occurred" } };
         }
-        return .{ .result = .fail, .detail = .{ .reason = "expected exception but execution succeeded", .exec_result = exec_result } };
+        // Execution succeeded but exception was expected → fail
+        return .{ .result = .fail, .detail = .{ .reason = "expected exception but execution succeeded" } };
     }
 
-    // Check for execution errors or explicit REVERT
-    if (create_post_exec_fail or exec_result.isError() or exec_result == .revert) {
-        // Top-level OOG/revert reverts ALL state changes back to pre-state.
-        // Validate expected storage against the pre-state DB (not the journal).
+    if (!exec_succeeded) {
+        // Execution failed/reverted — validate expected storage against pre-state DB
+        // (all state changes were rolled back by executeFrame's checkpoint revert)
         for (tc.expected_storage) |expected_acct| {
             for (expected_acct.storage) |entry| {
                 const key = u256FromBeBytes(entry.key);
@@ -815,9 +405,11 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
                 const actual_val = ctx.journaled_state.database.getStorage(expected_acct.address, key) catch 0;
                 if (actual_val != expected_val) {
                     return .{ .result = .fail, .detail = .{
-                        .reason = "execution error",
-                        .exec_result = exec_result,
-                        .opcode = interp.last_opcode,
+                        .reason = "storage mismatch after revert",
+                        .address = expected_acct.address,
+                        .storage_key = entry.key,
+                        .expected = entry.value,
+                        .actual = u256ToBeBytes(actual_val),
                     } };
                 }
             }
@@ -825,9 +417,9 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         return .{ .result = .pass, .detail = .{ .reason = "ok (reverted)" } };
     }
 
-    // Validate expected storage by reading from the journal's evm_state.
-    // Slots written during execution are in evm_state[addr].storage[key].present_value.
-    // Slots not accessed fall back to the pre-populated DB.
+    // ---------------------------------------------------------------------------
+    // Validate expected storage (success path) — read from journal's evm_state
+    // ---------------------------------------------------------------------------
     const evm_state = &ctx.journaled_state.inner.evm_state;
     for (tc.expected_storage) |expected_acct| {
         for (expected_acct.storage) |entry| {
@@ -839,11 +431,9 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
                 if (account.storage.get(key)) |slot| {
                     actual_val = slot.presentValue();
                 } else {
-                    // Slot not touched during execution — read from pre-state DB
                     actual_val = ctx.journaled_state.database.getStorage(expected_acct.address, key) catch 0;
                 }
             } else {
-                // Account not loaded during execution — read from pre-state DB
                 actual_val = ctx.journaled_state.database.getStorage(expected_acct.address, key) catch 0;
             }
 

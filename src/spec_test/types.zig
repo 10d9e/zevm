@@ -51,8 +51,8 @@ pub const TestCase = struct {
     value: [32]u8,
     calldata: []const u8,
     gas_limit: u64,
-    gas_price: u128,           // maxFeePerGas (EIP-1559) or gasPrice (legacy)
-    max_priority_fee_per_gas: u128, // EIP-1559 tip cap; 0 for legacy txs
+    gas_price: u128,              // maxFeePerGas (EIP-1559) or gasPrice (legacy)
+    max_priority_fee_per_gas: ?u128, // EIP-1559 tip cap; null for legacy txs
     // EIP-2930 access list intrinsic gas counts
     access_list_addr_count: u32,
     access_list_slot_count: u32,
@@ -60,6 +60,8 @@ pub const TestCase = struct {
     access_list: []const AccessListEntry,
     // EIP-7702 authorization list count (25000 per tuple intrinsic gas)
     authorization_count: u32,
+    // true if the fixture's transaction has an authorizationList field (even if empty)
+    has_authorization_list: bool,
     // EIP-7702 authorization entries: (authority → delegation target) pairs for code setting
     authorization_entries: []const AuthorizationEntry,
     // EIP-4844 blob transaction fields

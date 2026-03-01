@@ -611,6 +611,7 @@ pub fn build(b: *std.Build) void {
     runner_mod.addImport("database", database_module);
     runner_mod.addImport("state", state_module);
     runner_mod.addImport("precompile", precompile_module);
+    runner_mod.addImport("handler", handler_module);
 
     addCryptoLibraries(b, runner_exe, enable_blst, enable_mcl, blst_include_path, mcl_include_path, is_windows, target_info.os.tag == .macos);
     b.installArtifact(runner_exe);
