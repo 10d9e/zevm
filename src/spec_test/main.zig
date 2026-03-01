@@ -211,9 +211,11 @@ fn parseTestCases(
     // Storing the effective price ensures GASPRICE opcode and gas pre-deduction are correct.
     const tx_gas_price: u128 = blk: {
         if (getStr(tx_val.object, "gasPrice")) |gp| {
-            break :blk try parseU128Hex(gp);
+            // Saturate on overflow: gasPrice > u128.max means gas cost is definitely
+            // unaffordable. The balance check in the runner will reject it (expect_exception).
+            break :blk parseU128Hex(gp) catch std.math.maxInt(u128);
         } else if (getStr(tx_val.object, "maxFeePerGas")) |mfpg| {
-            const max_fee = try parseU128Hex(mfpg);
+            const max_fee = parseU128Hex(mfpg) catch std.math.maxInt(u128);
             const base: u128 = @as(u128, block_basefee);
             break :blk @min(max_fee, base + tx_max_priority_fee);
         } else {
