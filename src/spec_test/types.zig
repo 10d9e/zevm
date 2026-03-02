@@ -21,6 +21,9 @@ pub const PreAccount = struct {
 
 pub const ExpectedAccount = struct {
     address: [20]u8,
+    balance: [32]u8,      // expected ETH balance (big-endian U256)
+    nonce: u64,           // expected account nonce
+    code: []const u8,     // expected raw bytecode (empty slice for EOAs)
     storage: []const StorageEntry,
 };
 

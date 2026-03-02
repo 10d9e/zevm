@@ -83,12 +83,34 @@ pub fn isAvailable() bool {
     return build_options.enable_blst;
 }
 
+/// BLS12-381 field prime p (big-endian, 48 bytes):
+/// p = 0x1a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab
+const BLS_FP_MODULUS: [48]u8 = .{
+    0x1a, 0x01, 0x11, 0xea, 0x39, 0x7f, 0xe6, 0x9a,
+    0x4b, 0x1b, 0xa7, 0xb6, 0x43, 0x4b, 0xac, 0xd7,
+    0x64, 0x77, 0x4b, 0x84, 0xf3, 0x85, 0x12, 0xbf,
+    0x67, 0x30, 0xd2, 0xa0, 0xf6, 0xb0, 0xf6, 0x24,
+    0x1e, 0xab, 0xff, 0xfe, 0xb1, 0x53, 0xff, 0xff,
+    0xb9, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xaa, 0xab,
+};
+
+/// Returns true if the 48-byte big-endian value is a canonical field element (0 <= x < p).
+/// EIP-2537 requires all Fp inputs to be canonical; blst_fp_from_bendian silently reduces mod p.
+fn isFpCanonical(bytes: *const [48]u8) bool {
+    return std.mem.order(u8, bytes, &BLS_FP_MODULUS) == .lt;
+}
+
 /// Parse a G1 affine point from 96 bytes, returning error for invalid non-infinity points.
 /// Treats all-zero bytes as the point at infinity (valid).
 fn parseG1Affine(bytes: [96]u8, affine: *c.blst_p1_affine) !bool {
     // All-zero bytes = point at infinity (identity element)
     const zero96 = [_]u8{0} ** 96;
     if (std.mem.eql(u8, &bytes, &zero96)) return true; // is_infinity
+
+    // EIP-2537: field elements must be canonical (0 <= x < p)
+    if (!isFpCanonical(bytes[0..48]) or !isFpCanonical(bytes[48..96])) {
+        return error.NonCanonicalFieldElement;
+    }
 
     var fp_x: c.blst_fp = undefined;
     var fp_y: c.blst_fp = undefined;
@@ -183,6 +205,12 @@ pub fn g1Msm(pairs: []const struct { point: [96]u8, scalar: [32]u8 }) ![96]u8 {
         if (std.mem.eql(u8, &pair.point, &zero96)) continue;
 
         const i = active_count;
+
+        // EIP-2537: field elements must be canonical (0 <= x < p)
+        if (!isFpCanonical(pair.point[0..48]) or !isFpCanonical(pair.point[48..96])) {
+            return error.NonCanonicalFieldElement;
+        }
+
         var fp_x: c.blst_fp = undefined;
         var fp_y: c.blst_fp = undefined;
         c.blst_fp_from_bendian(&fp_x, pair.point[0..48]);
@@ -231,6 +259,13 @@ pub fn g1Msm(pairs: []const struct { point: [96]u8, scalar: [32]u8 }) ![96]u8 {
 fn parseG2Affine(bytes: [192]u8, affine: *c.blst_p2_affine) !bool {
     const zero192 = [_]u8{0} ** 192;
     if (std.mem.eql(u8, &bytes, &zero192)) return true; // is_infinity
+
+    // EIP-2537: all four Fp components of Fp2 must be canonical (0 <= x < p)
+    if (!isFpCanonical(bytes[0..48]) or !isFpCanonical(bytes[48..96]) or
+        !isFpCanonical(bytes[96..144]) or !isFpCanonical(bytes[144..192]))
+    {
+        return error.NonCanonicalFieldElement;
+    }
 
     // Direct mapping: EIP-2537 encodes Fp2 as two consecutive 48-byte field elements.
     // blst's blst_fp2.fp[0] = first element, fp[1] = second element.
@@ -330,6 +365,14 @@ pub fn g2Msm(pairs: []const struct { point: [192]u8, scalar: [32]u8 }) ![192]u8 
         if (std.mem.eql(u8, &pair.point, &zero192)) continue;
 
         const i = active_count;
+
+        // EIP-2537: all four Fp components of Fp2 must be canonical (0 <= x < p)
+        if (!isFpCanonical(pair.point[0..48]) or !isFpCanonical(pair.point[48..96]) or
+            !isFpCanonical(pair.point[96..144]) or !isFpCanonical(pair.point[144..192]))
+        {
+            return error.NonCanonicalFieldElement;
+        }
+
         // Direct mapping: EIP-2537 Fp2 bytes map to blst fp2.fp[0] and fp2.fp[1] directly
         c.blst_fp_from_bendian(&points[i].x.fp[0], pair.point[0..48]);
         c.blst_fp_from_bendian(&points[i].x.fp[1], pair.point[48..96]);
@@ -401,6 +444,11 @@ pub fn pairingCheck(pairs: []const struct { g1: [96]u8, g2: [192]u8 }) !bool {
 
         const i = active_count;
 
+        // EIP-2537: G1 field elements must be canonical (0 <= x < p)
+        if (!isFpCanonical(pair.g1[0..48]) or !isFpCanonical(pair.g1[48..96])) {
+            return error.NonCanonicalFieldElement;
+        }
+
         // Parse G1 point
         var fp_x: c.blst_fp = undefined;
         var fp_y: c.blst_fp = undefined;
@@ -412,6 +460,13 @@ pub fn pairingCheck(pairs: []const struct { g1: [96]u8, g2: [192]u8 }) !bool {
         // Pairing requires both G1 and G2 to be in their respective subgroups
         if (!c.blst_p1_affine_on_curve(&g1_points[i]) or !c.blst_p1_affine_in_g1(&g1_points[i])) {
             return error.InvalidG1Point;
+        }
+
+        // EIP-2537: G2 field elements must be canonical (0 <= x < p)
+        if (!isFpCanonical(pair.g2[0..48]) or !isFpCanonical(pair.g2[48..96]) or
+            !isFpCanonical(pair.g2[96..144]) or !isFpCanonical(pair.g2[144..192]))
+        {
+            return error.NonCanonicalFieldElement;
         }
 
         // Parse G2 point — direct mapping (no swap)
@@ -454,6 +509,11 @@ pub fn mapFpToG1(fp: [48]u8) ![96]u8 {
         return error.BlstNotAvailable;
     }
 
+    // EIP-2537: field element must be canonical (0 <= fp < p)
+    if (!isFpCanonical(&fp)) {
+        return error.NonCanonicalFieldElement;
+    }
+
     // Parse field element
     var fp_elem: c.blst_fp = undefined;
     c.blst_fp_from_bendian(&fp_elem, &fp);
@@ -479,6 +539,11 @@ pub fn mapFpToG1(fp: [48]u8) ![96]u8 {
 pub fn mapFp2ToG2(fp2: [96]u8) ![192]u8 {
     if (!isAvailable()) {
         return error.BlstNotAvailable;
+    }
+
+    // EIP-2537: both Fp2 components must be canonical (0 <= x < p)
+    if (!isFpCanonical(fp2[0..48]) or !isFpCanonical(fp2[48..96])) {
+        return error.NonCanonicalFieldElement;
     }
 
     // Parse Fp2 element — direct mapping: fp[0] = first 48 bytes, fp[1] = second 48 bytes
@@ -632,4 +697,5 @@ pub const BlstError = error{
     InvalidG1Point,
     InvalidG2Point,
     InvalidInput,
+    NonCanonicalFieldElement,
 };

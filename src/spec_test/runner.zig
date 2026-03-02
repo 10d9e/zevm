@@ -369,6 +369,19 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         return .{ .result = .fail, .detail = .{ .reason = "unexpected execution error" } };
     };
 
+    // DEBUG: print gas accounting for balance-mismatch investigation
+    if (std.mem.indexOf(u8, tc.name, "a_x_above_p") != null) {
+        std.debug.print("DEBUG gas [{s}]: initial={d} gas_limit={d} exec_gas={d} remaining={d} refunded={d} status={s}\n", .{
+            tc.fork,
+            initial_gas.initial_gas,
+            ctx.tx.gas_limit,
+            ctx.tx.gas_limit - initial_gas.initial_gas,
+            frame_result.gas_remaining,
+            frame_result.gas_refunded,
+            @tagName(frame_result.result.status),
+        });
+    }
+
     // ---------------------------------------------------------------------------
     // Post-execution: gas refund, floor gas, reimburse caller, pay beneficiary, commit
     // ---------------------------------------------------------------------------
@@ -386,7 +399,7 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
     const exec_status = frame_result.result.status;
     const exec_succeeded = exec_status == .Success;
 
-    // If we expect an exception, any non-success result is a pass
+    // If we expect an exception, any non-success result is a pass (skip state validation)
     if (tc.expect_exception) {
         if (!exec_succeeded) {
             return .{ .result = .pass, .detail = .{ .reason = "expected exception occurred" } };
@@ -395,33 +408,60 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         return .{ .result = .fail, .detail = .{ .reason = "expected exception but execution succeeded" } };
     }
 
-    if (!exec_succeeded) {
-        // Execution failed/reverted — validate expected storage against pre-state DB
-        // (all state changes were rolled back by executeFrame's checkpoint revert)
-        for (tc.expected_storage) |expected_acct| {
-            for (expected_acct.storage) |entry| {
-                const key = u256FromBeBytes(entry.key);
-                const expected_val = u256FromBeBytes(entry.value);
-                const actual_val = ctx.journaled_state.database.getStorage(expected_acct.address, key) catch 0;
-                if (actual_val != expected_val) {
-                    return .{ .result = .fail, .detail = .{
-                        .reason = "storage mismatch after revert",
-                        .address = expected_acct.address,
-                        .storage_key = entry.key,
-                        .expected = entry.value,
-                        .actual = u256ToBeBytes(actual_val),
-                    } };
-                }
-            }
-        }
-        return .{ .result = .pass, .detail = .{ .reason = "ok (reverted)" } };
-    }
-
     // ---------------------------------------------------------------------------
-    // Validate expected storage (success path) — read from journal's evm_state
+    // Validate expected account state — balance, nonce, code, storage
+    // After postExecution, evm_state holds the final committed state for all touched
+    // accounts (gas accounting applied even on revert; storage reverted on revert).
+    // Untouched accounts are read from the original DB.
     // ---------------------------------------------------------------------------
     const evm_state = &ctx.journaled_state.inner.evm_state;
     for (tc.expected_storage) |expected_acct| {
+        // Resolve actual account info from journal (in-memory) or fall back to DB.
+        const actual_info: state_mod.AccountInfo = blk: {
+            if (evm_state.get(expected_acct.address)) |account| {
+                break :blk account.info;
+            }
+            break :blk (ctx.journaled_state.database.basic(expected_acct.address) catch null) orelse
+                state_mod.AccountInfo.default();
+        };
+
+        // Check balance
+        const expected_balance = u256FromBeBytes(expected_acct.balance);
+        if (actual_info.balance != expected_balance) {
+            return .{ .result = .fail, .detail = .{
+                .reason = "balance mismatch",
+                .address = expected_acct.address,
+                .expected = u256ToBeBytes(expected_balance),
+                .actual = u256ToBeBytes(actual_info.balance),
+            } };
+        }
+
+        // Check nonce
+        if (actual_info.nonce != expected_acct.nonce) {
+            return .{ .result = .fail, .detail = .{
+                .reason = "nonce mismatch",
+                .address = expected_acct.address,
+                .expected = u256ToBeBytes(@as(U256, expected_acct.nonce)),
+                .actual = u256ToBeBytes(@as(U256, actual_info.nonce)),
+            } };
+        }
+
+        // Check code by comparing hashes (avoids dangling-pointer issue with eip7702 originalBytes).
+        const expected_code_hash: primitives.Hash = if (expected_acct.code.len == 0)
+            primitives.KECCAK_EMPTY
+        else blk: {
+            var h: primitives.Hash = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(expected_acct.code, &h, .{});
+            break :blk h;
+        };
+        if (!std.mem.eql(u8, &actual_info.code_hash, &expected_code_hash)) {
+            return .{ .result = .fail, .detail = .{
+                .reason = "code mismatch",
+                .address = expected_acct.address,
+            } };
+        }
+
+        // Check storage
         for (expected_acct.storage) |entry| {
             const key = u256FromBeBytes(entry.key);
             const expected_val = u256FromBeBytes(entry.value);
@@ -439,7 +479,7 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
 
             if (actual_val != expected_val) {
                 return .{ .result = .fail, .detail = .{
-                    .reason = "storage mismatch",
+                    .reason = if (exec_succeeded) "storage mismatch" else "storage mismatch after revert",
                     .address = expected_acct.address,
                     .storage_key = entry.key,
                     .expected = entry.value,
@@ -449,5 +489,5 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         }
     }
 
-    return .{ .result = .pass, .detail = .{ .reason = "ok" } };
+    return .{ .result = .pass, .detail = .{ .reason = if (exec_succeeded) "ok" else "ok (reverted)" } };
 }

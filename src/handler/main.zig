@@ -294,14 +294,26 @@ pub const Frame = struct {
             .instruction_table = &schedule.instructions,
         };
 
-        const result = self.interpreter.runWithHost(
-            &schedule.instructions,
-            &host,
-        );
+        if (self.interpreter.debug_trace) {
+            while (self.interpreter.bytecode.isNotEnd()) {
+                const trace_pc = self.interpreter.bytecode.pc;
+                const trace_op = self.interpreter.bytecode.opcode();
+                const trace_gas = self.interpreter.gas.remaining;
+                self.interpreter.stepWithHost(&schedule.instructions, &host);
+                std.debug.print("[TRACE] pc={d} op=0x{x:02} gas_before={d} gas_after={d}\n", .{
+                    trace_pc, trace_op, trace_gas, self.interpreter.gas.remaining,
+                });
+            }
+            std.debug.print("[TRACE] done: remaining={d} result={s}\n", .{
+                self.interpreter.gas.remaining, @tagName(self.interpreter.result),
+            });
+        } else {
+            _ = self.interpreter.runWithHost(&schedule.instructions, &host);
+        }
 
         const gas_used = self.interpreter.gas.getSpent();
         const gas_refunded = self.interpreter.gas.refunded;
-        const status: ExecutionStatus = switch (result) {
+        const status: ExecutionStatus = switch (self.interpreter.result) {
             .stop, .@"return", .selfdestruct => .Success,
             .revert => .Revert,
             else => .Halt,

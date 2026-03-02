@@ -109,14 +109,19 @@ const DISCOUNT_TABLE_G2_MSM: [128]u16 = .{
     524,  524,
 };
 
-/// Remove padding from G1 point (128 bytes -> 96 bytes)
+/// Remove padding from G1 point (128 bytes -> 96 bytes).
+/// EIP-2537: the top 16 bytes of each 64-byte element must be zero.
 fn removeG1Padding(padded: []const u8) ![2][FP_LENGTH]u8 {
     if (padded.len < PADDED_G1_LENGTH) {
         return main.PrecompileError.Bls12381G1AddInputLength;
     }
+    const zero16 = [_]u8{0} ** 16;
+    if (!std.mem.eql(u8, padded[0..16], &zero16) or !std.mem.eql(u8, padded[64..80], &zero16)) {
+        return main.PrecompileError.Bls12381G1AddInputLength;
+    }
     var result: [2][FP_LENGTH]u8 = undefined;
-    @memcpy(&result[0], padded[16 .. 16 + FP_LENGTH]); // Skip 16-byte padding
-    @memcpy(&result[1], padded[80 .. 80 + FP_LENGTH]); // Skip 16-byte padding
+    @memcpy(&result[0], padded[16 .. 16 + FP_LENGTH]);
+    @memcpy(&result[1], padded[80 .. 80 + FP_LENGTH]);
     return result;
 }
 
@@ -128,9 +133,16 @@ fn padG1Point(unpadded: []const u8) [PADDED_G1_LENGTH]u8 {
     return result;
 }
 
-/// Remove padding from G2 point (256 bytes -> 192 bytes)
+/// Remove padding from G2 point (256 bytes -> 192 bytes).
+/// EIP-2537: the top 16 bytes of each 64-byte element must be zero.
 fn removeG2Padding(padded: []const u8) ![4][FP_LENGTH]u8 {
     if (padded.len < PADDED_G2_LENGTH) {
+        return main.PrecompileError.Bls12381G2AddInputLength;
+    }
+    const zero16 = [_]u8{0} ** 16;
+    if (!std.mem.eql(u8, padded[0..16], &zero16) or !std.mem.eql(u8, padded[64..80], &zero16) or
+        !std.mem.eql(u8, padded[128..144], &zero16) or !std.mem.eql(u8, padded[192..208], &zero16))
+    {
         return main.PrecompileError.Bls12381G2AddInputLength;
     }
     var result: [4][FP_LENGTH]u8 = undefined;
@@ -178,12 +190,10 @@ pub fn bls12G1AddRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         if (blst_wrapper.g1Add(a_unpadded, b_unpadded)) |result| {
             unpadded_result = result;
         } else |_| {
-            // Fallback to placeholder if blst fails
-            @memset(&unpadded_result, 0);
+            return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
         }
     } else {
-        // Placeholder if blst not available
-        @memset(&unpadded_result, 0);
+        return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
     }
 
     const padded_result = padG1Point(&unpadded_result);
@@ -261,12 +271,10 @@ pub fn bls12G1MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         if (blst_wrapper.g1Msm(@ptrCast(blst_pairs))) |result| {
             unpadded_result = result;
         } else |_| {
-            // Fallback to placeholder if blst fails
-            @memset(&unpadded_result, 0);
+            return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
         }
     } else {
-        // Placeholder if blst not available
-        @memset(&unpadded_result, 0);
+        return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
     }
 
     const padded_result = padG1Point(&unpadded_result);
@@ -306,12 +314,10 @@ pub fn bls12G2AddRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         if (blst_wrapper.g2Add(a_unpadded, b_unpadded)) |result| {
             unpadded_result = result;
         } else |_| {
-            // Fallback to placeholder if blst fails
-            @memset(&unpadded_result, 0);
+            return main.PrecompileResult{ .err = error.Bls12381G2NotOnCurve };
         }
     } else {
-        // Placeholder if blst not available
-        @memset(&unpadded_result, 0);
+        return main.PrecompileResult{ .err = error.Bls12381G2NotOnCurve };
     }
 
     const padded_result = padG2Point(&unpadded_result);
@@ -391,12 +397,10 @@ pub fn bls12G2MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         if (blst_wrapper.g2Msm(@ptrCast(blst_pairs))) |result| {
             unpadded_result = result;
         } else |_| {
-            // Fallback to placeholder if blst fails
-            @memset(&unpadded_result, 0);
+            return main.PrecompileResult{ .err = error.Bls12381G2NotOnCurve };
         }
     } else {
-        // Placeholder if blst not available
-        @memset(&unpadded_result, 0);
+        return main.PrecompileResult{ .err = error.Bls12381G2NotOnCurve };
     }
 
     const padded_result = padG2Point(&unpadded_result);
@@ -473,12 +477,10 @@ pub fn bls12PairingRun(input: []const u8, gas_limit: u64) main.PrecompileResult 
         if (blst_wrapper.pairingCheck(@ptrCast(blst_pairs))) |result| {
             pairing_valid = result;
         } else |_| {
-            // Fallback: assume invalid if blst fails
-            pairing_valid = false;
+            return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
         }
     } else {
-        // Placeholder: assume invalid if blst not available
-        pairing_valid = false;
+        return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
     }
 
     // Result is 1 if pairing is valid, 0 otherwise
@@ -502,6 +504,12 @@ pub fn bls12MapFpToG1Run(input: []const u8, gas_limit: u64) main.PrecompileResul
         return main.PrecompileResult{ .err = main.PrecompileError.Bls12381MapFpToG1InputLength };
     }
 
+    // EIP-2537: top 16 bytes must be zero
+    const zero16 = [_]u8{0} ** 16;
+    if (!std.mem.eql(u8, input[0..16], &zero16)) {
+        return main.PrecompileResult{ .err = main.PrecompileError.Bls12381MapFpToG1InputLength };
+    }
+
     // Extract field element (skip 16-byte padding, take 48 bytes)
     var fp: [FP_LENGTH]u8 = undefined;
     @memcpy(&fp, input[16..64]);
@@ -512,12 +520,10 @@ pub fn bls12MapFpToG1Run(input: []const u8, gas_limit: u64) main.PrecompileResul
         if (blst_wrapper.mapFpToG1(fp)) |result| {
             unpadded_result = result;
         } else |_| {
-            // Fallback to placeholder if blst fails
-            @memset(&unpadded_result, 0);
+            return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
         }
     } else {
-        // Placeholder if blst not available
-        @memset(&unpadded_result, 0);
+        return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
     }
 
     const padded_result = padG1Point(&unpadded_result);
@@ -536,6 +542,12 @@ pub fn bls12MapFp2ToG2Run(input: []const u8, gas_limit: u64) main.PrecompileResu
         return main.PrecompileResult{ .err = main.PrecompileError.Bls12381MapFp2ToG2InputLength };
     }
 
+    // EIP-2537: top 16 bytes of each 64-byte element must be zero
+    const zero16 = [_]u8{0} ** 16;
+    if (!std.mem.eql(u8, input[0..16], &zero16) or !std.mem.eql(u8, input[64..80], &zero16)) {
+        return main.PrecompileResult{ .err = main.PrecompileError.Bls12381MapFp2ToG2InputLength };
+    }
+
     // Extract Fp2 element (skip 16-byte padding from first element, take 96 bytes total)
     // Fp2 is two Fp elements: [padding(16) | fp0(48) | padding(16) | fp1(48)]
     var fp2: [FP2_LENGTH]u8 = undefined;
@@ -548,12 +560,10 @@ pub fn bls12MapFp2ToG2Run(input: []const u8, gas_limit: u64) main.PrecompileResu
         if (blst_wrapper.mapFp2ToG2(fp2)) |result| {
             unpadded_result = result;
         } else |_| {
-            // Fallback to placeholder if blst fails
-            @memset(&unpadded_result, 0);
+            return main.PrecompileResult{ .err = error.Bls12381G2NotOnCurve };
         }
     } else {
-        // Placeholder if blst not available
-        @memset(&unpadded_result, 0);
+        return main.PrecompileResult{ .err = error.Bls12381G2NotOnCurve };
     }
 
     const padded_result = padG2Point(&unpadded_result);

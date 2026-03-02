@@ -363,6 +363,8 @@ pub const Interpreter = struct {
     result: InstructionResult,
     extend: void,
     last_opcode: ?u8 = null,
+    /// Enable per-step gas tracing (debug only)
+    debug_trace: bool = false,
 
     pub fn new(
         memory: Memory,
@@ -411,6 +413,11 @@ pub const Interpreter = struct {
     pub fn halt(self: *Interpreter, r: InstructionResult) void {
         self.bytecode.continue_execution = false;
         self.result = r;
+        // EVM spec: all remaining gas is consumed on any error (OOG, invalid opcode, etc.).
+        // Revert and success are NOT errors — they preserve remaining gas for refund/return.
+        if (r.isError()) {
+            self.gas.remaining = 0;
+        }
     }
 
     pub fn deinit(self: *Interpreter) void {

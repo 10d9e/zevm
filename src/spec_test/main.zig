@@ -402,19 +402,32 @@ fn parseTestCases(
                 const ea = ee.value_ptr.*;
                 if (ea != .object) continue;
                 const addr2 = parseAddress(ee.key_ptr.*) catch continue;
-                const sv = ea.object.get("storage") orelse continue;
-                if (sv != .object) continue;
-                if (sv.object.count() == 0) continue;
 
+                // Parse balance, nonce, code (always present in fixture post.state entries)
+                const balance = parseU256Hex(getStr(ea.object, "balance") orelse "0x0") catch [_]u8{0} ** 32;
+                const nonce = parseU64Hex(getStr(ea.object, "nonce") orelse "0x0") catch 0;
+                const code = hexToBytes(a, getStr(ea.object, "code") orelse "0x") catch &[_]u8{};
+
+                // Parse storage (may be absent or empty)
                 var sl: std.ArrayList(types.StorageEntry) = .{};
-                var si2 = sv.object.iterator();
-                while (si2.next()) |se2| {
-                    const k = parseU256Hex(se2.key_ptr.*) catch continue;
-                    const v = parseU256Hex(getJsonStr(se2.value_ptr.*) orelse continue) catch continue;
-                    sl.append(a, .{ .key = k, .value = v }) catch continue;
+                if (ea.object.get("storage")) |sv| {
+                    if (sv == .object) {
+                        var si2 = sv.object.iterator();
+                        while (si2.next()) |se2| {
+                            const k = parseU256Hex(se2.key_ptr.*) catch continue;
+                            const v = parseU256Hex(getJsonStr(se2.value_ptr.*) orelse continue) catch continue;
+                            sl.append(a, .{ .key = k, .value = v }) catch continue;
+                        }
+                    }
                 }
 
-                exp_list.append(a, .{ .address = addr2, .storage = sl.items }) catch continue;
+                exp_list.append(a, .{
+                    .address = addr2,
+                    .balance = balance,
+                    .nonce = nonce,
+                    .code = code,
+                    .storage = sl.items,
+                }) catch continue;
             }
         }
 
@@ -585,6 +598,7 @@ fn hexDigit(c: u8) !u8 {
 
 fn printDetail(stdout: anytype, detail: runner.FailureDetail) !void {
     if (detail.address != null and detail.storage_key != null and detail.expected != null and detail.actual != null) {
+        // Storage mismatch: addr  key=... expected=... actual=...
         const addr_fmt = runner.fmtAddress(detail.address.?);
         var key_buf: [68]u8 = undefined;
         const key_len = runner.fmtU256Bytes(detail.storage_key.?, &key_buf);
@@ -599,6 +613,23 @@ fn printDetail(stdout: anytype, detail: runner.FailureDetail) !void {
             exp_buf[0..exp_len],
             act_buf[0..act_len],
         });
+    } else if (detail.address != null and detail.expected != null and detail.actual != null) {
+        // Balance/nonce mismatch: addr  expected=... actual=...
+        const addr_fmt = runner.fmtAddress(detail.address.?);
+        var exp_buf: [68]u8 = undefined;
+        const exp_len = runner.fmtU256Bytes(detail.expected.?, &exp_buf);
+        var act_buf: [68]u8 = undefined;
+        const act_len = runner.fmtU256Bytes(detail.actual.?, &act_buf);
+        try stdout.print("      {s} at {s} expected={s} actual={s}\n", .{
+            detail.reason,
+            addr_fmt[0..12],
+            exp_buf[0..exp_len],
+            act_buf[0..act_len],
+        });
+    } else if (detail.address != null) {
+        // Code mismatch or other per-address failure
+        const addr_fmt = runner.fmtAddress(detail.address.?);
+        try stdout.print("      {s} at {s}\n", .{ detail.reason, addr_fmt[0..12] });
     } else if (detail.exec_result) |er| {
         if (detail.opcode) |op| {
             try stdout.print("      {s}: {s} (opcode 0x{x:0>2})\n", .{ detail.reason, @tagName(er), op });
