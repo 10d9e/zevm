@@ -573,8 +573,19 @@ pub const Host = struct {
         // 12. Code deposit gas: 200 per byte of deployed code
         const deposit_cost = gas_costs.G_CODEDEPOSIT * @as(u64, @intCast(deployed.len));
         if (sub_interp.gas.remaining < deposit_cost) {
-            js.checkpointRevert(checkpoint);
-            return CreateResult.failure();
+            if (primitives.isEnabledIn(spec_id, .homestead)) {
+                // Homestead+ (EIP-2): deposit OOG is a full failure — all gas consumed, state reverted.
+                js.checkpointRevert(checkpoint);
+                return CreateResult.failure();
+            } else {
+                // Frontier: code deposit OOG silently deploys an EMPTY contract (EIP-2 removed this).
+                // The state is committed (new account with empty code), and remaining gas is returned.
+                // This is the "leaving an empty contract" behavior that EIP-2 eliminated.
+                js.checkpointCommit();
+                return .{ .success = true, .is_revert = false, .address = new_addr,
+                           .gas_remaining = sub_interp.gas.remaining, .return_data = &[_]u8{},
+                           .gas_refunded = sub_interp.gas.refunded };
+            }
         }
         const gas_after_deposit = sub_interp.gas.remaining - deposit_cost;
 

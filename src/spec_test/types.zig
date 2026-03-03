@@ -59,6 +59,9 @@ pub const TestCase = struct {
     // EIP-2930 access list intrinsic gas counts
     access_list_addr_count: u32,
     access_list_slot_count: u32,
+    // true when the transaction JSON had an accessList/accessLists field (even if empty)
+    // Used to detect type-1 (EIP-2930) transactions so they can be rejected pre-Berlin.
+    has_access_list: bool,
     // EIP-2930 access list entries for pre-warming addresses and storage keys
     access_list: []const AccessListEntry,
     // EIP-7702 authorization list count (25000 per tuple intrinsic gas)

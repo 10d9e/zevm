@@ -266,18 +266,26 @@ pub const Validation = struct {
     pub fn calculateInitialGas(tx: *const context.TxEnv, spec: primitives.SpecId) u64 {
         var gas: u64 = TX_BASE_COST;
 
-        // CREATE adds extra base cost
-        if (tx.kind == .Create) {
+        // CREATE adds extra base cost (EIP-2, Homestead+).
+        // Frontier does NOT charge G_TXCREATE (32000) for CREATE transactions.
+        if (tx.kind == .Create and primitives.isEnabledIn(spec, .homestead)) {
             gas += TX_CREATE_COST;
         }
 
-        // Calldata costs: 4 per zero byte, 16 per non-zero byte
+        // Calldata costs:
+        //   4 gas per zero byte (all forks)
+        //   16 gas per nonzero byte (Istanbul+, EIP-2028)
+        //   68 gas per nonzero byte (pre-Istanbul: Frontier through Constantinople/Petersburg)
+        const calldata_nonzero_cost: u64 = if (primitives.isEnabledIn(spec, .istanbul))
+            CALLDATA_NONZERO_BYTE_COST // 16
+        else
+            68; // pre-EIP-2028 (Frontier through Petersburg)
         if (tx.data) |data| {
             for (data.items) |byte| {
                 if (byte == 0) {
                     gas += CALLDATA_ZERO_BYTE_COST;
                 } else {
-                    gas += CALLDATA_NONZERO_BYTE_COST;
+                    gas += calldata_nonzero_cost;
                 }
             }
         }

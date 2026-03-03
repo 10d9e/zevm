@@ -127,7 +127,7 @@ pub const MainnetHandler = struct {
 
         // EIP-2929: Pre-warm precompile addresses (precompiles are always warm at tx start).
         {
-            var addr_buf: [32]primitives.Address = undefined;
+            var addr_buf: [256]primitives.Address = undefined;
             var count: usize = 0;
             var it = evm.precompiles.precompiles.addresses.keyIterator();
             while (it.next()) |addr| {

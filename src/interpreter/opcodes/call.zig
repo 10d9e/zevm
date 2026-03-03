@@ -136,12 +136,29 @@ fn callImpl(
     // Base call cost (warm/cold + value transfer + new account + EIP-7702 delegation target access)
     const base_cost = gas_costs.getCallGasCost(spec, is_cold, transfers_value, account_exists) + delegation_gas;
 
-    // Apply 63/64 rule to determine forwarded gas (EIP-150).
+    // Determine forwarded gas (EIP-150 introduces 63/64 rule; pre-EIP-150 uses all remaining).
     const remaining = ctx.interpreter.gas.remaining;
     if (remaining < base_cost) { ctx.interpreter.halt(.out_of_gas); return; }
 
     const after_base = remaining - base_cost;
-    const max_forwarded = after_base - after_base / 64;
+
+    // Pre-EIP-150 (Frontier/Homestead): the caller must have gas_remaining >= base_cost + gas_val.
+    // If not, the CALL instruction itself causes the parent frame to OOG (unlike EIP-150+ where
+    // gas_val is capped at 63/64 of remaining and the sub-call gets less gas).
+    // EIP-150 (Tangerine Whistle) replaced this with the 63/64 forwarding rule.
+    if (!primitives.isEnabledIn(spec, .tangerine)) {
+        const gas_val_u64: u64 = if (gas_val > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas_val));
+        const total_cost = std.math.add(u64, base_cost, gas_val_u64) catch std.math.maxInt(u64);
+        if (remaining < total_cost) {
+            ctx.interpreter.halt(.out_of_gas); return;
+        }
+    }
+
+    // EIP-150: cap forwarded gas to 63/64 of remaining. Pre-EIP-150: forward up to all remaining.
+    const max_forwarded: u64 = if (primitives.isEnabledIn(spec, .tangerine))
+        after_base - after_base / 64
+    else
+        after_base;
 
     const forwarded: u64 = @min(
         if (gas_val > std.math.maxInt(u64)) max_forwarded else @as(u64, @intCast(gas_val)),
@@ -292,9 +309,13 @@ pub fn opCreate(ctx: *InstructionContext) void {
         if (!ctx.interpreter.gas.spend(word_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
 
-    // 63/64 rule: forward at most 63/64 of remaining gas
+    // EIP-150 (Tangerine Whistle): forward at most 63/64 of remaining gas.
+    // Pre-EIP-150 (Frontier/Homestead): forward all remaining gas.
     const remaining = ctx.interpreter.gas.remaining;
-    const forwarded = remaining - remaining / 64;
+    const forwarded: u64 = if (primitives.isEnabledIn(spec, .tangerine))
+        remaining - remaining / 64
+    else
+        remaining;
 
     const init_code: []const u8 = if (size_u > 0)
         ctx.interpreter.memory.buffer.items[off_u .. off_u + size_u]
@@ -363,8 +384,13 @@ pub fn opCreate2(ctx: *InstructionContext) void {
         if (!ctx.interpreter.gas.spend(word_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
 
+    // EIP-150 (Tangerine Whistle): forward at most 63/64 of remaining gas.
+    // Pre-EIP-150: forward all remaining gas (CREATE2 didn't exist then, but symmetric).
     const remaining = ctx.interpreter.gas.remaining;
-    const forwarded = remaining - remaining / 64;
+    const forwarded: u64 = if (primitives.isEnabledIn(spec, .tangerine))
+        remaining - remaining / 64
+    else
+        remaining;
 
     const init_code: []const u8 = if (size_u > 0)
         ctx.interpreter.memory.buffer.items[off_u .. off_u + size_u]

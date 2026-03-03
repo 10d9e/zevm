@@ -459,17 +459,33 @@ pub fn opSelfdestruct(ctx: *InstructionContext) void {
     // Dynamic gas costs
     var dyn_gas: u64 = 0;
 
-    // Berlin+: cold account access cost for target
+    // Berlin+: cold account access cost for target (EIP-2929)
     if (primitives.isEnabledIn(spec, .berlin) and result.is_cold) {
         dyn_gas += gas_costs.COLD_ACCOUNT_ACCESS;
     }
 
-    // Had value + target account is new/empty → pay new account creation cost
-    if (result.had_value and !result.target_exists) {
-        dyn_gas += 25000;
+    // G_NEWACCOUNT (25000) when the target account is new/empty:
+    //   EIP-150 (Tangerine Whistle) introduced G_NEWACCOUNT for SELFDESTRUCT.
+    //   Pre-EIP-150 (Frontier/Homestead): no G_NEWACCOUNT for SELFDESTRUCT (it was 0 gas total).
+    //   EIP-150 to pre-EIP-161: charged for ANY SELFDESTRUCT to a non-existent account.
+    //   EIP-161+ (Spurious Dragon+): only charged when value > 0 (had_value).
+    if (!result.target_exists and primitives.isEnabledIn(spec, .tangerine)) {
+        if (primitives.isEnabledIn(spec, .spurious_dragon)) {
+            if (result.had_value) dyn_gas += 25000;
+        } else {
+            dyn_gas += 25000;
+        }
     }
 
     if (!ctx.interpreter.gas.spend(dyn_gas)) { ctx.interpreter.halt(.out_of_gas); return; }
+
+    // Pre-London: SELFDESTRUCT gives a refund of R_SELFDESTRUCT (24000), but only on the
+    // FIRST selfdestruct of this account in the current transaction. Subsequent selfdestruct
+    // calls on the same already-destroyed account do not earn additional refunds.
+    // EIP-3529 (London) removed this refund entirely.
+    if (!primitives.isEnabledIn(spec, .london) and !result.previously_destroyed) {
+        ctx.interpreter.gas.refunded += gas_costs.R_SELFDESTRUCT;
+    }
 
     ctx.interpreter.halt(.selfdestruct);
 }

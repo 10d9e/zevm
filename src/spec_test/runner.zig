@@ -100,11 +100,16 @@ pub fn fmtU256Bytes(val: [32]u8, buf: *[68]u8) usize {
 }
 
 pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome {
-    if (!std.mem.eql(u8, tc.fork, "Osaka") and !std.mem.eql(u8, tc.fork, "Prague")) {
-        return .{ .result = .skip, .detail = .{ .reason = "unsupported fork" } };
-    }
-
-    const spec: primitives.SpecId = if (std.mem.eql(u8, tc.fork, "Prague")) .prague else .osaka;
+    // Map fixture fork names to SpecId.  Two fixture-specific aliases:
+    //   "ConstantinopleFix" is the fixture name for Petersburg (EIP-1716).
+    //   "Paris"             is the fixture name for the Merge (Paris) fork.
+    const spec: primitives.SpecId = blk: {
+        if (std.mem.eql(u8, tc.fork, "ConstantinopleFix")) break :blk .petersburg;
+        if (std.mem.eql(u8, tc.fork, "Paris")) break :blk .merge;
+        break :blk primitives.specIdFromString(tc.fork) catch {
+            return .{ .result = .skip, .detail = .{ .reason = "unknown fork" } };
+        };
+    };
 
     const tx_value = u256FromBeBytes(tc.value);
 
@@ -336,6 +341,39 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
     var precompiles = handler_mod.Precompiles.new(spec);
     var frame_stack = handler_mod.FrameStack.new();
     var evm = handler_mod.Evm.init(&ctx, null, &instructions, &precompiles, &frame_stack);
+
+    // ---------------------------------------------------------------------------
+    // Transaction type pre-validation: reject typed txs on unsupported forks
+    // (before full validate so we can use spec and tc fields directly)
+    // ---------------------------------------------------------------------------
+    // Type-2 (EIP-1559, maxPriorityFeePerGas present): only valid on London+
+    if (tc.max_priority_fee_per_gas != null and !primitives.isEnabledIn(spec, .london)) {
+        if (tc.expect_exception) {
+            return .{ .result = .pass, .detail = .{ .reason = "expected TYPE_2_TX_PRE_FORK" } };
+        }
+        return .{ .result = .fail, .detail = .{ .reason = "type-2 tx not rejected on pre-London fork" } };
+    }
+    // Type-1 (EIP-2930, accessList present): only valid on Berlin+
+    if (tc.has_access_list and !primitives.isEnabledIn(spec, .berlin)) {
+        if (tc.expect_exception) {
+            return .{ .result = .pass, .detail = .{ .reason = "expected TYPE_1_TX_PRE_FORK" } };
+        }
+        return .{ .result = .fail, .detail = .{ .reason = "type-1 tx not rejected on pre-Berlin fork" } };
+    }
+    // Type-3 (EIP-4844, blob tx): only valid on Cancun+
+    if ((tc.max_fee_per_blob_gas > 0 or tc.blob_versioned_hashes_count > 0) and !primitives.isEnabledIn(spec, .cancun)) {
+        if (tc.expect_exception) {
+            return .{ .result = .pass, .detail = .{ .reason = "expected TYPE_3_TX_PRE_FORK" } };
+        }
+        return .{ .result = .fail, .detail = .{ .reason = "type-3 tx not rejected on pre-Cancun fork" } };
+    }
+    // Type-4 (EIP-7702, set-code tx): only valid on Prague+
+    if (tc.has_authorization_list and !primitives.isEnabledIn(spec, .prague)) {
+        if (tc.expect_exception) {
+            return .{ .result = .pass, .detail = .{ .reason = "expected TYPE_4_TX_PRE_FORK" } };
+        }
+        return .{ .result = .fail, .detail = .{ .reason = "type-4 tx not rejected on pre-Prague fork" } };
+    }
 
     // ---------------------------------------------------------------------------
     // Validate: env checks, intrinsic gas, nonce, balance, blob fees

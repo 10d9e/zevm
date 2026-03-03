@@ -269,21 +269,16 @@ fn parseTestCases(
         }
     }
 
-    const fork_priority = [_][]const u8{ "Osaka", "Prague" };
-    var fork_name: []const u8 = undefined;
-    var post_fork: std.json.Value = undefined;
-    var found = false;
-    for (fork_priority) |fn_| {
-        if (post_val.object.get(fn_)) |pf| {
-            if (pf == .array) {
-                fork_name = fn_;
-                post_fork = pf;
-                found = true;
-                break;
-            }
-        }
-    }
-    if (!found) return;
+    // All fixture fork names ZEVM supports, newest to oldest.
+    // Each fork present in the post section produces its own set of test cases.
+    const all_forks = [_][]const u8{
+        "Osaka", "Prague", "Cancun", "Shanghai", "Paris",
+        "London", "Berlin", "Istanbul", "ConstantinopleFix",
+        "Constantinople", "Byzantium", "Homestead", "Frontier",
+    };
+    for (all_forks) |fork_name| {
+        const post_fork = post_val.object.get(fork_name) orelse continue;
+        if (post_fork != .array) continue;
 
     for (post_fork.array.items) |post_entry| {
         if (post_entry != .object) continue;
@@ -306,12 +301,20 @@ fn parseTestCases(
         var al_addr_count: u32 = 0;
         var al_slot_count: u32 = 0;
         var al_entries: std.ArrayList(types.AccessListEntry) = .{};
+        var has_access_list = false;
         {
             const al_opt: ?std.json.Value = blk: {
                 if (tx_val.object.get("accessLists")) |als| {
-                    if (als == .array and di < als.array.items.len) break :blk als.array.items[di];
+                    if (als == .array and di < als.array.items.len) {
+                        has_access_list = true;
+                        break :blk als.array.items[di];
+                    }
                 }
-                break :blk tx_val.object.get("accessList");
+                if (tx_val.object.get("accessList")) |al| {
+                    has_access_list = true;
+                    break :blk al;
+                }
+                break :blk null;
             };
             if (al_opt) |al| {
                 if (al == .array) {
@@ -454,6 +457,7 @@ fn parseTestCases(
             .max_priority_fee_per_gas = tx_max_priority_fee,
             .access_list_addr_count = al_addr_count,
             .access_list_slot_count = al_slot_count,
+            .has_access_list = has_access_list,
             .access_list = al_entries.items,
             .authorization_count = auth_count,
             .has_authorization_list = has_authorization_list,
@@ -466,7 +470,8 @@ fn parseTestCases(
             .expected_storage = exp_list.items,
             .expect_exception = expect_exception,
         });
-    }
+    } // end for (post_fork.array.items)
+    } // end for (all_forks)
 }
 
 // ---------------------------------------------------------------------------

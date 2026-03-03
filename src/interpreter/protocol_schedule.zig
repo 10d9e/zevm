@@ -150,15 +150,16 @@ fn makeFrontierTable() InstructionTable {
     // Environment: host-requiring opcodes
     table[bytecode_mod.ORIGIN] = entry(opcodes.opOrigin, gas_costs.G_BASE);
     table[bytecode_mod.GASPRICE] = entry(opcodes.opGasprice, gas_costs.G_BASE);
-    table[bytecode_mod.EXTCODESIZE] = entry(opcodes.opExtcodesize, 700);
-    table[bytecode_mod.EXTCODECOPY] = entry(opcodes.opExtcodecopy, 700);
+    // Frontier/Homestead gas (20 each); Tangerine Whistle (EIP-150) raises these to 700/700/400.
+    table[bytecode_mod.EXTCODESIZE] = entry(opcodes.opExtcodesize, 20);
+    table[bytecode_mod.EXTCODECOPY] = entry(opcodes.opExtcodecopy, 20);
     table[bytecode_mod.BLOCKHASH] = entry(opcodes.opBlockhash, 20);
     table[bytecode_mod.COINBASE] = entry(opcodes.opCoinbase, gas_costs.G_BASE);
     table[bytecode_mod.TIMESTAMP] = entry(opcodes.opTimestamp, gas_costs.G_BASE);
     table[bytecode_mod.NUMBER] = entry(opcodes.opNumber, gas_costs.G_BASE);
     table[bytecode_mod.DIFFICULTY] = entry(opcodes.opDifficulty, gas_costs.G_BASE);
     table[bytecode_mod.GASLIMIT] = entry(opcodes.opGaslimit, gas_costs.G_BASE);
-    table[bytecode_mod.BALANCE] = entry(opcodes.opBalance, 400);
+    table[bytecode_mod.BALANCE] = entry(opcodes.opBalance, 20);
 
     // Storage — Frontier gas (50); Tangerine reprices to 200, Istanbul to 800, Berlin to dynamic.
     table[bytecode_mod.SLOAD] = entry(opcodes.opSload, gas_costs.G_SLOAD_FRONTIER);
@@ -174,7 +175,8 @@ fn makeFrontierTable() InstructionTable {
     // System
     table[bytecode_mod.RETURN] = entry(opcodes.opReturn, 0);
     table[bytecode_mod.INVALID] = entry(opcodes.opInvalid, 0);
-    table[bytecode_mod.SELFDESTRUCT] = entry(opcodes.opSelfdestruct, gas_costs.G_SELFDESTRUCT);
+    // SELFDESTRUCT: static_gas=0 for Frontier/Homestead; EIP-150 (Tangerine) raises it to 5000.
+    table[bytecode_mod.SELFDESTRUCT] = entry(opcodes.opSelfdestruct, 0);
 
     // Calls (all-dynamic gas, static_gas=0)
     table[bytecode_mod.CALL] = entry(opcodes.opCall, 0);
@@ -198,6 +200,8 @@ fn applyTangerineChanges(table: *InstructionTable) void {
     table[bytecode_mod.EXTCODESIZE].static_gas = 700;
     table[bytecode_mod.EXTCODECOPY].static_gas = 700;
     table[bytecode_mod.BALANCE].static_gas = 400;
+    // EIP-150: SELFDESTRUCT raised from 0 to 5000
+    table[bytecode_mod.SELFDESTRUCT].static_gas = gas_costs.G_SELFDESTRUCT;
 }
 
 fn applyByzantiumChanges(table: *InstructionTable) void {

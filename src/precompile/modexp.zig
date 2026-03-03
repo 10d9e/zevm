@@ -91,17 +91,21 @@ fn byzantiumGasCalc(base_len: u64, exp_len: u64, mod_len: u64, exp_highp: primit
     const max_len = @max(@max(base_len, exp_len), mod_len);
     const iteration_count = calculateIterationCount(exp_len, exp_highp, 8);
 
+    // Use u128 for squaring to avoid overflow (max_len is u64, (u64_max)^2 fits in u128).
+    const x: u128 = @as(u128, max_len);
     var complexity: u128 = 0;
     if (max_len <= 64) {
-        complexity = max_len * max_len;
+        complexity = x * x;
     } else if (max_len <= 1024) {
-        complexity = (max_len * max_len) / 4 + 96 * max_len - 3072;
+        complexity = (x * x) / 4 + 96 * x - 3072;
     } else {
-        const x: u128 = max_len;
         complexity = (x * x) / 16 + 480 * x - 199680;
     }
 
-    return @intCast(complexity * iteration_count / 20);
+    // complexity * iteration_count may overflow u128 for huge inputs — saturate to maxInt(u64).
+    const product = std.math.mul(u128, complexity, @as(u128, iteration_count)) catch return std.math.maxInt(u64);
+    const result = product / 20;
+    return if (result > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(result));
 }
 
 /// Calculate gas cost for Berlin (EIP-2565)
@@ -184,7 +188,8 @@ fn runInner(
     // Extract exponent high part (first 32 bytes or exp_len, whichever is smaller)
     const exp_highp_len = @min(exp_len, 32);
     const data_start = HEADER_LENGTH;
-    const exp_start = data_start + base_len;
+    const exp_start = std.math.add(usize, data_start, base_len) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
 
     var exp_highp_bytes: [32]u8 = [_]u8{0} ** 32;
     if (input.len > exp_start) {
@@ -209,7 +214,10 @@ fn runInner(
     // EVM spec: reading calldata beyond its length gives zeros — zero-pad if input is short.
     // Guard against input shorter than the 96-byte header (already zero-extended in header above).
     const data_after_header = if (input.len > HEADER_LENGTH) input[HEADER_LENGTH..] else &[_]u8{};
-    const total_data_len = base_len + exp_len + mod_len;
+    const total_data_len = std.math.add(usize, base_len,
+        std.math.add(usize, exp_len, mod_len) catch
+            return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas }) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
     var data_buf: ?[]u8 = null;
     const data: []const u8 = blk: {
         if (data_after_header.len >= total_data_len) {
