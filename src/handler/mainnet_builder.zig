@@ -246,7 +246,7 @@ pub const MainnetHandler = struct {
                     .instruction_table = &evm.instructions.table,
                 };
                 const cr = host.create(tx.caller, tx.value, calldata, exec_gas, false, 0, true);
-                const status: main.ExecutionStatus = if (cr.success) .Success else .Revert;
+                const status: main.ExecutionStatus = if (cr.success) .Success else if (cr.is_revert) .Revert else .Halt;
                 var exec_result = main.ExecutionResult.new(status, exec_gas - cr.gas_remaining);
                 exec_result.return_data = cr.return_data;
                 return main.FrameResult.new(exec_result, cr.gas_remaining, cr.gas_refunded);
@@ -427,10 +427,15 @@ pub const MainnetHandler = struct {
             try js.balanceIncr(block.beneficiary, beneficiary_amount);
         }
 
-        // 6. Commit transaction state
+        // 6. Extract logs before commitTx destroys them (only on success — reverted state has no logs).
+        if (result.result.status == .Success) {
+            result.result.logs = js.takeLogs();
+        }
+
+        // 7. Commit transaction state
         js.commitTx();
 
-        // 7. Update ExecutionResult with final accounting
+        // 8. Update ExecutionResult with final accounting
         result.result.gas_used = final_cost;
         result.result.gas_refunded = capped_refund;
     }

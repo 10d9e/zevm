@@ -39,7 +39,7 @@ pub const ExecutionResult = struct {
     /// Gas refunded (final capped refund, set in postExecution)
     gas_refunded: u64,
     /// Logs emitted during execution
-    logs: std.ArrayList(Log),
+    logs: std.ArrayList(primitives.Log),
     /// Return data
     return_data: []const u8,
     /// Halt reason if execution halted
@@ -51,7 +51,7 @@ pub const ExecutionResult = struct {
             .status = status,
             .gas_used = gas_used,
             .gas_refunded = 0,
-            .logs = std.ArrayList(Log){ .items = &[_]Log{}, .capacity = 0 },
+            .logs = std.ArrayList(primitives.Log){},
             .return_data = &[_]u8{},
             .halt_reason = null,
         };
@@ -59,9 +59,13 @@ pub const ExecutionResult = struct {
 
     /// Deinitialize execution result
     pub fn deinit(self: *ExecutionResult) void {
-        // ArrayList deinit requires allocator in Zig 0.15.1
-        // For now, just clear the items
-        self.logs.items = &[_]Log{};
+        // Free topic slices (heap-allocated via page_allocator by the journal's LOG opcodes).
+        for (self.logs.items) |log| {
+            if (log.topics.len > 0) {
+                std.heap.page_allocator.free(@constCast(log.topics));
+            }
+        }
+        self.logs.deinit(std.heap.page_allocator);
     }
 };
 

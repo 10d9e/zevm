@@ -67,6 +67,9 @@ pub const SelfDestructLoadResult = struct {
 /// Result of a CREATE / CREATE2 operation
 pub const CreateResult = struct {
     success: bool,
+    /// True when the init-code explicitly executed REVERT (gas is returned, revert reason in
+    /// return_data). False for any other failure (OOG, bad opcode, pre-execution guard, etc.).
+    is_revert: bool,
     address: primitives.Address,
     gas_remaining: u64,
     return_data: []const u8,
@@ -75,12 +78,12 @@ pub const CreateResult = struct {
 
     /// Pre-execution failure: no sub-interpreter ran, return all forwarded gas.
     pub fn preExecFailure(gas_limit: u64) CreateResult {
-        return .{ .success = false, .address = [_]u8{0} ** 20, .gas_remaining = gas_limit, .return_data = &[_]u8{}, .gas_refunded = 0 };
+        return .{ .success = false, .is_revert = false, .address = [_]u8{0} ** 20, .gas_remaining = gas_limit, .return_data = &[_]u8{}, .gas_refunded = 0 };
     }
 
     /// Post-execution failure: sub-interpreter ran and consumed gas.
     pub fn failure() CreateResult {
-        return .{ .success = false, .address = [_]u8{0} ** 20, .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
+        return .{ .success = false, .is_revert = false, .address = [_]u8{0} ** 20, .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
     }
 };
 
@@ -541,6 +544,7 @@ pub const Host = struct {
             const gas_rem = if (sub_interp.result == .revert) sub_interp.gas.remaining else @as(u64, 0);
             return .{
                 .success = false,
+                .is_revert = (sub_interp.result == .revert),
                 .address = [_]u8{0} ** 20,
                 .gas_remaining = gas_rem,
                 // EVM semantics: CREATE propagates return data only on REVERT (not on OOG/error).
@@ -554,14 +558,14 @@ pub const Host = struct {
         if (deployed.len > MAX_CODE_SIZE) {
             // EIP-170: code too large → all remaining gas consumed (treated as error, not revert)
             js.checkpointRevert(checkpoint);
-            return .{ .success = false, .address = [_]u8{0} ** 20,
+            return .{ .success = false, .is_revert = false, .address = [_]u8{0} ** 20,
                        .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
         }
         // EIP-3541 (London+): reject code starting with 0xEF (all gas consumed)
         if (primitives.isEnabledIn(spec_id, .london)) {
             if (deployed.len > 0 and deployed[0] == 0xEF) {
                 js.checkpointRevert(checkpoint);
-                return .{ .success = false, .address = [_]u8{0} ** 20,
+                return .{ .success = false, .is_revert = false, .address = [_]u8{0} ** 20,
                            .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
             }
         }
@@ -588,6 +592,7 @@ pub const Host = struct {
         // EIP-211: After a successful CREATE, RETURNDATASIZE is zero.
         return .{
             .success = true,
+            .is_revert = false,
             .address = new_addr,
             .gas_remaining = gas_after_deposit,
             .return_data = &[_]u8{},

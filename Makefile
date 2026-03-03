@@ -88,6 +88,7 @@ help: ## Show this help message
 	@echo "  $(GREEN)install-deps$(NC)    - Install required dependencies"
 	@echo "  $(GREEN)check-deps$(NC)      - Check if dependencies are installed"
 	@echo "  $(GREEN)test$(NC)            - Run tests"
+	@echo "  $(GREEN)spec-tests$(NC)       - Download and run state test portion of execution-spec-tests"
 	@echo "  $(GREEN)clean$(NC)           - Clean build artifacts"
 	@echo ""
 	@echo "Build Options:"
