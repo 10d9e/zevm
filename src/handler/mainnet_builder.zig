@@ -117,7 +117,9 @@ pub const MainnetHandler = struct {
     /// Pre-execution phase — warm addresses and mark access-list items.
     ///
     /// Must run after validate() so the caller is already loaded and nonce bumped.
-    pub fn preExecution(evm: *main.Evm) !void {
+    /// Populates `initial_gas.auth_refund` with 12,500 (PER_EMPTY_ACCOUNT_COST/2) per valid
+    /// EIP-7702 authorization where the authority account is non-empty (existing); 0 for new accounts.
+    pub fn preExecution(evm: *main.Evm, initial_gas: *validation.InitialAndFloorGas) !void {
         const ctx = evm.getContext();
         const tx = &ctx.tx;
         const spec = ctx.cfg.spec;
@@ -173,6 +175,12 @@ pub const MainnetHandler = struct {
                                         auth.chain_id == @as(primitives.U256, ctx.cfg.chain_id);
                                     if (!chain_id_valid) continue;
 
+                                    // Per EIP-7702 (EELS reference): skip without warming the authority
+                                    // if auth.nonce == maxInt(u64). Applying the auth would overflow the
+                                    // nonce. EELS checks this BEFORE adding the account to accessed_addresses,
+                                    // so the account remains cold when execution later accesses it.
+                                    if (auth.nonce == std.math.maxInt(u64)) continue;
+
                                     // Load authority account (marks it warm; EIP-7702 spec: always access
                                     // the signer's account even if the authorization is ultimately invalid)
                                     const load_result = js.loadAccountMutOptionalCode(authority_addr, true, false) catch continue;
@@ -188,8 +196,17 @@ pub const MainnetHandler = struct {
                                     // Nonce must match exactly — skip if stale
                                     if (journaled.account.info.nonce != auth.nonce) continue;
 
-                                    // Per EIP-7702: skip if nonce is at maxInt(u64) — bumping would overflow.
-                                    if (journaled.account.info.nonce == std.math.maxInt(u64)) continue;
+                                    // EIP-7702 refund: the intrinsic cost charges PER_EMPTY_ACCOUNT_COST
+                                    // (25,000) for each authorization to cover possible new-account creation.
+                                    // If the authority already exists (non-empty), no new account is created,
+                                    // so refund PER_EMPTY_ACCOUNT_COST / 2 = 12,500.
+                                    // An account is non-empty if: nonce > 0, balance > 0, or code != empty.
+                                    const is_existing = journaled.account.info.nonce > 0 or
+                                        journaled.account.info.balance > 0 or
+                                        !std.mem.eql(u8, &journaled.account.info.code_hash, &primitives.KECCAK_EMPTY);
+                                    if (is_existing) {
+                                        initial_gas.auth_refund += 12500;
+                                    }
 
                                     // Bump authority nonce (journaled, revertable).
                                     journaled.account.info.nonce += 1;
@@ -247,8 +264,7 @@ pub const MainnetHandler = struct {
                     const del_addr = callee_code.eip7702.address;
                     if (ctx.journaled_state.loadAccountWithCode(del_addr)) |del_load| {
                         callee_code = if (del_load.data.info.code) |del_code|
-                            if (del_code.isEip7702()) bytecode.Bytecode.new() // no nested delegation
-                            else del_code
+                            del_code // per EIP-7702: execute target's code as-is (no recursion; 0xef → INVALID)
                         else
                             bytecode.Bytecode.new();
                     } else |_| {
@@ -271,6 +287,38 @@ pub const MainnetHandler = struct {
                             0,
                             0,
                         );
+                    }
+                }
+
+                // Precompile dispatch: if the top-level TX target is a precompile, run it directly.
+                // (Precompile dispatch in sub-calls is handled by Host.call(); this handles the case
+                // where the transaction itself targets a precompile address.)
+                if (evm.precompiles.get(target)) |precompile_fn| {
+                    const pc_result = precompile_fn.execute(calldata, exec_gas);
+                    switch (pc_result) {
+                        .success => |out| {
+                            if (out.reverted) {
+                                ctx.journaled_state.revertToSnapshot(call_checkpoint);
+                                return main.FrameResult.new(
+                                    main.ExecutionResult.new(.Revert, exec_gas),
+                                    0,
+                                    0,
+                                );
+                            }
+                            return main.FrameResult.new(
+                                main.ExecutionResult.new(.Success, out.gas_used),
+                                exec_gas - out.gas_used,
+                                0,
+                            );
+                        },
+                        .err => {
+                            ctx.journaled_state.revertToSnapshot(call_checkpoint);
+                            return main.FrameResult.new(
+                                main.ExecutionResult.new(.Fail, exec_gas),
+                                0,
+                                0,
+                            );
+                        },
                     }
                 }
 
@@ -314,17 +362,15 @@ pub const MainnetHandler = struct {
 
         const is_london = primitives.isEnabledIn(spec, .london);
 
-        // 1. EIP-3529: cap gas refund; discard refund counter on REVERT/Halt (EVM spec).
+        // 1. EIP-3529: discard execution (SSTORE) refund on REVERT/Halt/Fail.
+        //    EIP-7702 auth_refund always applies: it represents already-committed preExecution work.
         const exec_gas = tx.gas_limit - initial_gas.initial_gas;
         const gas_spent = exec_gas - result.gas_remaining;
-        const raw_refund: u64 = if (result.result.status == .Revert or result.result.status == .Halt)
-            0
-        else
-            @as(u64, @intCast(@max(0, result.gas_refunded)));
-        const quotient: u64 = if (is_london) 5 else 2;
-        var capped_refund = @min(raw_refund, gas_spent / quotient);
 
         // 2. Compute total gas spent (intrinsic + execution) and apply EIP-7623 floor (Prague+).
+        //
+        // total_gas_spent must be computed before the refund cap (which uses it as the cap basis).
+        // Per Yellow Paper: gas_used = gas_limit - gas_remaining_after_exec = intrinsic + gas_spent.
         //
         // The floor is compared against the TOTAL transaction cost (not just exec portion) because
         // EIP-7623 defines: floor_cost = TX_BASE_COST + tokens*10. The floor applies when
@@ -333,8 +379,23 @@ pub const MainnetHandler = struct {
         // Using exec-only arithmetic would cause underflow when floor_tokens*10 > exec_gas
         // (which is common: floor=40/nonzero-byte vs standard=16/nonzero-byte calldata gas).
         const total_gas_spent = initial_gas.initial_gas + gas_spent;
+
+        // SSTORE clearing refund (exec_refund) only on Success (state was not reverted).
+        // EIP-7702 auth_refund applies regardless of execution outcome because authorization
+        // processing is committed in preExecution regardless of whether execution succeeds.
+        const exec_refund: u64 = if (result.result.status == .Success)
+            @as(u64, @intCast(@max(0, result.gas_refunded)))
+        else
+            0;
+        const auth_refund = @as(u64, @intCast(@max(0, initial_gas.auth_refund)));
+        const raw_refund: u64 = exec_refund + auth_refund;
+        const quotient: u64 = if (is_london) 5 else 2;
+        // EIP-3529 refund cap: min(refund, gas_used / max_refund_quotient) where gas_used is
+        // the TOTAL gas consumed (intrinsic + execution), not just execution gas.
+        // Per Yellow Paper: g* = gas_limit - gas_remaining_after_exec = total_gas_spent.
+        var capped_refund = @min(raw_refund, total_gas_spent / quotient);
         var final_cost = total_gas_spent - capped_refund;
-        if (primitives.isEnabledIn(spec, .prague) and initial_gas.floor_gas > 0) {
+        if (primitives.isEnabledIn(spec, .prague) and !ctx.cfg.disable_eip7623 and initial_gas.floor_gas > 0) {
             // floor_total = TX_BASE_COST + floor_exec_gas (validated: gas_limit >= floor_total)
             const floor_total = 21000 + initial_gas.floor_gas;
             if (final_cost < floor_total) {
@@ -350,18 +411,21 @@ pub const MainnetHandler = struct {
         else
             tx.gas_price;
 
-        // 4. Reimburse caller: gas_returned = gas_limit - final_cost (always >= 0).
-        //    In the normal case (no floor): final_cost = initial_gas + gas_spent - capped_refund,
-        //    so gas_returned = exec_gas - gas_spent + capped_refund = gas_remaining + capped_refund.
-        //    In the floor case: gas_returned = gas_limit - floor_total.
+        // 4. Reimburse caller and pay beneficiary — skipped if fee charging is disabled
+        //    (e.g. eth_call simulation where no fee was deducted upfront).
         const gas_returned: u64 = tx.gas_limit - final_cost;
-        const reimburse_amount: primitives.U256 = @as(primitives.U256, effective_gas_price) * @as(primitives.U256, gas_returned);
-        try js.balanceIncr(tx.caller, reimburse_amount);
+        if (!ctx.cfg.disable_fee_charge) {
+            // Reimburse caller: gas_returned = gas_limit - final_cost (always >= 0).
+            //    Normal case (no floor): gas_returned = gas_remaining + capped_refund.
+            //    Floor case: gas_returned = gas_limit - floor_total.
+            const reimburse_amount: primitives.U256 = @as(primitives.U256, effective_gas_price) * @as(primitives.U256, gas_returned);
+            try js.balanceIncr(tx.caller, reimburse_amount);
 
-        // 5. Pay beneficiary (only tip portion post-London)
-        const coinbase_price: u128 = if (is_london) effective_gas_price -| basefee else effective_gas_price;
-        const beneficiary_amount: primitives.U256 = @as(primitives.U256, coinbase_price) * @as(primitives.U256, final_cost);
-        try js.balanceIncr(block.beneficiary, beneficiary_amount);
+            // Pay beneficiary (only tip portion post-London)
+            const coinbase_price: u128 = if (is_london) effective_gas_price -| basefee else effective_gas_price;
+            const beneficiary_amount: primitives.U256 = @as(primitives.U256, coinbase_price) * @as(primitives.U256, final_cost);
+            try js.balanceIncr(block.beneficiary, beneficiary_amount);
+        }
 
         // 6. Commit transaction state
         js.commitTx();
@@ -393,7 +457,7 @@ pub const ExecuteEvm = struct {
         };
 
         // Pre-execution (warm access lists)
-        MainnetHandler.preExecution(evm) catch |err| {
+        MainnetHandler.preExecution(evm, &initial_gas) catch |err| {
             MainnetHandler.catchError(evm, err);
             return main.ExecutionResult.new(.Fail, 0);
         };

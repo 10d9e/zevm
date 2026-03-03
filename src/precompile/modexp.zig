@@ -207,7 +207,8 @@ fn runInner(
 
     // Extract base, exponent, and modulus.
     // EVM spec: reading calldata beyond its length gives zeros — zero-pad if input is short.
-    const data_after_header = input[HEADER_LENGTH..];
+    // Guard against input shorter than the 96-byte header (already zero-extended in header above).
+    const data_after_header = if (input.len > HEADER_LENGTH) input[HEADER_LENGTH..] else &[_]u8{};
     const total_data_len = base_len + exp_len + mod_len;
     var data_buf: ?[]u8 = null;
     const data: []const u8 = blk: {
@@ -260,7 +261,9 @@ fn modexpIntoBuffer(base: []const u8, exponent: []const u8, modulus: []const u8,
 
         if (mod_val == 0) return;
 
-        var result: u64 = 1;
+        // Initialize result as 1 % mod_val to handle the case mod_val=1 (1%1=0)
+        // when exp=0 (loop never runs). Otherwise result=1 for mod_val>1.
+        var result: u64 = 1 % mod_val;
         var base_pow = base_val % mod_val;
         var exp_remaining = exp_val;
         // Use u128 intermediate to avoid u64 overflow in modular multiplication

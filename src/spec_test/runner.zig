@@ -352,7 +352,7 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
     // ---------------------------------------------------------------------------
     // Pre-execution: warm precompiles, coinbase, access list, EIP-7702 delegation
     // ---------------------------------------------------------------------------
-    MainnetHandler.preExecution(&evm) catch {
+    MainnetHandler.preExecution(&evm, &initial_gas) catch {
         if (tc.expect_exception) {
             return .{ .result = .pass, .detail = .{ .reason = "expected exception: preExecution" } };
         }
@@ -368,19 +368,6 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         }
         return .{ .result = .fail, .detail = .{ .reason = "unexpected execution error" } };
     };
-
-    // DEBUG: print gas accounting for balance-mismatch investigation
-    if (std.mem.indexOf(u8, tc.name, "a_x_above_p") != null) {
-        std.debug.print("DEBUG gas [{s}]: initial={d} gas_limit={d} exec_gas={d} remaining={d} refunded={d} status={s}\n", .{
-            tc.fork,
-            initial_gas.initial_gas,
-            ctx.tx.gas_limit,
-            ctx.tx.gas_limit - initial_gas.initial_gas,
-            frame_result.gas_remaining,
-            frame_result.gas_refunded,
-            @tagName(frame_result.result.status),
-        });
-    }
 
     // ---------------------------------------------------------------------------
     // Post-execution: gas refund, floor gas, reimburse caller, pay beneficiary, commit

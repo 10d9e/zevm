@@ -108,6 +108,12 @@ pub const BlobExcessGasAndPrice = struct {
 fn calculateBlobGasprice(excess_blob_gas: u64, base_fee_update_fraction: u64) u64 {
     // fake_exponential(factor=1, numerator=excess_blob_gas, denominator=base_fee_update_fraction)
     // Implements: https://eips.ethereum.org/EIPS/eip-4844#helpers
+    //
+    // Saturating arithmetic (+|=, *|) is used throughout to prevent u128 overflow panics.
+    // When excess_blob_gas/base_fee_update_fraction exceeds ~73 (reachable after sustained
+    // max-blob usage), intermediate products exceed u128 max. Saturation clamps to u128::MAX
+    // instead of panicking; the final @min caps the result at u64::MAX (correct: astronomically
+    // high excess blob gas → maximum possible blob gas price).
     const factor: u128 = 1;
     const numerator: u128 = excess_blob_gas;
     const denominator: u128 = base_fee_update_fraction;
@@ -115,10 +121,10 @@ fn calculateBlobGasprice(excess_blob_gas: u64, base_fee_update_fraction: u64) u6
     var output: u128 = 0;
     var numerator_accum: u128 = factor * denominator;
     while (numerator_accum > 0) {
-        output += numerator_accum;
-        numerator_accum = (numerator_accum * numerator) / (denominator * i);
+        output +|= numerator_accum;
+        numerator_accum = (numerator_accum *| numerator) / (denominator * i);
         i += 1;
-        if (i > 512) break; // safety: large excess_blob_gas converges quickly
+        if (i > 512) break; // safety bound; convergent series exits naturally before this
     }
     const result = output / denominator;
     return @intCast(@min(result, @as(u128, std.math.maxInt(u64))));

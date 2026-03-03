@@ -363,8 +363,6 @@ pub const Interpreter = struct {
     result: InstructionResult,
     extend: void,
     last_opcode: ?u8 = null,
-    /// Enable per-step gas tracing (debug only)
-    debug_trace: bool = false,
 
     pub fn new(
         memory: Memory,

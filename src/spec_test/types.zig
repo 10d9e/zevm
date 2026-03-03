@@ -32,7 +32,7 @@ pub const ExpectedAccount = struct {
 pub const AuthorizationEntry = struct {
     authority: [20]u8, // recovered signer address (authority)
     address: [20]u8,   // delegation target (what the authority's code will point to)
-    chain_id: u64,     // 0 = any chain, 1 = mainnet; non-matching = invalid entry
+    chain_id: u64,     // 0 = any chain, 1 = mainnet; non-matching = invalid entry; maxInt(u64) = overflow (invalid)
     nonce: u64,        // must match authority's current nonce to be valid
 };
 

@@ -268,15 +268,18 @@ pub const Host = struct {
         if (self.precompiles) |pcs| {
             if (pcs.get(inputs.callee)) |pc| {
                 const checkpoint = self.ctx.journaled_state.getCheckpoint();
-                // Value transfer (target == callee for normal CALL)
-                if (inputs.value > 0) {
+                // Value transfer (target == callee for normal CALL).
+                // Per EVM spec: if value transfer fails (insufficient balance), no code ran,
+                // so all forwarded gas is returned to caller (preExecFailure, not failure).
+                // DELEGATECALL inherits msg.value but does NOT transfer ETH.
+                if (inputs.value > 0 and inputs.scheme != .delegatecall) {
                     const xfer_err = self.ctx.journaled_state.transfer(inputs.caller, inputs.target, inputs.value) catch {
                         self.ctx.journaled_state.checkpointRevert(checkpoint);
-                        return CallResult.failure(inputs.gas_limit);
+                        return CallResult.preExecFailure(inputs.gas_limit);
                     };
                     if (xfer_err != null) {
                         self.ctx.journaled_state.checkpointRevert(checkpoint);
-                        return CallResult.failure(inputs.gas_limit);
+                        return CallResult.preExecFailure(inputs.gas_limit);
                     }
                 }
                 const pc_result = pc.execute(inputs.data, inputs.gas_limit);
@@ -321,8 +324,7 @@ pub const Host = struct {
                 else
                     gas_costs.WARM_ACCOUNT_ACCESS;
                 code = if (del_load.data.info.code) |del_code|
-                    if (del_code.isEip7702()) bytecode_mod.Bytecode.new() // no recursive delegation
-                    else del_code
+                    del_code // per EIP-7702: execute target's code as-is (no recursion; 0xef → INVALID)
                 else
                     bytecode_mod.Bytecode.new();
             } else |_| {
@@ -400,7 +402,9 @@ pub const Host = struct {
 
         return CallResult{
             .success = result.isSuccess(),
-            .return_data = sub_interp.return_data.data,
+            // EVM semantics: return data is only populated on SUCCESS or REVERT.
+            // Any other failure (OOG, stack overflow, bad opcode, etc.) returns empty data.
+            .return_data = if (result.isSuccess() or result == .revert) sub_interp.return_data.data else &[_]u8{},
             .gas_used = gas_used,
             .gas_remaining = gas_remaining,
             .gas_refunded = gas_refunded,
@@ -437,6 +441,15 @@ pub const Host = struct {
             if (init_code.len > MAX_INITCODE_SIZE) return CreateResult.preExecFailure(gas_limit);
         }
 
+        // 2.5. Early balance check: if value > 0, verify caller has sufficient balance BEFORE
+        //      bumping the nonce. Per go-ethereum and the Yellow Paper, nonce is NOT incremented
+        //      when CREATE fails due to insufficient balance (unlike EIP-161/code collision which
+        //      happens after the nonce bump and does not revert it).
+        if (value > 0) {
+            const acct = js.inner.evm_state.getPtr(caller) orelse return CreateResult.preExecFailure(gas_limit);
+            if (acct.info.balance < value) return CreateResult.preExecFailure(gas_limit);
+        }
+
         // 3. Manage caller nonce BEFORE checkpoint (nonce bump is never reverted by CREATE failure).
         //    skip_nonce_bump=true means tx validation already bumped the nonce from N to N+1;
         //    we still need N for address derivation.
@@ -465,24 +478,27 @@ pub const Host = struct {
         _ = js.loadAccount(new_addr) catch return CreateResult.preExecFailure(gas_limit);
 
         // EIP-7610: CREATE fails if target address has non-empty storage in the DB.
+        // Per EIP-7610, storage collision consumes ALL forwarded gas (like OOG), not a preExecFailure
+        // that returns gas. Return gas_remaining=0 so the 63/64 rule keeps only 1/64 for the caller.
         // Check loaded storage in evm_state (from prior SLOAD/SSTORE) and in DB (pre-inserted).
         if (js.inner.evm_state.get(new_addr)) |acct| {
             var slot_it = acct.storage.valueIterator();
             while (slot_it.next()) |slot| {
-                if (slot.presentValue() != 0) return CreateResult.preExecFailure(gas_limit);
+                if (slot.presentValue() != 0) return CreateResult.preExecFailure(0);
             }
         }
         {
             var db_it = js.database.storage_map.iterator();
             while (db_it.next()) |entry| {
                 if (std.mem.eql(u8, &entry.key_ptr.@"0", &new_addr) and entry.value_ptr.* != 0)
-                    return CreateResult.preExecFailure(gas_limit);
+                    return CreateResult.preExecFailure(0);
             }
         }
 
         // 6. Create account checkpoint: collision check, value transfer, set nonce=1 (EIP-161)
+        // EIP-7610: nonce/code collision consumes all forwarded gas (like OOG), same as storage collision.
         const checkpoint = js.createAccountCheckpoint(caller, new_addr, value, spec_id) catch {
-            return CreateResult.preExecFailure(gas_limit);
+            return CreateResult.preExecFailure(0);
         };
 
         // 7. Build and run init-code sub-interpreter (heap-allocated; see call() comment above).
@@ -527,7 +543,8 @@ pub const Host = struct {
                 .success = false,
                 .address = [_]u8{0} ** 20,
                 .gas_remaining = gas_rem,
-                .return_data = sub_interp.return_data.data,
+                // EVM semantics: CREATE propagates return data only on REVERT (not on OOG/error).
+                .return_data = if (sub_interp.result == .revert) sub_interp.return_data.data else &[_]u8{},
                 .gas_refunded = 0,
             };
         }

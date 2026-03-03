@@ -20,12 +20,15 @@ pub fn opKeccak256(ctx: *InstructionContext) void {
     const offset = stack.peekUnsafe(0);
     const length = stack.peekUnsafe(1);
 
-    if (offset > std.math.maxInt(usize) or length > std.math.maxInt(usize)) {
+    if (length > std.math.maxInt(usize)) {
         ctx.interpreter.halt(.memory_limit_oog); return;
     }
-
-    const offset_usize: usize = @intCast(offset);
     const length_usize: usize = @intCast(length);
+    // When length == 0, offset is unused — do not halt on huge offset.
+    if (length_usize > 0 and offset > std.math.maxInt(usize)) {
+        ctx.interpreter.halt(.memory_limit_oog); return;
+    }
+    const offset_usize: usize = if (length_usize == 0) 0 else @intCast(offset);
 
     // Dynamic: word cost
     const num_words: u64 = (length_usize + 31) / 32;

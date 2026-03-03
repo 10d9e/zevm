@@ -362,12 +362,15 @@ pub fn makeLogFn(comptime n: u8) *const fn (ctx: *InstructionContext) void {
             const offset = stack.peekUnsafe(0);
             const size = stack.peekUnsafe(1);
 
-            if (offset > std.math.maxInt(usize) or size > std.math.maxInt(usize)) {
+            // size=0 means no memory access; offset is irrelevant in that case.
+            if (size > std.math.maxInt(usize)) {
                 ctx.interpreter.halt(.memory_limit_oog); return;
             }
-
-            const offset_u: usize = @intCast(offset);
             const size_u: usize = @intCast(size);
+            if (size_u > 0 and offset > std.math.maxInt(usize)) {
+                ctx.interpreter.halt(.memory_limit_oog); return;
+            }
+            const offset_u: usize = if (size_u == 0) 0 else @intCast(offset);
 
             // Dynamic: data cost + topic cost
             const data_cost: u64 = gas_costs.G_LOGDATA * @as(u64, @intCast(size_u));

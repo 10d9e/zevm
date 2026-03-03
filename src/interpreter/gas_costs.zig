@@ -32,10 +32,12 @@ pub const G_SLOAD_ISTANBUL = 800;  // Istanbul (EIP-1884) SLOAD gas
 pub const G_SLOAD_BERLIN_COLD = 2100;
 pub const G_SLOAD_BERLIN_WARM = 100;
 
-// SSTORE costs (EIP-2200, EIP-2929)
+// SSTORE costs (EIP-2200, EIP-2929, EIP-3529)
 pub const SSTORE_SET = 20000;
 pub const SSTORE_RESET = 5000;
-pub const SSTORE_CLEARS_SCHEDULE = 15000; // Refund for clearing storage
+pub const SSTORE_CLEARS_SCHEDULE = 15000; // Istanbul refund for clearing storage
+// EIP-3529 (London): R_sclear reduced from 15000 → 4800 = SSTORE_RESET_GAS + ACCESS_LIST_STORAGE_KEY_COST (2900+1900)
+pub const SSTORE_CLEARS_SCHEDULE_LONDON = 4800;
 
 // Create costs
 pub const G_CREATE = 32000;
@@ -116,6 +118,16 @@ pub const SstoreGas = struct {
     gas_refund: i64,
 };
 
+/// Returns the fork-appropriate SSTORE clearing refund (R_sclear):
+///   - London+ (EIP-3529): 4800 = SSTORE_RESET_GAS(2900) + ACCESS_LIST_STORAGE_KEY_COST(1900)
+///   - Berlin (EIP-2929, pre-London): 12900 = 15000 - COLD_SLOAD_COST(2100)
+///   - Istanbul (pre-Berlin): 15000
+fn sstoreClearsRefund(spec: primitives.SpecId) i64 {
+    if (primitives.isEnabledIn(spec, .london)) return SSTORE_CLEARS_SCHEDULE_LONDON;
+    if (primitives.isEnabledIn(spec, .berlin)) return @as(i64, SSTORE_CLEARS_SCHEDULE) - @as(i64, COLD_SLOAD);
+    return SSTORE_CLEARS_SCHEDULE;
+}
+
 // Calculate SSTORE gas cost based on EIP-2200 and EIP-2929
 pub fn getSstoreCost(
     spec: primitives.SpecId,
@@ -149,6 +161,9 @@ pub fn getSstoreCost(
     // double-counting when cold_cost is separately added. Pre-Berlin uses 5000.
     const sstore_reset_cost: u64 = if (primitives.isEnabledIn(spec, .berlin)) SSTORE_RESET - COLD_SLOAD else SSTORE_RESET;
 
+    // Fork-appropriate R_sclear: 4800 (London+), 12900 (Berlin), 15000 (Istanbul)
+    const clears_refund = sstoreClearsRefund(spec);
+
     if (current == new) {
         // No change
         return .{ .gas_cost = WARM_SLOAD + cold_cost, .gas_refund = 0 };
@@ -162,12 +177,8 @@ pub fn getSstoreCost(
         } else {
             // Modifying non-zero value
             if (new == 0) {
-                // Clearing storage - provide refund
-                const refund = if (primitives.isEnabledIn(spec, .london))
-                    @as(i64, SSTORE_CLEARS_SCHEDULE) - @as(i64, COLD_SLOAD)
-                else
-                    @as(i64, SSTORE_CLEARS_SCHEDULE);
-                return .{ .gas_cost = sstore_reset_cost + cold_cost, .gas_refund = refund };
+                // Clearing storage - provide refund (R_sclear)
+                return .{ .gas_cost = sstore_reset_cost + cold_cost, .gas_refund = clears_refund };
             } else {
                 // Non-zero to non-zero
                 return .{ .gas_cost = sstore_reset_cost + cold_cost, .gas_refund = 0 };
@@ -180,11 +191,11 @@ pub fn getSstoreCost(
 
     if (original != 0) {
         if (current == 0) {
-            // Previously cleared, now setting
-            refund -= SSTORE_CLEARS_SCHEDULE;
+            // Previously cleared, now setting — undo previous R_sclear refund
+            refund -= clears_refund;
         } else if (new == 0) {
-            // Now clearing
-            refund += SSTORE_CLEARS_SCHEDULE;
+            // Now clearing — earn R_sclear refund
+            refund += clears_refund;
         }
     }
 

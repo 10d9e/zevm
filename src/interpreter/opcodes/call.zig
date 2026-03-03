@@ -279,9 +279,7 @@ pub fn opCreate(ctx: *InstructionContext) void {
         if (!expandMemory(ctx, create_end)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
 
-    // EIP-3860 (Shanghai+): oversized initcode causes exceptional halt in calling frame (not push-0).
-    // Per EIP-3860 spec: "If len(initcode) > MAX_INITCODE_SIZE, raise out-of-gas exception."
-    // This aborts the current frame, so the enclosing CALL sees a failure (returns 0).
+    // EIP-3860 (Shanghai+): oversized initcode causes exceptional halt in calling frame.
     if (primitives.isEnabledIn(spec, .shanghai)) {
         if (size_u > 49152) { // MAX_INITCODE_SIZE = 2 * 24576
             ctx.interpreter.halt(.out_of_gas); return;
@@ -347,8 +345,7 @@ pub fn opCreate2(ctx: *InstructionContext) void {
         if (!expandMemory(ctx, create2_end)) { ctx.interpreter.halt(.out_of_gas); return; }
     }
 
-    // EIP-3860 (Shanghai+): oversized initcode causes exceptional halt in calling frame (not push-0).
-    // Per EIP-3860 spec: "If len(initcode) > MAX_INITCODE_SIZE, raise out-of-gas exception."
+    // EIP-3860 (Shanghai+): oversized initcode causes exceptional halt in calling frame.
     if (primitives.isEnabledIn(spec, .shanghai)) {
         if (size_u > 49152) { // MAX_INITCODE_SIZE = 2 * 24576
             ctx.interpreter.halt(.out_of_gas); return;

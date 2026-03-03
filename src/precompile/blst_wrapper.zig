@@ -439,47 +439,55 @@ pub fn pairingCheck(pairs: []const struct { g1: [96]u8, g2: [192]u8 }) !bool {
     var active_count: usize = 0;
 
     for (pairs) |pair| {
-        // Skip pairs where either point is infinity (they contribute 1 to product)
-        if (std.mem.eql(u8, &pair.g1, &zero96) or std.mem.eql(u8, &pair.g2, &zero192)) continue;
+        const g1_is_inf = std.mem.eql(u8, &pair.g1, &zero96);
+        const g2_is_inf = std.mem.eql(u8, &pair.g2, &zero192);
 
-        const i = active_count;
+        // EIP-2537: ALL non-infinity points must be validated, even when the paired
+        // point is infinity. Infinity (all-zeros) is valid without curve checks.
+        // Only skip adding to the Miller loop if a point is infinity.
 
-        // EIP-2537: G1 field elements must be canonical (0 <= x < p)
-        if (!isFpCanonical(pair.g1[0..48]) or !isFpCanonical(pair.g1[48..96])) {
-            return error.NonCanonicalFieldElement;
+        var g1_affine: c.blst_p1_affine = undefined;
+        var g2_affine: c.blst_p2_affine = undefined;
+
+        if (!g1_is_inf) {
+            // EIP-2537: G1 field elements must be canonical (0 <= x < p)
+            if (!isFpCanonical(pair.g1[0..48]) or !isFpCanonical(pair.g1[48..96])) {
+                return error.NonCanonicalFieldElement;
+            }
+            var fp_x: c.blst_fp = undefined;
+            var fp_y: c.blst_fp = undefined;
+            c.blst_fp_from_bendian(&fp_x, pair.g1[0..48]);
+            c.blst_fp_from_bendian(&fp_y, pair.g1[48..96]);
+            g1_affine.x = fp_x;
+            g1_affine.y = fp_y;
+            if (!c.blst_p1_affine_on_curve(&g1_affine) or !c.blst_p1_affine_in_g1(&g1_affine)) {
+                return error.InvalidG1Point;
+            }
         }
 
-        // Parse G1 point
-        var fp_x: c.blst_fp = undefined;
-        var fp_y: c.blst_fp = undefined;
-        c.blst_fp_from_bendian(&fp_x, pair.g1[0..48]);
-        c.blst_fp_from_bendian(&fp_y, pair.g1[48..96]);
-        g1_points[i].x = fp_x;
-        g1_points[i].y = fp_y;
-
-        // Pairing requires both G1 and G2 to be in their respective subgroups
-        if (!c.blst_p1_affine_on_curve(&g1_points[i]) or !c.blst_p1_affine_in_g1(&g1_points[i])) {
-            return error.InvalidG1Point;
+        if (!g2_is_inf) {
+            // EIP-2537: G2 field elements must be canonical (0 <= x < p)
+            if (!isFpCanonical(pair.g2[0..48]) or !isFpCanonical(pair.g2[48..96]) or
+                !isFpCanonical(pair.g2[96..144]) or !isFpCanonical(pair.g2[144..192]))
+            {
+                return error.NonCanonicalFieldElement;
+            }
+            // Parse G2 point — direct mapping (no swap)
+            c.blst_fp_from_bendian(&g2_affine.x.fp[0], pair.g2[0..48]);
+            c.blst_fp_from_bendian(&g2_affine.x.fp[1], pair.g2[48..96]);
+            c.blst_fp_from_bendian(&g2_affine.y.fp[0], pair.g2[96..144]);
+            c.blst_fp_from_bendian(&g2_affine.y.fp[1], pair.g2[144..192]);
+            if (!c.blst_p2_affine_on_curve(&g2_affine) or !c.blst_p2_affine_in_g2(&g2_affine)) {
+                return error.InvalidG2Point;
+            }
         }
 
-        // EIP-2537: G2 field elements must be canonical (0 <= x < p)
-        if (!isFpCanonical(pair.g2[0..48]) or !isFpCanonical(pair.g2[48..96]) or
-            !isFpCanonical(pair.g2[96..144]) or !isFpCanonical(pair.g2[144..192]))
-        {
-            return error.NonCanonicalFieldElement;
+        // Only add to Miller loop if neither point is infinity
+        if (!g1_is_inf and !g2_is_inf) {
+            g1_points[active_count] = g1_affine;
+            g2_points[active_count] = g2_affine;
+            active_count += 1;
         }
-
-        // Parse G2 point — direct mapping (no swap)
-        c.blst_fp_from_bendian(&g2_points[i].x.fp[0], pair.g2[0..48]);
-        c.blst_fp_from_bendian(&g2_points[i].x.fp[1], pair.g2[48..96]);
-        c.blst_fp_from_bendian(&g2_points[i].y.fp[0], pair.g2[96..144]);
-        c.blst_fp_from_bendian(&g2_points[i].y.fp[1], pair.g2[144..192]);
-
-        if (!c.blst_p2_affine_on_curve(&g2_points[i]) or !c.blst_p2_affine_in_g2(&g2_points[i])) {
-            return error.InvalidG2Point;
-        }
-
-        active_count += 1;
     }
 
     // If all pairs were infinity, result is 1 (valid)

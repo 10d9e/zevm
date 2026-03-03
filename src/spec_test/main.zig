@@ -269,7 +269,6 @@ fn parseTestCases(
         }
     }
 
-    // Prefer Osaka, fall back to Prague
     const fork_priority = [_][]const u8{ "Osaka", "Prague" };
     var fork_name: []const u8 = undefined;
     var post_fork: std.json.Value = undefined;
@@ -358,7 +357,9 @@ fn parseTestCases(
                     const signer_addr = parseAddress(signer_str) catch continue;
                     const delegate_str = getStr(entry.object, "address") orelse continue;
                     const delegate_addr = parseAddress(delegate_str) catch continue;
-                    const chain_id = parseU64Hex(getStr(entry.object, "chainId") orelse "0x0") catch 0;
+                    // Use maxInt(u64) as a sentinel for chain IDs that overflow u64 (e.g. 2^256-1).
+                    // maxInt(u64) != 0 (any chain) and != mainnet, so it's always treated as invalid.
+                    const chain_id = parseU64Hex(getStr(entry.object, "chainId") orelse "0x0") catch std.math.maxInt(u64);
                     const entry_nonce = parseU64Hex(getStr(entry.object, "nonce") orelse "0x0") catch 0;
                     auth_entries.append(a, .{
                         .authority = signer_addr,

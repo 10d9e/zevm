@@ -106,6 +106,13 @@ pub const JournalEntry = union(enum) {
                     }
                     account.info.balance = data.balance;
                 }
+                // Restore the target account's balance: the selfdestruct transferred
+                // data.balance wei from source to target; undo that transfer on revert.
+                if (!std.mem.eql(u8, &data.address, &data.target)) {
+                    if (evm_state.getPtr(data.target)) |target_account| {
+                        target_account.info.balance -= data.balance;
+                    }
+                }
             },
             .BalanceChanged => |data| {
                 if (evm_state.getPtr(data.address)) |account| {

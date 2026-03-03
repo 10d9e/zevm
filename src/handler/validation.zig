@@ -69,9 +69,11 @@ pub const Validation = struct {
         }
 
         // EIP-1559: priority fee must not exceed max fee per gas
-        if (tx.gas_priority_fee) |priority_fee| {
-            if (priority_fee > tx.gas_price) {
-                return ValidationError.PriorityFeeGreaterThanMaxFee;
+        if (!cfg.disable_priority_fee_check) {
+            if (tx.gas_priority_fee) |priority_fee| {
+                if (priority_fee > tx.gas_price) {
+                    return ValidationError.PriorityFeeGreaterThanMaxFee;
+                }
             }
         }
     }
@@ -105,8 +107,9 @@ pub const Validation = struct {
         // Calculate initial gas cost
         const initial_gas = calculateInitialGas(tx, spec);
 
-        // Calculate floor gas exec-portion (EIP-7623: tokens * 10, only calldata tokens)
-        const floor_gas = calculateFloorGas(tx, spec);
+        // Calculate floor gas exec-portion (EIP-7623: tokens * 10, only calldata tokens).
+        // Returns 0 if EIP-7623 is disabled via cfg flag.
+        const floor_gas = if (!ctx.cfg.disable_eip7623) calculateFloorGas(tx, spec) else 0;
 
         // Validate gas limit covers intrinsic gas
         if (tx.gas_limit < initial_gas) {
@@ -115,6 +118,7 @@ pub const Validation = struct {
 
         // EIP-7623 (Prague+): gas_limit must also cover the floor (21000 base + floor exec gas).
         // floor_gas is the exec-portion only; the 21000 base is the fixed floor minimum.
+        // Skipped if disable_eip7623 is set (floor_gas will be 0 in that case).
         if (primitives.isEnabledIn(spec, .prague)) {
             if (floor_gas > 0 and tx.gas_limit < TX_BASE_COST + floor_gas) {
                 return ValidationError.InsufficientGas;
@@ -213,7 +217,12 @@ pub const Validation = struct {
             return ValidationError.BlobFeeOverflow;
         };
         if (account_info.balance < max_cost) {
-            return ValidationError.InsufficientBalance;
+            if (!cfg.disable_balance_check) {
+                return ValidationError.InsufficientBalance;
+            }
+            // When balance check is disabled (e.g. eth_call simulation), grant the caller
+            // enough balance so execution does not fail due to insufficient funds.
+            account_info.balance = max_cost;
         }
 
         // Validate base fee if enabled (EIP-1559)
@@ -232,7 +241,10 @@ pub const Validation = struct {
 
         // Deduct effective gas fee + blob fee from caller balance upfront.
         // (Value transfer is handled in executeFrame, not here.)
-        account_info.balance = old_balance - effective_gas_fee - blob_fee;
+        // Skip if fee charging is disabled (e.g. eth_call on OP-chains where basefee=0 is insufficient).
+        if (!cfg.disable_fee_charge) {
+            account_info.balance = old_balance - effective_gas_fee - blob_fee;
+        }
 
         // Bump nonce
         account_info.nonce += 1;
@@ -249,7 +261,7 @@ pub const Validation = struct {
     /// + 32,000 for CREATE transactions
     /// + 4 per zero calldata byte, 16 per non-zero calldata byte
     /// + 2,400 per access-list address, 1,900 per access-list storage slot
-    /// + 12,500 per EIP-7702 authorization list entry (Prague+)
+    /// + 25,000 per EIP-7702 authorization list entry (PER_EMPTY_ACCOUNT_COST, Prague+)
     /// + GAS_PER_BLOB per EIP-4844 blob hash
     pub fn calculateInitialGas(tx: *const context.TxEnv, spec: primitives.SpecId) u64 {
         var gas: u64 = TX_BASE_COST;
@@ -390,6 +402,10 @@ pub const InitialAndFloorGas = struct {
     initial_gas: u64,
     /// EIP-7623 floor gas requirement
     floor_gas: u64,
+    /// EIP-7702: gas refund accumulated during authorization list processing (preExecution).
+    /// 25,000 (PER_EMPTY_ACCOUNT_COST) added for each valid authorization that sets code.
+    /// Applied in postExecution with the standard 1/5 cap against total gas used.
+    auth_refund: i64 = 0,
 };
 
 /// Validation errors
