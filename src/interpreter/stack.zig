@@ -5,16 +5,23 @@ const primitives = @import("primitives");
 pub const STACK_LIMIT: usize = 1024;
 
 /// EVM stack with STACK_LIMIT capacity of words.
-/// Uses a fixed-size array with no heap allocation.
+/// Heap-allocates backing storage so Interpreter can live on the native call stack.
 pub const Stack = struct {
-    /// The underlying data of the stack.
-    data: [STACK_LIMIT]primitives.U256 = undefined,
+    /// Heap-allocated backing store (length = STACK_LIMIT).
+    data: []primitives.U256,
     /// Current number of items on the stack.
     length: usize = 0,
 
-    /// Create a new stack
+    /// Create a new stack (allocates STACK_LIMIT * 32 bytes on the heap).
     pub fn new() Stack {
-        return Stack{};
+        const backing = std.heap.c_allocator.alloc(primitives.U256, STACK_LIMIT) catch
+            @panic("failed to allocate EVM stack");
+        return Stack{ .data = backing, .length = 0 };
+    }
+
+    /// Free the backing allocation.
+    pub fn deinit(self: *Stack) void {
+        std.heap.c_allocator.free(self.data);
     }
 
     /// Get the length of the stack
@@ -41,7 +48,7 @@ pub const Stack = struct {
 
     /// Check if the stack has space for n more items
     pub fn hasSpace(self: *const Stack, n: usize) bool {
-        return self.length + n <= STACK_LIMIT;
+        return self.length + n <= self.data.len;
     }
 
     // --- Safe methods (with bounds checks) ---
@@ -223,6 +230,7 @@ const U = primitives.U256;
 
 test "push and pop" {
     var stack = Stack.new();
+    defer stack.deinit();
     try expectEqual(@as(usize, 0), stack.len());
 
     try stack.push(@as(U, 1));
@@ -234,6 +242,7 @@ test "push and pop" {
 
 test "push overflow" {
     var stack = Stack.new();
+    defer stack.deinit();
     for (0..STACK_LIMIT) |i| {
         try stack.push(@as(U, @intCast(i)));
     }
@@ -243,11 +252,13 @@ test "push overflow" {
 
 test "pop underflow" {
     var stack = Stack.new();
+    defer stack.deinit();
     try expectEqual(@as(?U, null), stack.pop());
 }
 
 test "peek" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 42));
     try expectEqual(@as(U, 42), stack.peek().?);
     try expectEqual(@as(usize, 1), stack.len());
@@ -255,11 +266,13 @@ test "peek" {
 
 test "peek empty" {
     var stack = Stack.new();
+    defer stack.deinit();
     try expectEqual(@as(?U, null), stack.peek());
 }
 
 test "peekAt" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 10));
     try stack.push(@as(U, 20));
     try stack.push(@as(U, 30));
@@ -270,6 +283,7 @@ test "peekAt" {
 
 test "peekAt out of bounds" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 1));
     try expectEqual(@as(?U, null), stack.peekAt(1));
     try expectEqual(@as(?U, null), stack.peekAt(100));
@@ -277,6 +291,7 @@ test "peekAt out of bounds" {
 
 test "popN" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 10));
     try stack.push(@as(U, 20));
     try stack.push(@as(U, 30));
@@ -288,6 +303,7 @@ test "popN" {
 
 test "popN underflow" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 1));
     try stack.push(@as(U, 2));
     try stack.push(@as(U, 3));
@@ -297,6 +313,7 @@ test "popN underflow" {
 
 test "exchange" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 10));
     try stack.push(@as(U, 20));
     try stack.push(@as(U, 30));
@@ -308,6 +325,7 @@ test "exchange" {
 
 test "exchange out of bounds" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 1));
     try expect(!stack.exchange(0, 1));
     try expect(!stack.exchange(5, 0));
@@ -315,6 +333,7 @@ test "exchange out of bounds" {
 
 test "dup" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 100));
     try stack.push(@as(U, 200));
     try stack.dup(1);
@@ -326,6 +345,7 @@ test "dup" {
 
 test "dup invalid index" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 1));
     try std.testing.expectError(error.InvalidDupIndex, stack.dup(0));
     try std.testing.expectError(error.InvalidDupIndex, stack.dup(2));
@@ -333,6 +353,7 @@ test "dup invalid index" {
 
 test "set and get" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 10));
     try stack.push(@as(U, 20));
     try stack.push(@as(U, 30));
@@ -346,6 +367,7 @@ test "set and get" {
 
 test "set and get out of bounds" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 1));
     try expectEqual(@as(?U, null), stack.get(1));
     try expectEqual(@as(?U, null), stack.get(100));
@@ -354,6 +376,7 @@ test "set and get out of bounds" {
 
 test "pushSlice" {
     var stack = Stack.new();
+    defer stack.deinit();
     const slice = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF };
     try stack.pushSlice(&slice);
     try expectEqual(@as(usize, 1), stack.len());
@@ -370,6 +393,7 @@ test "pushSlice" {
 
 test "pushSlice too long" {
     var stack = Stack.new();
+    defer stack.deinit();
     var buf: [33]u8 = undefined;
     @memset(&buf, 0xFF);
     try std.testing.expectError(error.InvalidSliceLength, stack.pushSlice(&buf));
@@ -377,6 +401,7 @@ test "pushSlice too long" {
 
 test "clear" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 1));
     try stack.push(@as(U, 2));
     try stack.push(@as(U, 3));
@@ -387,6 +412,7 @@ test "clear" {
 
 test "getData" {
     var stack = Stack.new();
+    defer stack.deinit();
     try stack.push(@as(U, 10));
     try stack.push(@as(U, 20));
     try stack.push(@as(U, 30));
@@ -399,6 +425,7 @@ test "getData" {
 
 test "hasItems" {
     var stack = Stack.new();
+    defer stack.deinit();
     try expect(stack.hasItems(0));
     try expect(!stack.hasItems(1));
     try stack.push(@as(U, 1));
@@ -408,6 +435,7 @@ test "hasItems" {
 
 test "hasSpace" {
     var stack = Stack.new();
+    defer stack.deinit();
     try expect(stack.hasSpace(STACK_LIMIT));
     try expect(!stack.hasSpace(STACK_LIMIT + 1));
     try stack.push(@as(U, 1));
@@ -417,6 +445,7 @@ test "hasSpace" {
 
 test "pushUnsafe and popUnsafe LIFO" {
     var stack = Stack.new();
+    defer stack.deinit();
     stack.pushUnsafe(@as(U, 10));
     stack.pushUnsafe(@as(U, 20));
     stack.pushUnsafe(@as(U, 30));
@@ -429,6 +458,7 @@ test "pushUnsafe and popUnsafe LIFO" {
 
 test "peekUnsafe" {
     var stack = Stack.new();
+    defer stack.deinit();
     stack.pushUnsafe(@as(U, 100));
     stack.pushUnsafe(@as(U, 200));
     stack.pushUnsafe(@as(U, 300));
@@ -439,6 +469,7 @@ test "peekUnsafe" {
 
 test "setTopUnsafe" {
     var stack = Stack.new();
+    defer stack.deinit();
     stack.pushUnsafe(@as(U, 42));
     const ptr = stack.setTopUnsafe();
     try expectEqual(@as(U, 42), ptr.*);
@@ -448,6 +479,7 @@ test "setTopUnsafe" {
 
 test "dupUnsafe" {
     var stack = Stack.new();
+    defer stack.deinit();
     stack.pushUnsafe(@as(U, 100));
     stack.pushUnsafe(@as(U, 200));
     stack.dupUnsafe(1);
@@ -459,6 +491,7 @@ test "dupUnsafe" {
 
 test "swapUnsafe" {
     var stack = Stack.new();
+    defer stack.deinit();
     stack.pushUnsafe(@as(U, 10));
     stack.pushUnsafe(@as(U, 20));
     stack.pushUnsafe(@as(U, 30));
@@ -470,6 +503,7 @@ test "swapUnsafe" {
 
 test "shrinkUnsafe" {
     var stack = Stack.new();
+    defer stack.deinit();
     stack.pushUnsafe(@as(U, 10));
     stack.pushUnsafe(@as(U, 20));
     stack.pushUnsafe(@as(U, 30));
@@ -481,6 +515,7 @@ test "shrinkUnsafe" {
 
 test "ADD pattern: peek-peek-shrink-overwrite" {
     var stack = Stack.new();
+    defer stack.deinit();
     stack.pushUnsafe(@as(U, 5));
     stack.pushUnsafe(@as(U, 3));
     const a = stack.peekUnsafe(0);
@@ -493,6 +528,7 @@ test "ADD pattern: peek-peek-shrink-overwrite" {
 
 test "ADDMOD pattern: peek-peek-peek-shrink-overwrite" {
     var stack = Stack.new();
+    defer stack.deinit();
     stack.pushUnsafe(@as(U, 10));
     stack.pushUnsafe(@as(U, 7));
     stack.pushUnsafe(@as(U, 3));
@@ -508,6 +544,7 @@ test "ADDMOD pattern: peek-peek-peek-shrink-overwrite" {
 
 test "NOT pattern: setTopUnsafe in-place" {
     var stack = Stack.new();
+    defer stack.deinit();
     stack.pushUnsafe(@as(U, 0));
     const ptr = stack.setTopUnsafe();
     ptr.* = ~ptr.*;

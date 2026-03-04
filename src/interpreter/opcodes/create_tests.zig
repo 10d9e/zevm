@@ -113,6 +113,7 @@ test "opCreate: stack underflow with fewer than 3 items" {
     _ = try ctx.journaled_state.loadAccount(CALLER);
 
     var interp = makeInterp(CALLER, 100_000);
+    defer interp.deinit();
     interp.stack.pushUnsafe(0);
     interp.stack.pushUnsafe(0); // only 2 items
 
@@ -131,6 +132,7 @@ test "opCreate: static context halts with invalid_static" {
     _ = try ctx.journaled_state.loadAccount(CALLER);
 
     var interp = makeInterp(CALLER, 100_000);
+    defer interp.deinit();
     interp.runtime_flags.is_static = true;
     interp.stack.pushUnsafe(0); // value (top)
     interp.stack.pushUnsafe(0); // offset
@@ -151,6 +153,7 @@ test "opCreate2: stack underflow with fewer than 4 items" {
     _ = try ctx.journaled_state.loadAccount(CALLER);
 
     var interp = makeInterp(CALLER, 100_000);
+    defer interp.deinit();
     // Push only 3 items; CREATE2 needs 4
     interp.stack.pushUnsafe(0);
     interp.stack.pushUnsafe(0);
@@ -176,8 +179,9 @@ test "opCreate: STOP init code deploys empty contract, returns non-zero address"
     _ = try ctx.journaled_state.loadAccount(CALLER);
 
     var interp = makeInterp(CALLER, 500_000);
+    defer interp.deinit();
     // Write init code into interpreter memory at offset 0
-    interp.memory.buffer.resize(ALLOC, INIT_CODE.len) catch unreachable;
+    interp.memory.buffer.resize(std.heap.c_allocator, INIT_CODE.len) catch unreachable;
     @memcpy(interp.memory.buffer.items[0..INIT_CODE.len], &INIT_CODE);
 
     // Stack layout for CREATE (top to bottom): value, offset, size
@@ -206,7 +210,8 @@ test "opCreate2: same inputs produce same address on stack" {
             _ = try ctx.journaled_state.loadAccount(CALLER);
 
             var interp = makeInterp(CALLER, 500_000);
-            interp.memory.buffer.resize(ALLOC, INIT_CODE.len) catch unreachable;
+            defer interp.deinit();
+            interp.memory.buffer.resize(std.heap.c_allocator, INIT_CODE.len) catch unreachable;
             @memcpy(interp.memory.buffer.items[0..INIT_CODE.len], &INIT_CODE);
 
             // Stack: salt (top), value, offset, size
@@ -242,7 +247,8 @@ test "opCreate: collision at derived address returns 0" {
     // First CREATE — succeeds, nonce bumped from 1→2
     {
         var interp = makeInterp(CALLER, 500_000);
-        interp.memory.buffer.resize(ALLOC, INIT_CODE.len) catch unreachable;
+        defer interp.deinit();
+        interp.memory.buffer.resize(std.heap.c_allocator, INIT_CODE.len) catch unreachable;
         @memcpy(interp.memory.buffer.items[0..INIT_CODE.len], &INIT_CODE);
         interp.stack.pushUnsafe(0);
         interp.stack.pushUnsafe(0);
@@ -264,7 +270,8 @@ test "opCreate: collision at derived address returns 0" {
     // Second CREATE — should detect collision and return 0
     {
         var interp = makeInterp(CALLER, 500_000);
-        interp.memory.buffer.resize(ALLOC, INIT_CODE.len) catch unreachable;
+        defer interp.deinit();
+        interp.memory.buffer.resize(std.heap.c_allocator, INIT_CODE.len) catch unreachable;
         @memcpy(interp.memory.buffer.items[0..INIT_CODE.len], &INIT_CODE);
         interp.stack.pushUnsafe(0);
         interp.stack.pushUnsafe(0);

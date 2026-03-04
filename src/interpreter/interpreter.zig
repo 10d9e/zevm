@@ -419,6 +419,7 @@ pub const Interpreter = struct {
     }
 
     pub fn deinit(self: *Interpreter) void {
+        self.stack.deinit();
         self.bytecode.deinit();
         self.memory.deinit();
     }

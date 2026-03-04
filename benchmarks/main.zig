@@ -31,7 +31,7 @@ pub const MEM_SIZE = 32 * 1024; // 32KB pre-allocated memory region
 // Global state (zbench hooks require fn() void, so globals are necessary)
 // ---------------------------------------------------------------------------
 
-pub var g_stack: interpreter.Stack = interpreter.Stack.new();
+pub var g_stack: interpreter.Stack = undefined;
 pub var g_gas: interpreter.Gas = interpreter.Gas.new(0);
 pub var g_memory: interpreter.Memory = interpreter.Memory.new();
 var g_spec: primitives.SpecId = .osaka; // Default to latest fork
@@ -68,6 +68,7 @@ pub var g_small_exp: [NUM_VALUES]U256 = undefined; // 1-byte exponents (1..255)
 var g_initialized = false;
 
 fn initValues() void {
+    g_stack = interpreter.Stack.new();
     prng_state = 42;
     for (&g_values) |*v| v.* = randomU256();
     const lo: u128 = @as(u128, xorshift64() | 1) | (@as(u128, xorshift64()) << 64);

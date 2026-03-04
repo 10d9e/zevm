@@ -332,6 +332,7 @@ pub const MainnetHandler = struct {
                     .call,
                 );
                 var frame = try evm.createFrame(frame_data);
+                defer frame.deinit();
                 // Set the actual target bytecode on the interpreter (Frame.init uses empty bytecode).
                 frame.interpreter.bytecode.setBytecode(callee_code);
                 const call_result = try evm.executeFrame(&frame);

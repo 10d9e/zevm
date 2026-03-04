@@ -102,6 +102,13 @@ pub const Host = struct {
     /// Instruction dispatch table for the current spec. Stored here so sub-calls can reuse
     /// the same table pointer instead of allocating a fresh 4 KB table on the native stack.
     instruction_table: ?*const @import("interpreter.zig").InstructionTable = null,
+    /// Owned copy of return data from the most recent sub-call. Valid until the next sub-call
+    /// or until deinit(). Callers must copy any bytes they need to keep across sub-calls.
+    return_data_buf: std.ArrayList(u8) = .{},
+
+    pub fn deinit(self: *Host) void {
+        self.return_data_buf.deinit(std.heap.c_allocator);
+    }
 
     // -----------------------------------------------------------------------
     // Block / transaction environment (no state access required)
@@ -354,19 +361,12 @@ pub const Host = struct {
         }
 
         // 5. Build and run sub-interpreter.
-        // Heap-allocate to avoid native stack overflow on deep recursive EVM calls.
-        // The embedded Stack (32 KB) would exhaust the native stack at ~200 levels otherwise.
-        // Note: sub_interp is not freed here because return_data.data slices into
-        // sub_interp.memory.buffer.items which must remain valid for the caller.
+        // Stack now heap-allocates its backing store (32 KB), so Interpreter is small (~300 bytes)
+        // and can live on the native call stack. deinit() is deferred so cleanup is deterministic.
         // Depth is already incremented by getCheckpoint() above; no manual adjustment needed.
         const spec_id = self.ctx.journaled_state.inner.spec;
-        const sub_mem = Memory.new();
-        const sub_interp = std.heap.c_allocator.create(Interpreter) catch {
-            self.ctx.journaled_state.checkpointRevert(checkpoint);
-            return CallResult.preExecFailure(inputs.gas_limit);
-        };
-        sub_interp.* = Interpreter.new(
-            sub_mem,
+        var sub_interp = Interpreter.new(
+            Memory.new(),
             ExtBytecode.new(code),
             InputsImpl.new(
                 inputs.caller,
@@ -382,8 +382,9 @@ pub const Host = struct {
             spec_id,
             inputs.gas_limit,
         );
+        defer sub_interp.deinit();
 
-        self.run_sub_call(self, sub_interp);
+        self.run_sub_call(self, &sub_interp);
 
         // 6. Commit or revert state changes
         const result = sub_interp.result;
@@ -403,11 +404,20 @@ pub const Host = struct {
         // Propagate sub-call refund counter (SSTORE clears, etc.) to caller frame.
         const gas_refunded: i64 = if (result.isSuccess()) sub_interp.gas.refunded else 0;
 
+        // Copy return data into owned buffer before sub_interp.deinit() (via defer) frees memory.
+        // return_data_buf is valid until the next sub-call or until Host.deinit().
+        const raw_rd: []const u8 = if (result.isSuccess() or result == .revert)
+            sub_interp.return_data.data
+        else
+            &[_]u8{};
+        self.return_data_buf.clearRetainingCapacity();
+        self.return_data_buf.appendSlice(std.heap.c_allocator, raw_rd) catch {};
+
         return CallResult{
             .success = result.isSuccess(),
             // EVM semantics: return data is only populated on SUCCESS or REVERT.
             // Any other failure (OOG, stack overflow, bad opcode, etc.) returns empty data.
-            .return_data = if (result.isSuccess() or result == .revert) sub_interp.return_data.data else &[_]u8{},
+            .return_data = self.return_data_buf.items,
             .gas_used = gas_used,
             .gas_remaining = gas_remaining,
             .gas_refunded = gas_refunded,
@@ -504,20 +514,14 @@ pub const Host = struct {
             return CreateResult.preExecFailure(0);
         };
 
-        // 7. Build and run init-code sub-interpreter (heap-allocated; see call() comment above).
+        // 7. Build and run init-code sub-interpreter.
+        // Stack heap-allocates its backing; Interpreter is small (~300 bytes) and lives on the
+        // native call stack. deinit() is deferred so cleanup is deterministic.
         // Depth is already incremented by createAccountCheckpoint() → getCheckpoint() above.
-        const sub_mem = Memory.new();
         const init_bytecode = bytecode_mod.Bytecode.newRaw(init_code);
-        const sub_interp = std.heap.c_allocator.create(Interpreter) catch {
-            js.checkpointRevert(checkpoint);
-            return CreateResult.preExecFailure(gas_limit);
-        };
         // Per EVM Yellow Paper: I_d (input data) is empty for CREATE/CREATE2 sub-executions.
-        // The initcode is the CODE being executed; calldata is empty. Initcode reads its own
-        // bytes via CODECOPY (not CALLDATALOAD). Passing init_code as calldata would cause
-        // CALLDATALOAD to return non-zero values, inflating gas costs (SSTORE_SET vs no-op).
-        sub_interp.* = Interpreter.new(
-            sub_mem,
+        var sub_interp = Interpreter.new(
+            Memory.new(),
             ExtBytecode.new(init_bytecode),
             InputsImpl.new(
                 caller,
@@ -533,7 +537,8 @@ pub const Host = struct {
             spec_id,
             gas_limit,
         );
-        self.run_sub_call(self, sub_interp);
+        defer sub_interp.deinit();
+        self.run_sub_call(self, &sub_interp);
 
         // 8. Handle sub-interpreter failure
         if (!sub_interp.result.isSuccess()) {
@@ -542,20 +547,28 @@ pub const Host = struct {
             //   - REVERT: return unused gas to caller
             //   - Any error (invalid opcode, stack underflow, OOG, etc.): all gas consumed, return 0
             const gas_rem = if (sub_interp.result == .revert) sub_interp.gas.remaining else @as(u64, 0);
+            // Copy revert data into owned buffer before sub_interp.deinit() fires.
+            const revert_bytes: []const u8 = if (sub_interp.result == .revert)
+                sub_interp.return_data.data
+            else
+                &[_]u8{};
+            self.return_data_buf.clearRetainingCapacity();
+            self.return_data_buf.appendSlice(std.heap.c_allocator, revert_bytes) catch {};
             return .{
                 .success = false,
                 .is_revert = (sub_interp.result == .revert),
                 .address = [_]u8{0} ** 20,
                 .gas_remaining = gas_rem,
-                // EVM semantics: CREATE propagates return data only on REVERT (not on OOG/error).
-                .return_data = if (sub_interp.result == .revert) sub_interp.return_data.data else &[_]u8{},
+                .return_data = self.return_data_buf.items,
                 .gas_refunded = 0,
             };
         }
 
         // 11. Validate deployed code
-        const deployed = sub_interp.return_data.data;
-        if (deployed.len > MAX_CODE_SIZE) {
+        // Dupe deployed bytes NOW (before defer fires) since analyzeLegacy stores the slice
+        // reference without copying. The copy is journal-lifetime (≤24KB, transaction-bounded).
+        const deployed_raw = sub_interp.return_data.data;
+        if (deployed_raw.len > MAX_CODE_SIZE) {
             // EIP-170: code too large → all remaining gas consumed (treated as error, not revert)
             js.checkpointRevert(checkpoint);
             return .{ .success = false, .is_revert = false, .address = [_]u8{0} ** 20,
@@ -563,7 +576,7 @@ pub const Host = struct {
         }
         // EIP-3541 (London+): reject code starting with 0xEF (all gas consumed)
         if (primitives.isEnabledIn(spec_id, .london)) {
-            if (deployed.len > 0 and deployed[0] == 0xEF) {
+            if (deployed_raw.len > 0 and deployed_raw[0] == 0xEF) {
                 js.checkpointRevert(checkpoint);
                 return .{ .success = false, .is_revert = false, .address = [_]u8{0} ** 20,
                            .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
@@ -571,7 +584,7 @@ pub const Host = struct {
         }
 
         // 12. Code deposit gas: 200 per byte of deployed code
-        const deposit_cost = gas_costs.G_CODEDEPOSIT * @as(u64, @intCast(deployed.len));
+        const deposit_cost = gas_costs.G_CODEDEPOSIT * @as(u64, @intCast(deployed_raw.len));
         if (sub_interp.gas.remaining < deposit_cost) {
             if (primitives.isEnabledIn(spec_id, .homestead)) {
                 // Homestead+ (EIP-2): deposit OOG is a full failure — all gas consumed, state reverted.
@@ -588,12 +601,20 @@ pub const Host = struct {
             }
         }
         const gas_after_deposit = sub_interp.gas.remaining - deposit_cost;
+        const gas_refunded_create = sub_interp.gas.refunded;
 
-        // 13. Store deployed bytecode
-        if (deployed.len > 0) {
+        // 13. Store deployed bytecode.
+        // analyzeLegacy (called from newRaw) stores the slice reference without copying, so we
+        // must dupe the bytes before sub_interp.deinit() (via defer) frees the memory buffer.
+        if (deployed_raw.len > 0) {
+            const deployed_copy = std.heap.c_allocator.dupe(u8, deployed_raw) catch {
+                // OOM: treat as full failure (all gas consumed, state reverted)
+                js.checkpointRevert(checkpoint);
+                return CreateResult.failure();
+            };
             var code_hash: [32]u8 = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(deployed, &code_hash, .{});
-            const bc = bytecode_mod.Bytecode.newRaw(deployed);
+            std.crypto.hash.sha3.Keccak256.hash(deployed_copy, &code_hash, .{});
+            const bc = bytecode_mod.Bytecode.newRaw(deployed_copy);
             js.setCodeWithHash(new_addr, bc, code_hash);
         }
 
@@ -607,7 +628,7 @@ pub const Host = struct {
             .address = new_addr,
             .gas_remaining = gas_after_deposit,
             .return_data = &[_]u8{},
-            .gas_refunded = sub_interp.gas.refunded,
+            .gas_refunded = gas_refunded_create,
         };
     }
 };

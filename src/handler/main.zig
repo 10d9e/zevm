@@ -155,6 +155,7 @@ pub const FrameResult = struct {
     pub fn deinit(self: *FrameResult) void {
         self.result.deinit();
         self.memory.deinit();
+        self.stack.deinit();
     }
 };
 
@@ -283,6 +284,11 @@ pub const Frame = struct {
         };
     }
 
+    /// Free resources owned by this frame (interpreter stack + memory).
+    pub fn deinit(self: *Frame) void {
+        self.interpreter.deinit();
+    }
+
     /// Execute frame with host access for full EVM semantics.
     pub fn execute(self: *Frame, ctx: *context.Context) !FrameResult {
         const schedule = interpreter.protocol_schedule.ProtocolSchedule.forSpec(
@@ -297,6 +303,7 @@ pub const Frame = struct {
             .precompiles = &self.precompiles.precompiles,
             .instruction_table = &schedule.instructions,
         };
+        defer host.deinit();
 
         _ = self.interpreter.runWithHost(&schedule.instructions, &host);
 

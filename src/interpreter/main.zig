@@ -83,6 +83,7 @@ pub const testing = struct {
         const inputs = InputsImpl.new([_]u8{0} ** 20, [_]u8{0} ** 20, @as(primitives.U256, 0), &[_]u8{}, 1000000, CallScheme.call, false, 0);
 
         var interpreter = Interpreter.new(Memory.new(), ExtBytecode.new(bytecode.Bytecode.new()), inputs, false, primitives.SpecId.prague, 1000000);
+        defer interpreter.deinit();
 
         std.debug.assert(interpreter.gas.getLimit() == 1000000);
         std.debug.assert(interpreter.stack.len() == 0);
