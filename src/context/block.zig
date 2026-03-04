@@ -114,6 +114,12 @@ fn calculateBlobGasprice(excess_blob_gas: u64, base_fee_update_fraction: u64) u6
     // max-blob usage), intermediate products exceed u128 max. Saturation clamps to u128::MAX
     // instead of panicking; the final @min caps the result at u64::MAX (correct: astronomically
     // high excess blob gas → maximum possible blob gas price).
+
+    if (base_fee_update_fraction == 0) {
+        // base_fee_update_fraction should never be 0, but return max u64
+        return std.math.maxInt(u64);
+    }
+
     const factor: u128 = 1;
     const numerator: u128 = excess_blob_gas;
     const denominator: u128 = base_fee_update_fraction;
