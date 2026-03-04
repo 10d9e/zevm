@@ -293,8 +293,7 @@ pub const MainnetHandler = struct {
                     }
                 }
 
-                // Checkpoint: getCheckpoint() is now equivalent to the old snapshotPosition()
-                // (depth tracking removed). State is reverted through this checkpoint on failure.
+                // Take checkpoint for top-level CALL: state is reverted through this on failure.
                 const call_checkpoint = ctx.journaled_state.getCheckpoint();
 
                 // Value transfer for top-level CALL.

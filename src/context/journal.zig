@@ -832,6 +832,9 @@ pub const JournalInner = struct {
                     existing.selfdestruct();
                     existing.unmarkSelfdestructedLocally();
                 }
+                if (existing.isCreatedLocally()) {
+                    existing.unmarkCreatedLocally();
+                }
             }
             is_cold = acct_is_cold;
             account_ptr = existing;
