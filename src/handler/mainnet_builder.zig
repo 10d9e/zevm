@@ -230,120 +230,135 @@ pub const MainnetHandler = struct {
     pub fn executeFrame(evm: *main.Evm, initial_gas: u64) !main.FrameResult {
         const ctx = evm.getContext();
         const tx = &ctx.tx;
+        const spec = ctx.cfg.spec;
 
         const calldata: []const u8 = if (tx.data) |data| data.items else &[_]u8{};
         // Gas available to execution = gas_limit minus intrinsic cost
         const exec_gas = tx.gas_limit - initial_gas;
 
+        var host = interpreter_mod.Host{
+            .ctx = ctx,
+            .precompiles = &evm.precompiles.precompiles,
+        };
+
+        var return_data_buf: std.ArrayList(u8) = .{};
+        defer return_data_buf.deinit(std.heap.c_allocator);
+
         switch (tx.kind) {
             .Create => {
-                // Top-level CREATE: tx validation already bumped caller nonce.
-                // Dispatch through Host.create() with skip_nonce_bump=true.
-                var host = interpreter_mod.Host{
-                    .ctx = ctx,
-                    .run_sub_call = interpreter_mod.protocol_schedule.runSubCallDefault,
-                    .precompiles = &evm.precompiles.precompiles,
-                    .instruction_table = &evm.instructions.table,
-                };
-                const cr = host.create(tx.caller, tx.value, calldata, exec_gas, false, 0, true);
-                const status: main.ExecutionStatus = if (cr.success) .Success else if (cr.is_revert) .Revert else .Halt;
-                var exec_result = main.ExecutionResult.new(status, exec_gas - cr.gas_remaining);
-                exec_result.return_data = cr.return_data;
-                return main.FrameResult.new(exec_result, cr.gas_remaining, cr.gas_refunded);
+                // Top-level CREATE: tx validation already bumped caller nonce (skip_nonce_bump=true).
+                const setup = host.setupCreate(tx.caller, tx.value, calldata, exec_gas, false, 0, true, 0);
+                switch (setup) {
+                    .failed => |r| {
+                        const status: main.ExecutionStatus = if (r.is_revert) .Revert else .Halt;
+                        var exec_result = main.ExecutionResult.new(status, exec_gas - r.gas_remaining);
+                        exec_result.return_data = r.return_data;
+                        return main.FrameResult.new(exec_result, r.gas_remaining, r.gas_refunded);
+                    },
+                    .ready => |s| {
+                        const init_bytecode = bytecode.Bytecode.newRaw(calldata);
+                        const root_interp = interpreter_mod.Interpreter.new(
+                            interpreter_mod.Memory.new(),
+                            interpreter_mod.ExtBytecode.new(init_bytecode),
+                            interpreter_mod.InputsImpl.new(
+                                tx.caller, s.new_addr, tx.value,
+                                @constCast(&[_]u8{}), exec_gas, .call, false, 0,
+                            ),
+                            false, spec, exec_gas,
+                        );
+                        const ir = try executeIterative(root_interp, &host, &return_data_buf);
+                        const cr = host.finalizeCreate(s.checkpoint, s.new_addr, ir.raw_result,
+                            ir.gas_remaining, ir.gas_refunded, ir.return_data, spec);
+                        const cr_status: main.ExecutionStatus = if (cr.success) .Success
+                            else if (cr.is_revert) .Revert else .Halt;
+                        var exec_result = main.ExecutionResult.new(cr_status, exec_gas - cr.gas_remaining);
+                        exec_result.return_data = cr.return_data;
+                        return main.FrameResult.new(exec_result, cr.gas_remaining, cr.gas_refunded);
+                    },
+                }
             },
             .Call => |target| {
                 // Load target account and its code before executing.
                 const callee_load = try ctx.journaled_state.loadAccountWithCode(target);
                 var callee_code = if (callee_load.data.info.code) |c| c else bytecode.Bytecode.new();
 
-                // EIP-7702: top-level CALL to a delegation account — follow the delegation to
-                // get the actual code to execute. The CALL context (ADDRESS, storage) still
-                // refers to the target (authority), but bytecode comes from the delegate.
-                // No recursive delegation (flat one-hop per EIP-7702 spec).
+                // EIP-7702: follow delegation one hop.
                 if (callee_code.isEip7702()) {
                     const del_addr = callee_code.eip7702.address;
                     if (ctx.journaled_state.loadAccountWithCode(del_addr)) |del_load| {
-                        callee_code = if (del_load.data.info.code) |del_code|
-                            del_code // per EIP-7702: execute target's code as-is (no recursion; 0xef → INVALID)
-                        else
-                            bytecode.Bytecode.new();
+                        callee_code = if (del_load.data.info.code) |del_code| del_code
+                            else bytecode.Bytecode.new();
                     } else |_| {
                         callee_code = bytecode.Bytecode.new();
                     }
                 }
 
-                // Snapshot journal position before value transfer so state can be rolled back on REVERT.
-                // Use snapshotPosition (not getCheckpoint) to avoid consuming an EVM call depth slot —
-                // getCheckpoint increments depth, which would reduce the available recursive call depth by 1.
-                const call_checkpoint = ctx.journaled_state.snapshotPosition();
+                // Checkpoint: getCheckpoint() is now equivalent to the old snapshotPosition()
+                // (depth tracking removed). State is reverted through this checkpoint on failure.
+                const call_checkpoint = ctx.journaled_state.getCheckpoint();
 
-                // Value transfer for top-level CALL (pre-execution, not through sub-call opcode).
+                // Value transfer for top-level CALL.
                 if (tx.value > 0) {
                     const xfer_err = try ctx.journaled_state.transfer(tx.caller, target, tx.value);
                     if (xfer_err != null) {
-                        ctx.journaled_state.revertToSnapshot(call_checkpoint);
+                        ctx.journaled_state.checkpointRevert(call_checkpoint);
                         return main.FrameResult.new(
-                            main.ExecutionResult.new(.Fail, exec_gas),
-                            0,
-                            0,
+                            main.ExecutionResult.new(.Fail, exec_gas), 0, 0,
                         );
                     }
                 }
 
-                // Precompile dispatch: if the top-level TX target is a precompile, run it directly.
-                // (Precompile dispatch in sub-calls is handled by Host.call(); this handles the case
-                // where the transaction itself targets a precompile address.)
+                // Precompile dispatch for top-level TX targeting a precompile.
                 if (evm.precompiles.get(target)) |precompile_fn| {
                     const pc_result = precompile_fn.execute(calldata, exec_gas);
                     switch (pc_result) {
                         .success => |out| {
                             if (out.reverted) {
-                                ctx.journaled_state.revertToSnapshot(call_checkpoint);
+                                ctx.journaled_state.checkpointRevert(call_checkpoint);
                                 return main.FrameResult.new(
-                                    main.ExecutionResult.new(.Revert, exec_gas),
-                                    0,
-                                    0,
+                                    main.ExecutionResult.new(.Revert, exec_gas), 0, 0,
                                 );
                             }
+                            ctx.journaled_state.checkpointCommit();
                             return main.FrameResult.new(
                                 main.ExecutionResult.new(.Success, out.gas_used),
-                                exec_gas - out.gas_used,
-                                0,
+                                exec_gas - out.gas_used, 0,
                             );
                         },
                         .err => {
-                            ctx.journaled_state.revertToSnapshot(call_checkpoint);
+                            ctx.journaled_state.checkpointRevert(call_checkpoint);
                             return main.FrameResult.new(
-                                main.ExecutionResult.new(.Fail, exec_gas),
-                                0,
-                                0,
+                                main.ExecutionResult.new(.Fail, exec_gas), 0, 0,
                             );
                         },
                     }
                 }
 
-                const frame_data = main.FrameData.new(
-                    tx.caller,
-                    target,
-                    tx.value,
-                    calldata,
-                    exec_gas,
-                    false, // top-level txs are never static
-                    .call,
+                const root_interp = interpreter_mod.Interpreter.new(
+                    interpreter_mod.Memory.new(),
+                    interpreter_mod.ExtBytecode.new(callee_code),
+                    interpreter_mod.InputsImpl.new(
+                        tx.caller, target, tx.value,
+                        @constCast(calldata), exec_gas, .call, false, 0,
+                    ),
+                    false, spec, exec_gas,
                 );
-                var frame = try evm.createFrame(frame_data);
-                defer frame.deinit();
-                // Set the actual target bytecode on the interpreter (Frame.init uses empty bytecode).
-                frame.interpreter.bytecode.setBytecode(callee_code);
-                const call_result = try evm.executeFrame(&frame);
+                const ir = try executeIterative(root_interp, &host, &return_data_buf);
 
-                // Revert all journaled state (transfer + execution effects) on REVERT/Halt.
-                // On success, no action needed — postExecution.commitTx() will finalize state.
-                if (call_result.result.status != .Success) {
-                    ctx.journaled_state.revertToSnapshot(call_checkpoint);
+                if (ir.raw_result.isSuccess()) {
+                    ctx.journaled_state.checkpointCommit();
+                } else {
+                    ctx.journaled_state.checkpointRevert(call_checkpoint);
                 }
 
-                return call_result;
+                const status: main.ExecutionStatus = switch (ir.raw_result) {
+                    .stop, .@"return", .selfdestruct => .Success,
+                    .revert => .Revert,
+                    else => .Halt,
+                };
+                var exec_result = main.ExecutionResult.new(status, exec_gas - ir.gas_remaining);
+                exec_result.return_data = ir.return_data;
+                return main.FrameResult.new(exec_result, ir.gas_remaining, ir.gas_refunded);
             },
         }
     }
@@ -448,6 +463,135 @@ pub const MainnetHandler = struct {
         ctx.journaled_state.discardTx();
     }
 };
+
+/// Raw result from the iterative frame runner.
+const IterativeResult = struct {
+    raw_result: interpreter_mod.InstructionResult,
+    gas_remaining: u64,
+    gas_refunded: i64,
+    return_data: []const u8, // points into return_data_buf; valid until buf is cleared
+};
+
+/// One entry on the iterative call stack.
+const FrameEntry = struct {
+    interp: interpreter_mod.Interpreter,
+    /// What created this sub-frame (null for root).
+    cause: ?union(enum) {
+        call: interpreter_mod.PendingCallData,
+        create: interpreter_mod.PendingCreateData,
+    },
+};
+
+/// Iterative EVM frame runner. Runs the root interpreter and handles CALL/CREATE
+/// sub-frames by pushing/popping FrameEntry items instead of recursing natively.
+/// `return_data_buf` is owned by the caller and accumulates return data.
+fn executeIterative(
+    root_interp: interpreter_mod.Interpreter,
+    host: *interpreter_mod.Host,
+    return_data_buf: *std.ArrayList(u8),
+) !IterativeResult {
+    const call_ops = interpreter_mod.opcodes.call_ops;
+
+    var frames = std.ArrayList(FrameEntry){};
+    defer {
+        for (frames.items) |*f| f.interp.deinit();
+        frames.deinit(std.heap.c_allocator);
+    }
+    try frames.append(std.heap.c_allocator, .{ .interp = root_interp, .cause = null });
+
+    while (true) {
+        const frame = &frames.items[frames.items.len - 1];
+        const spec = frame.interp.runtime_flags.spec_id;
+        const schedule = interpreter_mod.protocol_schedule.ProtocolSchedule.forSpec(spec);
+
+        _ = frame.interp.runWithHost(&schedule.instructions, host);
+
+        if (frame.interp.pending != .none) {
+            // Sub-frame needed. The opcode already called setupCall/setupCreate and stored
+            // checkpoint + new_addr in the pending data. Just build the sub-interpreter.
+            const pending = frame.interp.pending;
+            frame.interp.pending = .none;
+            const sub_depth = frames.items.len; // 0-based: root=0, first sub=1, ...
+
+            switch (pending) {
+                .call => |pc| {
+                    const sub_interp = interpreter_mod.Interpreter.new(
+                        interpreter_mod.Memory.new(),
+                        interpreter_mod.ExtBytecode.new(pc.code),
+                        interpreter_mod.InputsImpl.new(
+                            pc.inputs.caller, pc.inputs.target, pc.inputs.value,
+                            @constCast(pc.inputs.data), pc.inputs.gas_limit,
+                            pc.inputs.scheme, pc.inputs.is_static, sub_depth,
+                        ),
+                        pc.inputs.is_static, spec, pc.inputs.gas_limit,
+                    );
+                    try frames.append(std.heap.c_allocator, .{ .interp = sub_interp, .cause = .{ .call = pc } });
+                },
+                .create => |pc| {
+                    const init_bytecode = bytecode.Bytecode.newRaw(pc.inputs.init_code);
+                    const sub_interp = interpreter_mod.Interpreter.new(
+                        interpreter_mod.Memory.new(),
+                        interpreter_mod.ExtBytecode.new(init_bytecode),
+                        interpreter_mod.InputsImpl.new(
+                            pc.inputs.caller, pc.new_addr, pc.inputs.value,
+                            @constCast(&[_]u8{}), pc.inputs.gas_limit, .call, false, sub_depth,
+                        ),
+                        false, spec, pc.inputs.gas_limit,
+                    );
+                    try frames.append(std.heap.c_allocator, .{ .interp = sub_interp, .cause = .{ .create = pc } });
+                },
+                .none => unreachable,
+            }
+        } else {
+            // Frame completed normally (or halted).
+            if (frames.items.len == 1) {
+                // Root frame done — extract result before deinit.
+                const raw = frame.interp.result;
+                const gas_rem = frame.interp.gas.remaining;
+                const gas_ref = frame.interp.gas.refunded;
+                const rd_raw: []const u8 = if (raw.isSuccess() or raw == .revert)
+                    frame.interp.return_data.data else &[_]u8{};
+                return_data_buf.clearRetainingCapacity();
+                return_data_buf.appendSlice(std.heap.c_allocator, rd_raw) catch {};
+                // defer fires here, deiniting frames[0].interp — return_data_buf is safe.
+                return IterativeResult{
+                    .raw_result = raw,
+                    .gas_remaining = gas_rem,
+                    .gas_refunded = gas_ref,
+                    .return_data = return_data_buf.items,
+                };
+            }
+
+            // Sub-frame done — extract return data, deinit, pop, resume parent.
+            const sub_result = frame.interp.result;
+            const sub_gas_rem = frame.interp.gas.remaining;
+            const sub_gas_ref = frame.interp.gas.refunded;
+            const rd_raw: []const u8 = if (sub_result.isSuccess() or sub_result == .revert)
+                frame.interp.return_data.data else &[_]u8{};
+            return_data_buf.clearRetainingCapacity();
+            return_data_buf.appendSlice(std.heap.c_allocator, rd_raw) catch {};
+
+            const cause = frame.cause orelse unreachable;
+            frame.interp.deinit();
+            _ = frames.pop();
+            const parent = &frames.items[frames.items.len - 1];
+            const parent_spec = parent.interp.runtime_flags.spec_id;
+
+            switch (cause) {
+                .call => |pc| {
+                    const r = host.finalizeCall(pc.checkpoint, sub_result,
+                        pc.inputs.gas_limit, sub_gas_rem, sub_gas_ref, return_data_buf.items);
+                    call_ops.resumeCall(&parent.interp, r, pc.ret_off, pc.ret_size);
+                },
+                .create => |pc| {
+                    const r = host.finalizeCreate(pc.checkpoint, pc.new_addr, sub_result,
+                        sub_gas_rem, sub_gas_ref, return_data_buf.items, parent_spec);
+                    call_ops.resumeCreate(&parent.interp, r);
+                },
+            }
+        }
+    }
+}
 
 /// Execute EVM — run a full transaction through validate → pre-exec → exec → post-exec.
 /// Accepts `*main.Evm` so it works with both heap-allocated `*MainnetEvm` (pass `&mevm.evm`)

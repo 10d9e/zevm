@@ -72,7 +72,6 @@ test "precompile dispatch: IDENTITY returns input unchanged" {
 
     var host = interpreter_mod.Host{
         .ctx = &parts.ctx,
-        .run_sub_call = interpreter_mod.protocol_schedule.runSubCallDefault,
         .precompiles = &parts.precompiles.precompiles,
     };
 
@@ -104,7 +103,6 @@ test "precompile dispatch: IDENTITY with no data returns empty" {
 
     var host = interpreter_mod.Host{
         .ctx = &parts.ctx,
-        .run_sub_call = interpreter_mod.protocol_schedule.runSubCallDefault,
         .precompiles = &parts.precompiles.precompiles,
     };
 
@@ -134,7 +132,6 @@ test "precompile dispatch: out-of-gas fails and consumes all gas" {
 
     var host = interpreter_mod.Host{
         .ctx = &parts.ctx,
-        .run_sub_call = interpreter_mod.protocol_schedule.runSubCallDefault,
         .precompiles = &parts.precompiles.precompiles,
     };
 
@@ -165,7 +162,6 @@ test "precompile dispatch: null precompiles falls back to interpreter (no precom
 
     var host = interpreter_mod.Host{
         .ctx = &parts.ctx,
-        .run_sub_call = interpreter_mod.protocol_schedule.runSubCallDefault,
         .precompiles = null, // disabled
     };
 

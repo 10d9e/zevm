@@ -8,6 +8,10 @@ const Memory = @import("memory.zig").Memory;
 const InstructionResult = @import("instruction_result.zig").InstructionResult;
 const InterpreterAction = @import("interpreter_action.zig").InterpreterAction;
 const CallScheme = @import("interpreter_action.zig").CallScheme;
+const CallInputs = @import("interpreter_action.zig").CallInputs;
+const CreateInputs = @import("interpreter_action.zig").CreateInputs;
+const HostCallInputs = @import("host.zig").CallInputs;
+const JournalCheckpoint = @import("context").JournalCheckpoint;
 // Lazy imports for dispatch types — pointer-only usage prevents circular dependency issues.
 const InstructionContext = @import("instruction_context.zig").InstructionContext;
 const Host = @import("host.zig").Host;
@@ -347,6 +351,33 @@ fn opUnknown(ctx: *InstructionContext) void {
 }
 
 // ---------------------------------------------------------------------------
+// Pending sub-call suspension types
+// ---------------------------------------------------------------------------
+
+/// Data stored when a CALL/CALLCODE/DELEGATECALL/STATICCALL suspends the interpreter.
+pub const PendingCallData = struct {
+    inputs: HostCallInputs,
+    code: bytecode.Bytecode,
+    checkpoint: JournalCheckpoint,
+    ret_off: usize,
+    ret_size: usize,
+};
+
+/// Data stored when a CREATE/CREATE2 suspends the interpreter.
+pub const PendingCreateData = struct {
+    inputs: CreateInputs,
+    new_addr: primitives.Address,
+    checkpoint: JournalCheckpoint,
+};
+
+/// Pending sub-call state: set by CALL/CREATE opcodes, cleared by frame runner.
+pub const PendingSubCall = union(enum) {
+    none,
+    call: PendingCallData,
+    create: PendingCreateData,
+};
+
+// ---------------------------------------------------------------------------
 // Main interpreter
 // ---------------------------------------------------------------------------
 
@@ -363,6 +394,8 @@ pub const Interpreter = struct {
     result: InstructionResult,
     extend: void,
     last_opcode: ?u8 = null,
+    /// Pending sub-call: set by CALL/CREATE opcodes, cleared by frame runner.
+    pending: PendingSubCall = .none,
 
     pub fn new(
         memory: Memory,
@@ -442,6 +475,7 @@ pub const Interpreter = struct {
         self.runtime_flags = RuntimeFlags.new(is_static, spec_id);
         self.result = .stop;
         self.extend = {};
+        self.pending = .none;
     }
 
     // -----------------------------------------------------------------------
@@ -546,10 +580,11 @@ pub const Interpreter = struct {
         ins.func(&ctx);
     }
 
-    /// Run the interpreter until execution halts, with full host access.
+    /// Run the interpreter until execution halts or a sub-call is pending, with full host access.
     pub fn runWithHost(self: *Interpreter, table: *const InstructionTable, host: *Host) InstructionResult {
         while (self.bytecode.isNotEnd()) {
             self.stepWithHost(table, host);
+            if (self.pending != .none) break;
         }
         return self.result;
     }

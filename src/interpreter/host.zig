@@ -10,6 +10,8 @@ const InstructionResult = @import("instruction_result.zig").InstructionResult;
 const CallScheme = @import("interpreter_action.zig").CallScheme;
 const gas_costs = @import("gas_costs.zig");
 const precompile_mod = @import("precompile");
+const protocol_schedule = @import("protocol_schedule.zig");
+const JournalCheckpoint = context_mod.JournalCheckpoint;
 
 /// Result of a sub-call dispatched via Host.call()
 pub const CallResult = struct {
@@ -90,25 +92,10 @@ pub const CreateResult = struct {
 /// The Host bridges opcode handlers to the EVM execution context.
 /// It provides access to block/tx environment and account state via
 /// the journaled state.
-///
-/// `run_sub_call` is a function pointer set by protocol_schedule.zig
-/// to break the circular dependency (host → protocol_schedule → instruction_context → host).
 pub const Host = struct {
     ctx: *context_mod.Context,
-    /// Callback to run a sub-interpreter. Set by protocol_schedule before execution.
-    run_sub_call: *const fn (host: *Host, sub_interp: *Interpreter) void,
     /// Precompile set for the current spec. Null disables precompile dispatch (benchmarks/unit tests).
     precompiles: ?*const precompile_mod.Precompiles = null,
-    /// Instruction dispatch table for the current spec. Stored here so sub-calls can reuse
-    /// the same table pointer instead of allocating a fresh 4 KB table on the native stack.
-    instruction_table: ?*const @import("interpreter.zig").InstructionTable = null,
-    /// Owned copy of return data from the most recent sub-call. Valid until the next sub-call
-    /// or until deinit(). Callers must copy any bytes they need to keep across sub-calls.
-    return_data_buf: std.ArrayList(u8) = .{},
-
-    pub fn deinit(self: *Host) void {
-        self.return_data_buf.deinit(std.heap.c_allocator);
-    }
 
     // -----------------------------------------------------------------------
     // Block / transaction environment (no state access required)
@@ -262,69 +249,91 @@ pub const Host = struct {
     }
 
     // -----------------------------------------------------------------------
-    // Sub-call dispatch
+    // Sub-call dispatch: setup/finalize split for iterative frame runner
     // -----------------------------------------------------------------------
 
-    pub fn call(self: *Host, inputs: CallInputs) CallResult {
+    /// Result of setupCall: either already resolved (precompile or failure),
+    /// or ready to launch a sub-frame.
+    pub const CallSetupResult = union(enum) {
+        /// Pre-execution failure (depth, value transfer, etc.): all gas returned.
+        failed: CallResult,
+        /// Precompile executed synchronously: result is final.
+        precompile: CallResult,
+        /// Sub-frame needed: checkpoint taken, code loaded, delegation_gas computed.
+        ready: struct {
+            checkpoint: JournalCheckpoint,
+            code: bytecode_mod.Bytecode,
+            delegation_gas: u64,
+        },
+    };
+
+    /// Result of setupCreate: either already resolved (failure) or ready to launch.
+    pub const CreateSetupResult = union(enum) {
+        failed: CreateResult,
+        ready: struct {
+            checkpoint: JournalCheckpoint,
+            new_addr: primitives.Address,
+        },
+    };
+
+    /// Performs all pre-execution steps for a CALL:
+    ///   1. Depth check
+    ///   2. Precompile dispatch (synchronous)
+    ///   3. Code load + EIP-7702 delegation
+    ///   4. Journal checkpoint
+    ///   5. Value transfer
+    /// Returns .ready with checkpoint+code on success, or .precompile/.failed with a
+    /// final CallResult. The caller (frame runner) is responsible for finalizing via
+    /// finalizeCall() after the sub-frame completes.
+    pub fn setupCall(self: *Host, inputs: CallInputs, frame_depth: usize) CallSetupResult {
         const MAX_CALL_DEPTH = 1024;
 
-        // 1. Depth check: no sub-code ran → return all gas to caller.
-        if (self.ctx.journaled_state.depth() >= MAX_CALL_DEPTH) {
-            return CallResult.preExecFailure(inputs.gas_limit);
+        // 1. Depth check
+        if (frame_depth >= MAX_CALL_DEPTH) {
+            return .{ .failed = CallResult.preExecFailure(inputs.gas_limit) };
         }
 
-        // 1b. Precompile dispatch: if the callee is a precompile, run it instead of the interpreter.
-        // Value transfer still occurs (ETH accumulates at the precompile address).
+        // 2. Precompile dispatch
         if (self.precompiles) |pcs| {
             if (pcs.get(inputs.callee)) |pc| {
-                const checkpoint = self.ctx.journaled_state.getCheckpoint();
-                // Value transfer (target == callee for normal CALL).
-                // Per EVM spec: if value transfer fails (insufficient balance), no code ran,
-                // so all forwarded gas is returned to caller (preExecFailure, not failure).
-                // DELEGATECALL inherits msg.value but does NOT transfer ETH.
+                const cp = self.ctx.journaled_state.getCheckpoint();
                 if (inputs.value > 0 and inputs.scheme != .delegatecall) {
                     const xfer_err = self.ctx.journaled_state.transfer(inputs.caller, inputs.target, inputs.value) catch {
-                        self.ctx.journaled_state.checkpointRevert(checkpoint);
-                        return CallResult.preExecFailure(inputs.gas_limit);
+                        self.ctx.journaled_state.checkpointRevert(cp);
+                        return .{ .precompile = CallResult.preExecFailure(inputs.gas_limit) };
                     };
                     if (xfer_err != null) {
-                        self.ctx.journaled_state.checkpointRevert(checkpoint);
-                        return CallResult.preExecFailure(inputs.gas_limit);
+                        self.ctx.journaled_state.checkpointRevert(cp);
+                        return .{ .precompile = CallResult.preExecFailure(inputs.gas_limit) };
                     }
                 }
                 const pc_result = pc.execute(inputs.data, inputs.gas_limit);
                 switch (pc_result) {
                     .success => |out| {
                         if (out.reverted) {
-                            self.ctx.journaled_state.checkpointRevert(checkpoint);
-                            return .{ .success = false, .return_data = out.bytes,
-                                       .gas_used = inputs.gas_limit, .gas_remaining = 0, .gas_refunded = 0, .delegation_gas = 0 };
+                            self.ctx.journaled_state.checkpointRevert(cp);
+                            return .{ .precompile = .{ .success = false, .return_data = out.bytes,
+                                .gas_used = inputs.gas_limit, .gas_remaining = 0, .gas_refunded = 0, .delegation_gas = 0 } };
                         }
                         self.ctx.journaled_state.checkpointCommit();
-                        return .{ .success = true, .return_data = out.bytes,
-                                   .gas_used = out.gas_used,
-                                   .gas_remaining = inputs.gas_limit - out.gas_used, .gas_refunded = 0, .delegation_gas = 0 };
+                        return .{ .precompile = .{ .success = true, .return_data = out.bytes,
+                            .gas_used = out.gas_used, .gas_remaining = inputs.gas_limit - out.gas_used,
+                            .gas_refunded = 0, .delegation_gas = 0 } };
                     },
                     .err => {
-                        self.ctx.journaled_state.checkpointRevert(checkpoint);
-                        return CallResult.failure(inputs.gas_limit);
+                        self.ctx.journaled_state.checkpointRevert(cp);
+                        return .{ .precompile = CallResult.failure(inputs.gas_limit) };
                     },
                 }
             }
         }
 
-        // 2. Load callee account and code
+        // 3. Load callee code + EIP-7702 delegation
         const callee_load = self.ctx.journaled_state.loadAccountWithCode(inputs.callee) catch {
-            return CallResult.failure(inputs.gas_limit);
+            return .{ .failed = CallResult.failure(inputs.gas_limit) };
         };
         const callee_acc = callee_load.data;
         var code = if (callee_acc.info.code) |c| c else bytecode_mod.Bytecode.new();
-
-        // EIP-7702: if callee has delegation code, follow it to get the code to execute.
-        // The call context (ADDRESS, storage) still refers to the authority (callee),
-        // but the bytecode executed comes from the delegation target. No recursive following.
-        // Per EIP-7702: loading the delegation target incurs warm/cold access cost,
-        // charged to the parent frame (returned as delegation_gas in CallResult).
         var delegation_gas: u64 = 0;
         if (code.isEip7702()) {
             const delegation_addr = code.eip7702.address;
@@ -333,248 +342,159 @@ pub const Host = struct {
                     gas_costs.COLD_ACCOUNT_ACCESS
                 else
                     gas_costs.WARM_ACCOUNT_ACCESS;
-                code = if (del_load.data.info.code) |del_code|
-                    del_code // per EIP-7702: execute target's code as-is (no recursion; 0xef → INVALID)
-                else
-                    bytecode_mod.Bytecode.new();
+                code = if (del_load.data.info.code) |del_code| del_code else bytecode_mod.Bytecode.new();
             } else |_| {
                 code = bytecode_mod.Bytecode.new();
             }
         }
 
-        // 3. Checkpoint before state changes
+        // 4. Checkpoint
         const checkpoint = self.ctx.journaled_state.getCheckpoint();
 
-        // 4. Value transfer (if any).
-        // DELEGATECALL inherits msg.value (CALLVALUE opcode) from parent but does NOT
-        // transfer ETH. Only CALL and CALLCODE actually move ETH.
-        // Transfer failure means no sub-code ran → return all gas to caller.
+        // 5. Value transfer
         if (inputs.value > 0 and inputs.scheme != .delegatecall) {
             const transfer_err = self.ctx.journaled_state.transfer(inputs.caller, inputs.target, inputs.value) catch {
                 self.ctx.journaled_state.checkpointRevert(checkpoint);
-                return CallResult.preExecFailure(inputs.gas_limit);
+                return .{ .failed = CallResult.preExecFailure(inputs.gas_limit) };
             };
             if (transfer_err != null) {
                 self.ctx.journaled_state.checkpointRevert(checkpoint);
-                return CallResult.preExecFailure(inputs.gas_limit);
+                return .{ .failed = CallResult.preExecFailure(inputs.gas_limit) };
             }
         }
 
-        // 5. Build and run sub-interpreter.
-        // Stack now heap-allocates its backing store (32 KB), so Interpreter is small (~300 bytes)
-        // and can live on the native call stack. deinit() is deferred so cleanup is deterministic.
-        // Depth is already incremented by getCheckpoint() above; no manual adjustment needed.
-        const spec_id = self.ctx.journaled_state.inner.spec;
-        var sub_interp = Interpreter.new(
-            Memory.new(),
-            ExtBytecode.new(code),
-            InputsImpl.new(
-                inputs.caller,
-                inputs.target,
-                inputs.value,
-                @constCast(inputs.data),
-                inputs.gas_limit,
-                inputs.scheme,
-                inputs.is_static,
-                self.ctx.journaled_state.inner.depth,
-            ),
-            inputs.is_static,
-            spec_id,
-            inputs.gas_limit,
-        );
-        defer sub_interp.deinit();
+        return .{ .ready = .{ .checkpoint = checkpoint, .code = code, .delegation_gas = delegation_gas } };
+    }
 
-        self.run_sub_call(self, &sub_interp);
-
-        // 6. Commit or revert state changes
-        const result = sub_interp.result;
+    /// Commits or reverts a call checkpoint and builds the final CallResult.
+    /// Called by the frame runner after the sub-frame interpreter finishes.
+    pub fn finalizeCall(
+        self: *Host,
+        checkpoint: JournalCheckpoint,
+        result: InstructionResult,
+        gas_limit: u64,
+        gas_remaining: u64,
+        gas_refunded: i64,
+        return_data: []const u8,
+    ) CallResult {
         if (result.isSuccess()) {
             self.ctx.journaled_state.checkpointCommit();
         } else {
             self.ctx.journaled_state.checkpointRevert(checkpoint);
         }
-
-        // EVM gas return rules:
-        //   - Success (stop/return/selfdestruct): return unused gas to caller
-        //   - REVERT: return unused gas to caller
-        //   - Any error (stack underflow/overflow, bad opcode, bad jump, etc.):
-        //     all remaining gas is consumed; return 0
-        const gas_remaining: u64 = if (result.isSuccess() or result == .revert) sub_interp.gas.remaining else 0;
-        const gas_used = if (inputs.gas_limit > gas_remaining) inputs.gas_limit - gas_remaining else 0;
-        // Propagate sub-call refund counter (SSTORE clears, etc.) to caller frame.
-        const gas_refunded: i64 = if (result.isSuccess()) sub_interp.gas.refunded else 0;
-
-        // Copy return data into owned buffer before sub_interp.deinit() (via defer) frees memory.
-        // return_data_buf is valid until the next sub-call or until Host.deinit().
-        const raw_rd: []const u8 = if (result.isSuccess() or result == .revert)
-            sub_interp.return_data.data
-        else
-            &[_]u8{};
-        self.return_data_buf.clearRetainingCapacity();
-        self.return_data_buf.appendSlice(std.heap.c_allocator, raw_rd) catch {};
-
-        return CallResult{
+        const gas_rem: u64 = if (result.isSuccess() or result == .revert) gas_remaining else 0;
+        const gas_used = if (gas_limit > gas_rem) gas_limit - gas_rem else 0;
+        const refunded: i64 = if (result.isSuccess()) gas_refunded else 0;
+        return .{
             .success = result.isSuccess(),
-            // EVM semantics: return data is only populated on SUCCESS or REVERT.
-            // Any other failure (OOG, stack overflow, bad opcode, etc.) returns empty data.
-            .return_data = self.return_data_buf.items,
+            .return_data = if (result.isSuccess() or result == .revert) return_data else &[_]u8{},
             .gas_used = gas_used,
-            .gas_remaining = gas_remaining,
-            .gas_refunded = gas_refunded,
-            .delegation_gas = 0, // delegation_gas is now charged upfront in callImpl (before 63/64)
+            .gas_remaining = gas_rem,
+            .gas_refunded = refunded,
+            .delegation_gas = 0,
         };
     }
 
-    /// Execute a CREATE or CREATE2.  Returns the new contract address on success,
-    /// or zero address on failure.  Caller must be pre-loaded in journaled_state.
-    pub fn create(
+    /// Performs all pre-execution steps for a CREATE/CREATE2.
+    /// On success returns .ready with {checkpoint, new_addr}.
+    pub fn setupCreate(
         self: *Host,
         caller: primitives.Address,
         value: primitives.U256,
         init_code: []const u8,
         gas_limit: u64,
-        comptime is_create2: bool,
+        is_create2: bool,
         salt: primitives.U256,
-        /// When true, the caller nonce has already been incremented by tx validation.
-        /// The nonce bump is skipped here but the pre-bump nonce is still used for address derivation.
-        comptime skip_nonce_bump: bool,
-    ) CreateResult {
+        skip_nonce_bump: bool,
+        frame_depth: usize,
+    ) CreateSetupResult {
         const MAX_CALL_DEPTH = 1024;
         const MAX_CODE_SIZE: usize = 24576;
-        const MAX_INITCODE_SIZE: usize = 2 * MAX_CODE_SIZE; // EIP-3860
+        const MAX_INITCODE_SIZE: usize = 2 * MAX_CODE_SIZE;
 
         const js = &self.ctx.journaled_state;
         const spec_id = js.inner.spec;
 
-        // 1. Depth check
-        if (js.depth() >= MAX_CALL_DEPTH) return CreateResult.preExecFailure(gas_limit);
+        if (frame_depth >= MAX_CALL_DEPTH) return .{ .failed = CreateResult.preExecFailure(gas_limit) };
 
-        // 2. EIP-3860 (Shanghai+): init code size limit
         if (primitives.isEnabledIn(spec_id, .shanghai)) {
-            if (init_code.len > MAX_INITCODE_SIZE) return CreateResult.preExecFailure(gas_limit);
+            if (init_code.len > MAX_INITCODE_SIZE) return .{ .failed = CreateResult.preExecFailure(gas_limit) };
         }
 
-        // 2.5. Early balance check: if value > 0, verify caller has sufficient balance BEFORE
-        //      bumping the nonce. Per go-ethereum and the Yellow Paper, nonce is NOT incremented
-        //      when CREATE fails due to insufficient balance (unlike EIP-161/code collision which
-        //      happens after the nonce bump and does not revert it).
         if (value > 0) {
-            const acct = js.inner.evm_state.getPtr(caller) orelse return CreateResult.preExecFailure(gas_limit);
-            if (acct.info.balance < value) return CreateResult.preExecFailure(gas_limit);
+            const acct = js.inner.evm_state.getPtr(caller) orelse return .{ .failed = CreateResult.preExecFailure(gas_limit) };
+            if (acct.info.balance < value) return .{ .failed = CreateResult.preExecFailure(gas_limit) };
         }
 
-        // 3. Manage caller nonce BEFORE checkpoint (nonce bump is never reverted by CREATE failure).
-        //    skip_nonce_bump=true means tx validation already bumped the nonce from N to N+1;
-        //    we still need N for address derivation.
-        const caller_acc = js.inner.evm_state.getPtr(caller) orelse return CreateResult.preExecFailure(gas_limit);
+        const caller_acc = js.inner.evm_state.getPtr(caller) orelse return .{ .failed = CreateResult.preExecFailure(gas_limit) };
         const caller_nonce: u64 = if (skip_nonce_bump)
-            // Already bumped: current nonce is N+1, use N for address derivation
             caller_acc.info.nonce -| 1
         else blk: {
-            // Normal opcode path: read N, bump to N+1, record journal entry
             const n = caller_acc.info.nonce;
-            // EIP-2681: nonce must not overflow u64
-            if (n == std.math.maxInt(u64)) return CreateResult.preExecFailure(gas_limit);
+            if (n == std.math.maxInt(u64)) return .{ .failed = CreateResult.preExecFailure(gas_limit) };
             caller_acc.info.nonce = n + 1;
             js.nonceBumpJournalEntry(caller);
             break :blk n;
         };
 
-        // 4. Derive new contract address
         const new_addr: primitives.Address = if (is_create2) blk: {
             var init_hash: [32]u8 = undefined;
             std.crypto.hash.sha3.Keccak256.hash(init_code, &init_hash, .{});
             break :blk create2Address(caller, salt, init_hash);
         } else createAddress(caller, caller_nonce);
 
-        // 5. Load target address into state (required before createAccountCheckpoint)
-        _ = js.loadAccount(new_addr) catch return CreateResult.preExecFailure(gas_limit);
+        _ = js.loadAccount(new_addr) catch return .{ .failed = CreateResult.preExecFailure(gas_limit) };
 
-        // EIP-7610: CREATE fails if target address has non-empty storage in the DB.
-        // Per EIP-7610, storage collision consumes ALL forwarded gas (like OOG), not a preExecFailure
-        // that returns gas. Return gas_remaining=0 so the 63/64 rule keeps only 1/64 for the caller.
-        // Check loaded storage in evm_state (from prior SLOAD/SSTORE) and in DB (pre-inserted).
         if (js.inner.evm_state.get(new_addr)) |acct| {
             var slot_it = acct.storage.valueIterator();
             while (slot_it.next()) |slot| {
-                if (slot.presentValue() != 0) return CreateResult.preExecFailure(0);
+                if (slot.presentValue() != 0) return .{ .failed = CreateResult.preExecFailure(0) };
             }
         }
         {
             var db_it = js.database.storage_map.iterator();
             while (db_it.next()) |entry| {
                 if (std.mem.eql(u8, &entry.key_ptr.@"0", &new_addr) and entry.value_ptr.* != 0)
-                    return CreateResult.preExecFailure(0);
+                    return .{ .failed = CreateResult.preExecFailure(0) };
             }
         }
 
-        // 6. Create account checkpoint: collision check, value transfer, set nonce=1 (EIP-161)
-        // EIP-7610: nonce/code collision consumes all forwarded gas (like OOG), same as storage collision.
         const checkpoint = js.createAccountCheckpoint(caller, new_addr, value, spec_id) catch {
-            return CreateResult.preExecFailure(0);
+            return .{ .failed = CreateResult.preExecFailure(0) };
         };
 
-        // 7. Build and run init-code sub-interpreter.
-        // Stack heap-allocates its backing; Interpreter is small (~300 bytes) and lives on the
-        // native call stack. deinit() is deferred so cleanup is deterministic.
-        // Depth is already incremented by createAccountCheckpoint() → getCheckpoint() above.
-        const init_bytecode = bytecode_mod.Bytecode.newRaw(init_code);
-        // Per EVM Yellow Paper: I_d (input data) is empty for CREATE/CREATE2 sub-executions.
-        var sub_interp = Interpreter.new(
-            Memory.new(),
-            ExtBytecode.new(init_bytecode),
-            InputsImpl.new(
-                caller,
-                new_addr,
-                value,
-                @constCast(&[_]u8{}), // Empty calldata for CREATE sub-context
-                gas_limit,
-                .call,
-                false, // not static
-                js.inner.depth,
-            ),
-            false,
-            spec_id,
-            gas_limit,
-        );
-        defer sub_interp.deinit();
-        self.run_sub_call(self, &sub_interp);
+        return .{ .ready = .{ .checkpoint = checkpoint, .new_addr = new_addr } };
+    }
 
-        // 8. Handle sub-interpreter failure
-        if (!sub_interp.result.isSuccess()) {
+    /// Validates deployed code, applies deposit gas, stores bytecode, and commits/reverts.
+    /// Called by the frame runner after the init-code sub-frame finishes.
+    pub fn finalizeCreate(
+        self: *Host,
+        checkpoint: JournalCheckpoint,
+        new_addr: primitives.Address,
+        result: InstructionResult,
+        gas_remaining: u64,
+        gas_refunded: i64,
+        return_data: []const u8,
+        spec_id: primitives.SpecId,
+    ) CreateResult {
+        const MAX_CODE_SIZE: usize = 24576;
+        const js = &self.ctx.journaled_state;
+
+        if (!result.isSuccess()) {
             js.checkpointRevert(checkpoint);
-            // EVM gas return rules for CREATE:
-            //   - REVERT: return unused gas to caller
-            //   - Any error (invalid opcode, stack underflow, OOG, etc.): all gas consumed, return 0
-            const gas_rem = if (sub_interp.result == .revert) sub_interp.gas.remaining else @as(u64, 0);
-            // Copy revert data into owned buffer before sub_interp.deinit() fires.
-            const revert_bytes: []const u8 = if (sub_interp.result == .revert)
-                sub_interp.return_data.data
-            else
-                &[_]u8{};
-            self.return_data_buf.clearRetainingCapacity();
-            self.return_data_buf.appendSlice(std.heap.c_allocator, revert_bytes) catch {};
-            return .{
-                .success = false,
-                .is_revert = (sub_interp.result == .revert),
-                .address = [_]u8{0} ** 20,
-                .gas_remaining = gas_rem,
-                .return_data = self.return_data_buf.items,
-                .gas_refunded = 0,
-            };
+            const gas_rem = if (result == .revert) gas_remaining else @as(u64, 0);
+            const rd = if (result == .revert) return_data else &[_]u8{};
+            return .{ .success = false, .is_revert = (result == .revert), .address = [_]u8{0} ** 20,
+                       .gas_remaining = gas_rem, .return_data = rd, .gas_refunded = 0 };
         }
 
-        // 11. Validate deployed code
-        // Dupe deployed bytes NOW (before defer fires) since analyzeLegacy stores the slice
-        // reference without copying. The copy is journal-lifetime (≤24KB, transaction-bounded).
-        const deployed_raw = sub_interp.return_data.data;
+        const deployed_raw = return_data;
         if (deployed_raw.len > MAX_CODE_SIZE) {
-            // EIP-170: code too large → all remaining gas consumed (treated as error, not revert)
             js.checkpointRevert(checkpoint);
             return .{ .success = false, .is_revert = false, .address = [_]u8{0} ** 20,
                        .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
         }
-        // EIP-3541 (London+): reject code starting with 0xEF (all gas consumed)
         if (primitives.isEnabledIn(spec_id, .london)) {
             if (deployed_raw.len > 0 and deployed_raw[0] == 0xEF) {
                 js.checkpointRevert(checkpoint);
@@ -583,32 +503,21 @@ pub const Host = struct {
             }
         }
 
-        // 12. Code deposit gas: 200 per byte of deployed code
         const deposit_cost = gas_costs.G_CODEDEPOSIT * @as(u64, @intCast(deployed_raw.len));
-        if (sub_interp.gas.remaining < deposit_cost) {
+        if (gas_remaining < deposit_cost) {
             if (primitives.isEnabledIn(spec_id, .homestead)) {
-                // Homestead+ (EIP-2): deposit OOG is a full failure — all gas consumed, state reverted.
                 js.checkpointRevert(checkpoint);
                 return CreateResult.failure();
             } else {
-                // Frontier: code deposit OOG silently deploys an EMPTY contract (EIP-2 removed this).
-                // The state is committed (new account with empty code), and remaining gas is returned.
-                // This is the "leaving an empty contract" behavior that EIP-2 eliminated.
                 js.checkpointCommit();
                 return .{ .success = true, .is_revert = false, .address = new_addr,
-                           .gas_remaining = sub_interp.gas.remaining, .return_data = &[_]u8{},
-                           .gas_refunded = sub_interp.gas.refunded };
+                           .gas_remaining = gas_remaining, .return_data = &[_]u8{}, .gas_refunded = gas_refunded };
             }
         }
-        const gas_after_deposit = sub_interp.gas.remaining - deposit_cost;
-        const gas_refunded_create = sub_interp.gas.refunded;
+        const gas_after_deposit = gas_remaining - deposit_cost;
 
-        // 13. Store deployed bytecode.
-        // analyzeLegacy (called from newRaw) stores the slice reference without copying, so we
-        // must dupe the bytes before sub_interp.deinit() (via defer) frees the memory buffer.
         if (deployed_raw.len > 0) {
             const deployed_copy = std.heap.c_allocator.dupe(u8, deployed_raw) catch {
-                // OOM: treat as full failure (all gas consumed, state reverted)
                 js.checkpointRevert(checkpoint);
                 return CreateResult.failure();
             };
@@ -618,18 +527,81 @@ pub const Host = struct {
             js.setCodeWithHash(new_addr, bc, code_hash);
         }
 
-        // 14. Commit sub-call state
         js.checkpointCommit();
+        return .{ .success = true, .is_revert = false, .address = new_addr,
+                   .gas_remaining = gas_after_deposit, .return_data = &[_]u8{}, .gas_refunded = gas_refunded };
+    }
 
-        // EIP-211: After a successful CREATE, RETURNDATASIZE is zero.
-        return .{
-            .success = true,
-            .is_revert = false,
-            .address = new_addr,
-            .gas_remaining = gas_after_deposit,
-            .return_data = &[_]u8{},
-            .gas_refunded = gas_refunded_create,
-        };
+    // -----------------------------------------------------------------------
+    // Synchronous helpers (used by tests and call_integration_tests)
+    // -----------------------------------------------------------------------
+
+    /// Synchronous CALL — runs a complete sub-frame inline. For use in tests and
+    /// simple callers that do not need the iterative frame runner.
+    pub fn call(self: *Host, inputs: CallInputs) CallResult {
+        const setup = self.setupCall(inputs, 0);
+        switch (setup) {
+            .failed => |r| return r,
+            .precompile => |r| return r,
+            .ready => |s| {
+                const spec_id = self.ctx.journaled_state.inner.spec;
+                var sub_interp = Interpreter.new(
+                    Memory.new(),
+                    ExtBytecode.new(s.code),
+                    InputsImpl.new(inputs.caller, inputs.target, inputs.value,
+                        @constCast(inputs.data), inputs.gas_limit, inputs.scheme, inputs.is_static, 1),
+                    inputs.is_static, spec_id, inputs.gas_limit,
+                );
+                defer sub_interp.deinit();
+                const table = protocol_schedule.makeInstructionTable(spec_id);
+                _ = sub_interp.runWithHost(&table, self);
+                const rd: []const u8 = if (sub_interp.result.isSuccess() or sub_interp.result == .revert)
+                    sub_interp.return_data.data else &[_]u8{};
+                var rd_buf: std.ArrayList(u8) = .{};
+                defer rd_buf.deinit(std.heap.c_allocator);
+                rd_buf.appendSlice(std.heap.c_allocator, rd) catch {};
+                return self.finalizeCall(s.checkpoint, sub_interp.result, inputs.gas_limit,
+                    sub_interp.gas.remaining, sub_interp.gas.refunded, rd_buf.items);
+            },
+        }
+    }
+
+    /// Synchronous CREATE/CREATE2 — runs a complete init-code frame inline. For tests only.
+    pub fn create(
+        self: *Host,
+        caller: primitives.Address,
+        value: primitives.U256,
+        init_code: []const u8,
+        gas_limit: u64,
+        is_create2: bool,
+        salt: primitives.U256,
+        skip_nonce_bump: bool,
+    ) CreateResult {
+        const setup = self.setupCreate(caller, value, init_code, gas_limit, is_create2, salt, skip_nonce_bump, 0);
+        switch (setup) {
+            .failed => |r| return r,
+            .ready => |s| {
+                const spec_id = self.ctx.journaled_state.inner.spec;
+                const init_bytecode = bytecode_mod.Bytecode.newRaw(init_code);
+                var sub_interp = Interpreter.new(
+                    Memory.new(),
+                    ExtBytecode.new(init_bytecode),
+                    InputsImpl.new(caller, s.new_addr, value, @constCast(&[_]u8{}),
+                        gas_limit, .call, false, 1),
+                    false, spec_id, gas_limit,
+                );
+                defer sub_interp.deinit();
+                const table = protocol_schedule.makeInstructionTable(spec_id);
+                _ = sub_interp.runWithHost(&table, self);
+                const rd: []const u8 = if (sub_interp.result.isSuccess() or sub_interp.result == .revert)
+                    sub_interp.return_data.data else &[_]u8{};
+                var rd_buf: std.ArrayList(u8) = .{};
+                defer rd_buf.deinit(std.heap.c_allocator);
+                rd_buf.appendSlice(std.heap.c_allocator, rd) catch {};
+                return self.finalizeCreate(s.checkpoint, s.new_addr, sub_interp.result,
+                    sub_interp.gas.remaining, sub_interp.gas.refunded, rd_buf.items, spec_id);
+            },
+        }
     }
 };
 

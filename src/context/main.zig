@@ -17,6 +17,7 @@ pub const RecoveredAuthorization = @import("tx.zig").RecoveredAuthorization;
 pub const Either = @import("tx.zig").Either;
 pub const CfgEnv = @import("cfg.zig").CfgEnv;
 pub const Journal = @import("journal.zig").Journal;
+pub const JournalCheckpoint = @import("journal.zig").JournalCheckpoint;
 pub const LocalContext = @import("local.zig").LocalContext;
 pub const Context = @import("context.zig").Context;
 pub const Evm = @import("evm.zig").Evm;

@@ -360,8 +360,6 @@ pub const JournalInner = struct {
     transient_storage: state.TransientStorage,
     /// Emitted logs
     logs: std.ArrayList(primitives.Log),
-    /// The current call stack depth
-    depth: usize,
     /// The journal of evm_state changes, one for each transaction
     journal: std.ArrayList(JournalEntry),
     /// Global transaction id that represent number of transactions executed (Including reverted ones).
@@ -390,7 +388,6 @@ pub const JournalInner = struct {
             .logs = std.ArrayList(primitives.Log){},
             .journal = std.ArrayList(JournalEntry){},
             .transaction_id = 0,
-            .depth = 0,
             .spec = primitives.SpecId.prague,
             .warm_addresses = WarmAddresses.new(),
         };
@@ -426,7 +423,6 @@ pub const JournalInner = struct {
     /// `commit_tx` is used even for discarding transactions so transaction_id will be incremented.
     pub fn commitTx(self: *JournalInner) void {
         self.transient_storage.clearRetainingCapacity();
-        self.depth = 0;
         self.journal.clearRetainingCapacity();
         self.warm_addresses.clearCoinbaseAndAccessList();
         self.transaction_id += 1;
@@ -452,7 +448,6 @@ pub const JournalInner = struct {
         }
 
         self.transient_storage.clearRetainingCapacity();
-        self.depth = 0;
         // Free heap-allocated topic slices before clearing the log list
         for (self.logs.items) |log| {
             if (log.topics.len > 0) {
@@ -482,7 +477,6 @@ pub const JournalInner = struct {
         self.logs.clearRetainingCapacity();
         self.transient_storage.clearRetainingCapacity();
         self.journal.clearRetainingCapacity();
-        self.depth = 0;
         self.transaction_id = 0;
 
         return evm_state;
@@ -698,51 +692,23 @@ pub const JournalInner = struct {
 
     /// Makes a checkpoint that in case of Revert can bring back evm_state to this point.
     pub fn getCheckpoint(self: *JournalInner) JournalCheckpoint {
-        const checkpoint = JournalCheckpoint{
-            .log_i = self.logs.items.len,
-            .journal_i = self.journal.items.len,
-        };
-        self.depth += 1;
-        return checkpoint;
-    }
-
-    /// Commits the checkpoint.
-    pub fn checkpointCommit(self: *JournalInner) void {
-        self.depth = self.depth -| 1;
-    }
-
-    /// Reverts all changes to evm_state until given checkpoint.
-    pub fn checkpointRevert(self: *JournalInner, checkpoint: JournalCheckpoint) void {
-        const is_spurious_dragon_enabled = primitives.isEnabledIn(self.spec, .spurious_dragon);
-        self.depth = self.depth -| 1;
-        self.logs.shrinkRetainingCapacity(checkpoint.log_i);
-
-        // iterate over last N journals sets and revert our global evm_state
-        if (checkpoint.journal_i < self.journal.items.len) {
-            var i = self.journal.items.len;
-            while (i > checkpoint.journal_i) {
-                i -= 1;
-                const entry = self.journal.swapRemove(i);
-                entry.revert(&self.evm_state, &self.transient_storage, is_spurious_dragon_enabled);
-            }
-        }
-    }
-
-    /// Snapshot the current journal position WITHOUT incrementing the call depth counter.
-    /// Use this for top-level transaction frames that should not consume an EVM call depth slot.
-    /// Pair with revertToSnapshot() to undo state changes without affecting call depth tracking.
-    pub fn snapshotPosition(self: *JournalInner) JournalCheckpoint {
         return JournalCheckpoint{
             .log_i = self.logs.items.len,
             .journal_i = self.journal.items.len,
         };
     }
 
-    /// Revert journal entries back to a snapshot position WITHOUT decrementing call depth.
-    /// Companion to snapshotPosition() — does not affect the depth counter.
-    pub fn revertToSnapshot(self: *JournalInner, checkpoint: JournalCheckpoint) void {
+    /// Commits the checkpoint (no-op: state accumulates until commitTx).
+    pub fn checkpointCommit(self: *JournalInner) void {
+        _ = self;
+    }
+
+    /// Reverts all changes to evm_state until given checkpoint.
+    pub fn checkpointRevert(self: *JournalInner, checkpoint: JournalCheckpoint) void {
         const is_spurious_dragon_enabled = primitives.isEnabledIn(self.spec, .spurious_dragon);
         self.logs.shrinkRetainingCapacity(checkpoint.log_i);
+
+        // iterate over last N journals sets and revert our global evm_state
         if (checkpoint.journal_i < self.journal.items.len) {
             var i = self.journal.items.len;
             while (i > checkpoint.journal_i) {
@@ -1113,11 +1079,6 @@ pub fn Journal(comptime DB: type) type {
             return self.inner.warm_addresses.precompiles();
         }
 
-        /// Returns call depth.
-        pub fn depth(self: @This()) usize {
-            return self.inner.depth;
-        }
-
         pub fn setSpecId(self: *@This(), spec_id: primitives.SpecId) void {
             self.inner.setSpecId(spec_id);
         }
@@ -1174,14 +1135,6 @@ pub fn Journal(comptime DB: type) type {
 
         pub fn checkpointRevert(self: *@This(), checkpoint: JournalCheckpoint) void {
             self.inner.checkpointRevert(checkpoint);
-        }
-
-        pub fn snapshotPosition(self: *@This()) JournalCheckpoint {
-            return self.inner.snapshotPosition();
-        }
-
-        pub fn revertToSnapshot(self: *@This(), checkpoint: JournalCheckpoint) void {
-            self.inner.revertToSnapshot(checkpoint);
         }
 
         pub fn setCodeWithHash(self: *@This(), address: primitives.Address, code: bytecode.Bytecode, hash: primitives.Hash) void {

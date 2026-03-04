@@ -105,7 +105,6 @@ test "SSTORE EIP-2200: fails when gas_remaining <= 2300 (Istanbul+)" {
 
     var host = interpreter_mod.Host{
         .ctx = &parts.ctx,
-        .run_sub_call = interpreter_mod.protocol_schedule.runSubCallDefault,
         .precompiles = null,
     };
 
@@ -137,7 +136,6 @@ test "SSTORE EIP-2200: succeeds with sufficient gas" {
 
     var host = interpreter_mod.Host{
         .ctx = &parts.ctx,
-        .run_sub_call = interpreter_mod.protocol_schedule.runSubCallDefault,
         .precompiles = null,
     };
 
@@ -178,7 +176,6 @@ test "gas refund propagation: SSTORE clear in sub-call surfaces in CallResult" {
 
     var host = interpreter_mod.Host{
         .ctx = &parts.ctx,
-        .run_sub_call = interpreter_mod.protocol_schedule.runSubCallDefault,
         .precompiles = null,
     };
 

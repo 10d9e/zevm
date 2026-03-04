@@ -11,7 +11,6 @@ const Gas = @import("../gas.zig").Gas;
 const InstructionContext = @import("../instruction_context.zig").InstructionContext;
 const Host = @import("../host.zig").Host;
 const host_module = @import("../host.zig");
-const protocol_schedule = @import("../protocol_schedule.zig");
 const gas_costs = @import("../gas_costs.zig");
 
 const host_ops = @import("host_ops.zig");
@@ -64,7 +63,7 @@ test "SLOAD: slot present in state returns stored value" {
     var interp = makeInterp();
     interp.stack.pushUnsafe(KEY);
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opSload(&ic);
@@ -82,7 +81,7 @@ test "SLOAD: slot absent returns zero" {
     var interp = makeInterp();
     interp.stack.pushUnsafe(@as(U, 0x1234)); // key with no storage entry
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opSload(&ic);
@@ -106,7 +105,7 @@ test "SLOAD: stack underflow halts" {
     var ctx = makeCtx(db);
 
     var interp = makeInterp();
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opSload(&ic);
@@ -127,7 +126,7 @@ test "SLOAD: cold access charges COLD_SLOAD gas (Berlin+)" {
     interp.gas = Gas.new(GAS_LIMIT);
     interp.stack.pushUnsafe(KEY);
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opSload(&ic);
@@ -148,7 +147,7 @@ test "SLOAD: second access to same slot charges WARM_SLOAD gas" {
 
     var interp = makeInterp();
     interp.gas = Gas.new(GAS_LIMIT);
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     // First access: cold
@@ -181,7 +180,7 @@ test "SLOAD: out of gas halts with out_of_gas" {
     interp.gas = Gas.new(gas_costs.COLD_SLOAD - 1);
     interp.stack.pushUnsafe(KEY);
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opSload(&ic);
@@ -207,7 +206,7 @@ test "SSTORE: writes value verifiable via sload" {
     interp.stack.pushUnsafe(VALUE);
     interp.stack.pushUnsafe(KEY);
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opSstore(&ic);
@@ -230,7 +229,7 @@ test "SSTORE: static context halts with invalid_static" {
     interp.stack.pushUnsafe(@as(U, 0));
     interp.stack.pushUnsafe(@as(U, 1));
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opSstore(&ic);
@@ -256,7 +255,7 @@ test "SSTORE: stack underflow halts" {
     var interp = makeInterp();
     interp.stack.pushUnsafe(@as(U, 1)); // only 1 item, need 2
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opSstore(&ic);
@@ -273,7 +272,7 @@ test "TSTORE then TLOAD round-trips a value" {
     var ctx = makeCtx(db);
 
     var interp = makeInterp();
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     // TSTORE: stack [key (top), value]
@@ -295,7 +294,7 @@ test "TLOAD: unset key returns zero" {
     var interp = makeInterp();
     interp.stack.pushUnsafe(@as(U, 7)); // key not set
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opTload(&ic);
@@ -312,7 +311,7 @@ test "TSTORE: static context halts with invalid_static" {
     interp.stack.pushUnsafe(@as(U, 0));
     interp.stack.pushUnsafe(@as(U, 1));
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opTstore(&ic);
@@ -344,7 +343,7 @@ test "BALANCE: returns correct balance for known account" {
     var interp = makeInterp();
     interp.stack.pushUnsafe(host_module.addressToU256(OTHER));
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opBalance(&ic);
@@ -364,7 +363,7 @@ test "BALANCE: cold access charges COLD_ACCOUNT_ACCESS gas (Berlin+)" {
     interp.gas = Gas.new(GAS_LIMIT);
     interp.stack.pushUnsafe(host_module.addressToU256(OTHER));
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opBalance(&ic);
@@ -388,7 +387,7 @@ test "BALANCE: stack underflow halts" {
     var ctx = makeCtx(db);
 
     var interp = makeInterp();
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opBalance(&ic);
@@ -409,7 +408,7 @@ test "SELFBALANCE: returns balance of executing contract" {
 
     var interp = makeInterp(); // interp.input.target = TARGET
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opSelfbalance(&ic);
@@ -440,7 +439,7 @@ test "EXTCODESIZE: EOA with empty code returns 0" {
     var interp = makeInterp();
     interp.stack.pushUnsafe(host_module.addressToU256(OTHER));
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opExtcodesize(&ic);
@@ -464,7 +463,7 @@ test "EXTCODESIZE: stack underflow halts" {
     var ctx = makeCtx(db);
 
     var interp = makeInterp();
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opExtcodesize(&ic);
@@ -483,7 +482,7 @@ test "EXTCODEHASH: empty account returns 0" {
     var interp = makeInterp();
     interp.stack.pushUnsafe(host_module.addressToU256(OTHER));
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opExtcodehash(&ic);
@@ -517,7 +516,7 @@ test "BLOCKHASH: known block returns hash" {
     var interp = makeInterp();
     interp.stack.pushUnsafe(@as(U, BLOCK_NUM));
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opBlockhash(&ic);
@@ -533,7 +532,7 @@ test "BLOCKHASH: unknown block returns 0" {
     var interp = makeInterp();
     interp.stack.pushUnsafe(@as(U, 999));
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opBlockhash(&ic);
@@ -564,7 +563,7 @@ test "LOG0: emits log with correct address and empty data" {
     interp.stack.pushUnsafe(@as(U, 0)); // size
     interp.stack.pushUnsafe(@as(U, 0)); // offset (top)
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opLog0(&ic);
@@ -593,7 +592,7 @@ test "LOG1: emits log with one topic" {
     interp.stack.pushUnsafe(@as(U, 0)); // size (depth 1)
     interp.stack.pushUnsafe(@as(U, 0)); // offset (top)
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opLog1(&ic);
@@ -615,7 +614,7 @@ test "LOG0: static context halts with invalid_static" {
     interp.stack.pushUnsafe(@as(U, 0)); // size
     interp.stack.pushUnsafe(@as(U, 0)); // offset
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opLog0(&ic);
@@ -636,7 +635,7 @@ test "LOG4: emits log with four topics" {
     interp.stack.pushUnsafe(@as(U, 0)); // size
     interp.stack.pushUnsafe(@as(U, 0)); // offset (top)
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opLog4(&ic);
@@ -673,7 +672,7 @@ test "SELFDESTRUCT: halts with selfdestruct result" {
     var interp = makeInterp();
     interp.stack.pushUnsafe(host_module.addressToU256(OTHER)); // target address
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opSelfdestruct(&ic);
@@ -689,7 +688,7 @@ test "SELFDESTRUCT: static context halts with invalid_static" {
     interp.runtime_flags.is_static = true;
     interp.stack.pushUnsafe(host_module.addressToU256(OTHER));
 
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opSelfdestruct(&ic);
@@ -712,7 +711,7 @@ test "SELFDESTRUCT: stack underflow halts" {
     var ctx = makeCtx(db);
 
     var interp = makeInterp();
-    var host = Host{ .ctx = &ctx, .run_sub_call = protocol_schedule.runSubCallDefault };
+    var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
 
     host_ops.opSelfdestruct(&ic);

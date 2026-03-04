@@ -591,9 +591,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    // EVM supports up to 1024 recursive call levels. Each native stack frame in debug
-    // mode is ~3-4 KB, requiring ~4 MB just for the EVM stack. Set 64 MB to be safe.
-    runner_exe.stack_size = 64 * 1024 * 1024;
     runner_exe.root_module.addImport("types", spec_test_types_module);
     runner_exe.root_module.addImport("runner", b.addModule("runner", .{
         .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/spec_test/runner.zig" } },

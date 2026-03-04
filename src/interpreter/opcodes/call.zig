@@ -4,6 +4,12 @@ const InstructionContext = @import("../instruction_context.zig").InstructionCont
 const gas_costs = @import("../gas_costs.zig");
 const host_module = @import("../host.zig");
 const CallScheme = @import("../interpreter_action.zig").CallScheme;
+const CreateScheme = @import("../interpreter_action.zig").CreateScheme;
+const CreateInputs = @import("../interpreter_action.zig").CreateInputs;
+const interp_mod = @import("../interpreter.zig");
+const Interpreter = interp_mod.Interpreter;
+const PendingCallData = interp_mod.PendingCallData;
+const PendingCreateData = interp_mod.PendingCreateData;
 
 // ---------------------------------------------------------------------------
 // Memory expansion helper
@@ -208,31 +214,54 @@ fn callImpl(
         .is_static = call_is_static,
     };
 
-    const result = h.call(inputs);
+    // Dispatch via setupCall. Precompile/failure results are finalized immediately.
+    // On success (.ready), suspend this frame by setting interpreter.pending.
+    const setup = h.setupCall(inputs, ctx.interpreter.input.depth);
+    switch (setup) {
+        .failed => |r| { resumeCall(ctx.interpreter, r, ret_off_u, ret_size_u); },
+        .precompile => |r| { resumeCall(ctx.interpreter, r, ret_off_u, ret_size_u); },
+        .ready => |s| {
+            ctx.interpreter.pending = .{ .call = PendingCallData{
+                .inputs = inputs,
+                .code = s.code,
+                .checkpoint = s.checkpoint,
+                .ret_off = ret_off_u,
+                .ret_size = ret_size_u,
+            }};
+        },
+    }
+}
 
-    // Return unused gas from sub-call and propagate any refunds it accumulated.
-    ctx.interpreter.gas.remaining +|= result.gas_remaining;
-    ctx.interpreter.gas.refunded += result.gas_refunded;
+/// Resume a suspended CALL frame after the sub-frame has completed.
+/// Called by the frame runner (or synchronous helper) with the final CallResult.
+pub fn resumeCall(interp: *Interpreter, result: host_module.CallResult, ret_off: usize, ret_size: usize) void {
+    interp.gas.remaining +|= result.gas_remaining;
+    interp.gas.refunded += result.gas_refunded;
 
-    // Copy return data to memory (use direction-safe copy: return data may alias
-    // execution memory, e.g. when the identity precompile echoes calldata).
-    const actual_ret_size = @min(result.return_data.len, ret_size_u);
-    if (actual_ret_size > 0) {
-        const dst = ctx.interpreter.memory.buffer.items[ret_off_u .. ret_off_u + actual_ret_size];
-        const src = result.return_data[0..actual_ret_size];
+    const actual = @min(result.return_data.len, ret_size);
+    if (actual > 0) {
+        const dst = interp.memory.buffer.items[ret_off .. ret_off + actual];
+        const src = result.return_data[0..actual];
         if (@intFromPtr(dst.ptr) <= @intFromPtr(src.ptr)) {
             std.mem.copyForwards(u8, dst, src);
         } else {
             std.mem.copyBackwards(u8, dst, src);
         }
     }
+    interp.return_data.data = @constCast(result.return_data);
 
-    // Update interpreter's return data buffer from sub-call
-    ctx.interpreter.return_data.data = @constCast(result.return_data);
+    if (!interp.stack.hasSpace(1)) { interp.halt(.stack_overflow); return; }
+    interp.stack.pushUnsafe(if (result.success) 1 else 0);
+}
 
-    // Push success flag: 1 for success, 0 for failure
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
-    stack.pushUnsafe(if (result.success) 1 else 0);
+/// Resume a suspended CREATE frame after the sub-frame has completed.
+pub fn resumeCreate(interp: *Interpreter, result: host_module.CreateResult) void {
+    interp.gas.remaining +|= result.gas_remaining;
+    interp.gas.refunded += result.gas_refunded;
+    interp.return_data.data = @constCast(result.return_data);
+
+    if (!interp.stack.hasSpace(1)) { interp.halt(.stack_overflow); return; }
+    interp.stack.pushUnsafe(if (result.success) host_module.addressToU256(result.address) else 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -321,17 +350,28 @@ pub fn opCreate(ctx: *InstructionContext) void {
         ctx.interpreter.memory.buffer.items[off_u .. off_u + size_u]
     else &[_]u8{};
 
+    // Pre-spend forwarded gas from parent (mirroring callImpl pattern).
+    if (!ctx.interpreter.gas.spend(forwarded)) { ctx.interpreter.halt(.out_of_gas); return; }
+
     const caller = ctx.interpreter.input.target;
-    const result = h.create(caller, value, init_code, forwarded, false, 0, false);
-
-    // Adjust parent gas: forwarded was already spent; add back what sub-call didn't use.
-    ctx.interpreter.gas.remaining = ctx.interpreter.gas.remaining -| forwarded;
-    ctx.interpreter.gas.remaining +|= result.gas_remaining;
-    ctx.interpreter.gas.refunded += result.gas_refunded;
-    ctx.interpreter.return_data.data = @constCast(result.return_data);
-
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
-    stack.pushUnsafe(if (result.success) host_module.addressToU256(result.address) else 0);
+    const setup = h.setupCreate(caller, value, init_code, forwarded, false, 0, false, ctx.interpreter.input.depth);
+    switch (setup) {
+        .failed => |r| { resumeCreate(ctx.interpreter, r); },
+        .ready => |s| {
+            ctx.interpreter.pending = .{ .create = PendingCreateData{
+                .inputs = CreateInputs{
+                    .caller = caller,
+                    .value = value,
+                    .init_code = @constCast(init_code),
+                    .gas_limit = forwarded,
+                    .scheme = .create,
+                    .salt = null,
+                },
+                .new_addr = s.new_addr,
+                .checkpoint = s.checkpoint,
+            }};
+        },
+    }
 }
 
 /// CREATE2 (0xF5): Create a new contract with deterministic address.
@@ -396,16 +436,29 @@ pub fn opCreate2(ctx: *InstructionContext) void {
         ctx.interpreter.memory.buffer.items[off_u .. off_u + size_u]
     else &[_]u8{};
 
+    // Pre-spend forwarded gas from parent.
+    if (!ctx.interpreter.gas.spend(forwarded)) { ctx.interpreter.halt(.out_of_gas); return; }
+
     const caller = ctx.interpreter.input.target;
-    const result = h.create(caller, value, init_code, forwarded, true, salt, false);
-
-    ctx.interpreter.gas.remaining = ctx.interpreter.gas.remaining -| forwarded;
-    ctx.interpreter.gas.remaining +|= result.gas_remaining;
-    ctx.interpreter.gas.refunded += result.gas_refunded;
-    ctx.interpreter.return_data.data = @constCast(result.return_data);
-
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
-    stack.pushUnsafe(if (result.success) host_module.addressToU256(result.address) else 0);
+    const salt_hash = host_module.u256ToHash(salt);
+    const setup = h.setupCreate(caller, value, init_code, forwarded, true, salt, false, ctx.interpreter.input.depth);
+    switch (setup) {
+        .failed => |r| { resumeCreate(ctx.interpreter, r); },
+        .ready => |s| {
+            ctx.interpreter.pending = .{ .create = PendingCreateData{
+                .inputs = CreateInputs{
+                    .caller = caller,
+                    .value = value,
+                    .init_code = @constCast(init_code),
+                    .gas_limit = forwarded,
+                    .scheme = .create2,
+                    .salt = salt_hash,
+                },
+                .new_addr = s.new_addr,
+                .checkpoint = s.checkpoint,
+            }};
+        },
+    }
 }
 
 test {

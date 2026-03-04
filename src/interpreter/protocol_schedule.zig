@@ -6,7 +6,6 @@ const gas_costs = @import("gas_costs.zig");
 const interpreter_mod = @import("interpreter.zig");
 const Interpreter = interpreter_mod.Interpreter;
 const InstructionFn = interpreter_mod.InstructionFn;
-const Host = @import("host.zig").Host;
 const opcodes = @import("opcodes/main.zig");
 
 // Re-export dispatch table types so callers that previously used
@@ -28,22 +27,6 @@ pub const ProtocolSchedule = struct {
         };
     }
 };
-
-/// Default sub-call runner stored in Host.run_sub_call.
-/// Derives the instruction table from the sub-interpreter's spec and delegates
-/// to Interpreter.runWithHost, keeping protocol_schedule.zig free of dispatch logic.
-pub fn runSubCallDefault(host: *Host, sub_interp: *Interpreter) void {
-    // Reuse the cached instruction table from the host if available.
-    // Creating a fresh 4 KB table on the native stack per recursive call
-    // exhausts the native stack at EVM depth ~1024.
-    if (host.instruction_table) |table| {
-        _ = sub_interp.runWithHost(table, host);
-        return;
-    }
-    const spec = sub_interp.runtime_flags.spec_id;
-    const table = makeInstructionTable(spec);
-    _ = sub_interp.runWithHost(&table, host);
-}
 
 // ---------------------------------------------------------------------------
 // Instruction table construction
