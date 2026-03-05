@@ -39,7 +39,10 @@ fn expandMemory(ctx: *InstructionContext, new_size: usize) bool {
 /// Stack: [offset, size] -> []   Gas: 0 static + memory_expansion
 pub fn opReturn(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const offset = stack.peekUnsafe(0);
     const size = stack.peekUnsafe(1);
@@ -52,16 +55,21 @@ pub fn opReturn(ctx: *InstructionContext) void {
     }
 
     if (offset > std.math.maxInt(usize) or size > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     }
 
     const offset_u: usize = @intCast(offset);
     const size_u: usize = @intCast(size);
 
     const return_end = std.math.add(usize, offset_u, size_u) catch {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     };
-    if (!expandMemory(ctx, return_end)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!expandMemory(ctx, return_end)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     ctx.interpreter.return_data.data = ctx.interpreter.memory.buffer.items[offset_u..return_end];
     ctx.interpreter.halt(.@"return");
@@ -71,7 +79,10 @@ pub fn opReturn(ctx: *InstructionContext) void {
 /// Stack: [offset, size] -> []   Gas: 0 static + memory_expansion (Byzantium+)
 pub fn opRevert(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const offset = stack.peekUnsafe(0);
     const size = stack.peekUnsafe(1);
@@ -84,16 +95,21 @@ pub fn opRevert(ctx: *InstructionContext) void {
     }
 
     if (offset > std.math.maxInt(usize) or size > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     }
 
     const offset_u: usize = @intCast(offset);
     const size_u: usize = @intCast(size);
 
     const revert_end = std.math.add(usize, offset_u, size_u) catch {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     };
-    if (!expandMemory(ctx, revert_end)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!expandMemory(ctx, revert_end)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     ctx.interpreter.return_data.data = ctx.interpreter.memory.buffer.items[offset_u..revert_end];
     ctx.interpreter.halt(.revert);

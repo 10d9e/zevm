@@ -36,15 +36,24 @@ fn expandMemory(ctx: *InstructionContext, new_size: usize) bool {
 /// Stack: [offset] -> [value]   Gas: 3 (G_VERYLOW, dispatch) + memory_expansion
 pub fn opMload(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const offset = stack.peekUnsafe(0);
-    if (offset > std.math.maxInt(usize) - 32) { ctx.interpreter.halt(.memory_limit_oog); return; }
+    if (offset > std.math.maxInt(usize) - 32) {
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
+    }
 
     const offset_usize: usize = @intCast(offset);
     const new_size = offset_usize + 32;
 
-    if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!expandMemory(ctx, new_size)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     const U = primitives.U256;
     const slice = ctx.interpreter.memory.buffer.items[offset_usize..][0..32];
@@ -60,18 +69,27 @@ pub fn opMload(ctx: *InstructionContext) void {
 /// Stack: [offset, value] -> []   Gas: 3 (G_VERYLOW, dispatch) + memory_expansion
 pub fn opMstore(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const offset = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
     stack.shrinkUnsafe(2);
 
-    if (offset > std.math.maxInt(usize) - 32) { ctx.interpreter.halt(.memory_limit_oog); return; }
+    if (offset > std.math.maxInt(usize) - 32) {
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
+    }
 
     const offset_usize: usize = @intCast(offset);
     const new_size = offset_usize + 32;
 
-    if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!expandMemory(ctx, new_size)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     const dest = ctx.interpreter.memory.buffer.items[offset_usize..][0..32];
     std.mem.writeInt(u64, dest[0..8], @truncate(value >> 192), .big);
@@ -84,18 +102,27 @@ pub fn opMstore(ctx: *InstructionContext) void {
 /// Stack: [offset, value] -> []   Gas: 3 (G_VERYLOW, dispatch) + memory_expansion
 pub fn opMstore8(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const offset = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
     stack.shrinkUnsafe(2);
 
-    if (offset > std.math.maxInt(usize)) { ctx.interpreter.halt(.memory_limit_oog); return; }
+    if (offset > std.math.maxInt(usize)) {
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
+    }
 
     const offset_usize: usize = @intCast(offset);
     const new_size = offset_usize + 1;
 
-    if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!expandMemory(ctx, new_size)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     ctx.interpreter.memory.buffer.items[offset_usize] = @intCast(value & 0xFF);
 }
@@ -104,7 +131,10 @@ pub fn opMstore8(ctx: *InstructionContext) void {
 /// Stack: [] -> [size]   Gas: 2 (G_BASE, charged by dispatch)
 pub fn opMsize(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(ctx.interpreter.memory.size());
 }
 
@@ -112,7 +142,10 @@ pub fn opMsize(ctx: *InstructionContext) void {
 /// Stack: [dest, src, length] -> []   Gas: 3 (G_VERYLOW, dispatch) + copy_cost + memory_expansion
 pub fn opMcopy(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(3)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(3)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const dest = stack.peekUnsafe(0);
     const src = stack.peekUnsafe(1);
@@ -123,7 +156,8 @@ pub fn opMcopy(ctx: *InstructionContext) void {
     if (length == 0) return;
 
     if (dest > std.math.maxInt(usize) or src > std.math.maxInt(usize) or length > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     }
 
     const dest_usize: usize = @intCast(dest);
@@ -132,21 +166,30 @@ pub fn opMcopy(ctx: *InstructionContext) void {
 
     // Dynamic: copy cost (3 gas per word)
     const num_words = (std.math.add(usize, length_usize, 31) catch {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     }) / 32;
     const copy_cost: u64 = gas_costs.G_COPY * @as(u64, @intCast(num_words));
-    if (!ctx.interpreter.gas.spend(copy_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(copy_cost)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     // Dynamic: memory expansion to cover both src and dest regions
     {
         const dest_end = std.math.add(usize, dest_usize, length_usize) catch {
-            ctx.interpreter.halt(.memory_limit_oog); return;
+            ctx.interpreter.halt(.memory_limit_oog);
+            return;
         };
         const src_end = std.math.add(usize, src_usize, length_usize) catch {
-            ctx.interpreter.halt(.memory_limit_oog); return;
+            ctx.interpreter.halt(.memory_limit_oog);
+            return;
         };
         const max_end = @max(dest_end, src_end);
-        if (!expandMemory(ctx, max_end)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!expandMemory(ctx, max_end)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
 
         // Use memmove semantics: copyBackwards when dest > src to handle overlap correctly.
         const mem = ctx.interpreter.memory.buffer.items;

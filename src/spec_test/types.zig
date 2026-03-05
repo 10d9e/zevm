@@ -21,9 +21,9 @@ pub const PreAccount = struct {
 
 pub const ExpectedAccount = struct {
     address: [20]u8,
-    balance: [32]u8,      // expected ETH balance (big-endian U256)
-    nonce: u64,           // expected account nonce
-    code: []const u8,     // expected raw bytecode (empty slice for EOAs)
+    balance: [32]u8, // expected ETH balance (big-endian U256)
+    nonce: u64, // expected account nonce
+    code: []const u8, // expected raw bytecode (empty slice for EOAs)
     storage: []const StorageEntry,
 };
 
@@ -31,9 +31,9 @@ pub const ExpectedAccount = struct {
 /// The authority is the recovered signer; address is what the authority delegates to.
 pub const AuthorizationEntry = struct {
     authority: [20]u8, // recovered signer address (authority)
-    address: [20]u8,   // delegation target (what the authority's code will point to)
-    chain_id: u64,     // 0 = any chain, 1 = mainnet; non-matching = invalid entry; maxInt(u64) = overflow (invalid)
-    nonce: u64,        // must match authority's current nonce to be valid
+    address: [20]u8, // delegation target (what the authority's code will point to)
+    chain_id: u64, // 0 = any chain, 1 = mainnet; non-matching = invalid entry; maxInt(u64) = overflow (invalid)
+    nonce: u64, // must match authority's current nonce to be valid
 };
 
 pub const TestCase = struct {
@@ -54,7 +54,7 @@ pub const TestCase = struct {
     value: [32]u8,
     calldata: []const u8,
     gas_limit: u64,
-    gas_price: u128,              // maxFeePerGas (EIP-1559) or gasPrice (legacy)
+    gas_price: u128, // maxFeePerGas (EIP-1559) or gasPrice (legacy)
     max_priority_fee_per_gas: ?u128, // EIP-1559 tip cap; null for legacy txs
     // EIP-2930 access list intrinsic gas counts
     access_list_addr_count: u32,

@@ -214,9 +214,8 @@ fn runInner(
     // EVM spec: reading calldata beyond its length gives zeros — zero-pad if input is short.
     // Guard against input shorter than the 96-byte header (already zero-extended in header above).
     const data_after_header = if (input.len > HEADER_LENGTH) input[HEADER_LENGTH..] else &[_]u8{};
-    const total_data_len = std.math.add(usize, base_len,
-        std.math.add(usize, exp_len, mod_len) catch
-            return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas }) catch
+    const total_data_len = std.math.add(usize, base_len, std.math.add(usize, exp_len, mod_len) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas }) catch
         return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
     var data_buf: ?[]u8 = null;
     const data: []const u8 = blk: {

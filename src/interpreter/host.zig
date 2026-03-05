@@ -312,8 +312,7 @@ pub const Host = struct {
                     .success => |out| {
                         if (out.reverted) {
                             self.ctx.journaled_state.checkpointRevert(cp);
-                            return .{ .precompile = .{ .success = false, .return_data = out.bytes,
-                                .gas_used = inputs.gas_limit, .gas_remaining = 0, .gas_refunded = 0, .delegation_gas = 0 } };
+                            return .{ .precompile = .{ .success = false, .return_data = out.bytes, .gas_used = inputs.gas_limit, .gas_remaining = 0, .gas_refunded = 0, .delegation_gas = 0 } };
                         }
                         self.ctx.journaled_state.checkpointCommit();
                         // Touch the callee so it appears in post-state for pre-EIP-161 forks
@@ -321,9 +320,7 @@ pub const Host = struct {
                         // accountInfo() in the CALL opcode handler. For EIP-161+ forks, the
                         // empty account will be cleaned up by the state-clear logic anyway.
                         self.ctx.journaled_state.touchAccount(inputs.callee);
-                        return .{ .precompile = .{ .success = true, .return_data = out.bytes,
-                            .gas_used = out.gas_used, .gas_remaining = inputs.gas_limit - out.gas_used,
-                            .gas_refunded = 0, .delegation_gas = 0 } };
+                        return .{ .precompile = .{ .success = true, .return_data = out.bytes, .gas_used = out.gas_used, .gas_remaining = inputs.gas_limit - out.gas_used, .gas_refunded = 0, .delegation_gas = 0 } };
                     },
                     .err => {
                         self.ctx.journaled_state.checkpointRevert(cp);
@@ -490,21 +487,18 @@ pub const Host = struct {
             js.checkpointRevert(checkpoint);
             const gas_rem = if (result == .revert) gas_remaining else @as(u64, 0);
             const rd = if (result == .revert) return_data else &[_]u8{};
-            return .{ .success = false, .is_revert = (result == .revert), .address = [_]u8{0} ** 20,
-                       .gas_remaining = gas_rem, .return_data = rd, .gas_refunded = 0 };
+            return .{ .success = false, .is_revert = (result == .revert), .address = [_]u8{0} ** 20, .gas_remaining = gas_rem, .return_data = rd, .gas_refunded = 0 };
         }
 
         const deployed_raw = return_data;
         if (deployed_raw.len > MAX_CODE_SIZE) {
             js.checkpointRevert(checkpoint);
-            return .{ .success = false, .is_revert = false, .address = [_]u8{0} ** 20,
-                       .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
+            return .{ .success = false, .is_revert = false, .address = [_]u8{0} ** 20, .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
         }
         if (primitives.isEnabledIn(spec_id, .london)) {
             if (deployed_raw.len > 0 and deployed_raw[0] == 0xEF) {
                 js.checkpointRevert(checkpoint);
-                return .{ .success = false, .is_revert = false, .address = [_]u8{0} ** 20,
-                           .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
+                return .{ .success = false, .is_revert = false, .address = [_]u8{0} ** 20, .gas_remaining = 0, .return_data = &[_]u8{}, .gas_refunded = 0 };
             }
         }
 
@@ -515,8 +509,7 @@ pub const Host = struct {
                 return CreateResult.failure();
             } else {
                 js.checkpointCommit();
-                return .{ .success = true, .is_revert = false, .address = new_addr,
-                           .gas_remaining = gas_remaining, .return_data = &[_]u8{}, .gas_refunded = gas_refunded };
+                return .{ .success = true, .is_revert = false, .address = new_addr, .gas_remaining = gas_remaining, .return_data = &[_]u8{}, .gas_refunded = gas_refunded };
             }
         }
         const gas_after_deposit = gas_remaining - deposit_cost;
@@ -533,8 +526,7 @@ pub const Host = struct {
         }
 
         js.checkpointCommit();
-        return .{ .success = true, .is_revert = false, .address = new_addr,
-                   .gas_remaining = gas_after_deposit, .return_data = &[_]u8{}, .gas_refunded = gas_refunded };
+        return .{ .success = true, .is_revert = false, .address = new_addr, .gas_remaining = gas_after_deposit, .return_data = &[_]u8{}, .gas_refunded = gas_refunded };
     }
 
     // -----------------------------------------------------------------------
@@ -553,20 +545,22 @@ pub const Host = struct {
                 var sub_interp = Interpreter.new(
                     Memory.new(),
                     ExtBytecode.new(s.code),
-                    InputsImpl.new(inputs.caller, inputs.target, inputs.value,
-                        @constCast(inputs.data), inputs.gas_limit, inputs.scheme, inputs.is_static, 1),
-                    inputs.is_static, spec_id, inputs.gas_limit,
+                    InputsImpl.new(inputs.caller, inputs.target, inputs.value, @constCast(inputs.data), inputs.gas_limit, inputs.scheme, inputs.is_static, 1),
+                    inputs.is_static,
+                    spec_id,
+                    inputs.gas_limit,
                 );
                 defer sub_interp.deinit();
                 const table = protocol_schedule.makeInstructionTable(spec_id);
                 _ = sub_interp.runWithHost(&table, self);
                 const rd: []const u8 = if (sub_interp.result.isSuccess() or sub_interp.result == .revert)
-                    sub_interp.return_data.data else &[_]u8{};
+                    sub_interp.return_data.data
+                else
+                    &[_]u8{};
                 var rd_buf: std.ArrayList(u8) = .{};
                 defer rd_buf.deinit(std.heap.c_allocator);
                 rd_buf.appendSlice(std.heap.c_allocator, rd) catch {};
-                return self.finalizeCall(s.checkpoint, sub_interp.result, inputs.gas_limit,
-                    sub_interp.gas.remaining, sub_interp.gas.refunded, rd_buf.items);
+                return self.finalizeCall(s.checkpoint, sub_interp.result, inputs.gas_limit, sub_interp.gas.remaining, sub_interp.gas.refunded, rd_buf.items);
             },
         }
     }
@@ -591,20 +585,22 @@ pub const Host = struct {
                 var sub_interp = Interpreter.new(
                     Memory.new(),
                     ExtBytecode.newOwned(init_bytecode),
-                    InputsImpl.new(caller, s.new_addr, value, @constCast(&[_]u8{}),
-                        gas_limit, .call, false, 1),
-                    false, spec_id, gas_limit,
+                    InputsImpl.new(caller, s.new_addr, value, @constCast(&[_]u8{}), gas_limit, .call, false, 1),
+                    false,
+                    spec_id,
+                    gas_limit,
                 );
                 defer sub_interp.deinit();
                 const table = protocol_schedule.makeInstructionTable(spec_id);
                 _ = sub_interp.runWithHost(&table, self);
                 const rd: []const u8 = if (sub_interp.result.isSuccess() or sub_interp.result == .revert)
-                    sub_interp.return_data.data else &[_]u8{};
+                    sub_interp.return_data.data
+                else
+                    &[_]u8{};
                 var rd_buf: std.ArrayList(u8) = .{};
                 defer rd_buf.deinit(std.heap.c_allocator);
                 rd_buf.appendSlice(std.heap.c_allocator, rd) catch {};
-                return self.finalizeCreate(s.checkpoint, s.new_addr, sub_interp.result,
-                    sub_interp.gas.remaining, sub_interp.gas.refunded, rd_buf.items, spec_id);
+                return self.finalizeCreate(s.checkpoint, s.new_addr, sub_interp.result, sub_interp.gas.remaining, sub_interp.gas.refunded, rd_buf.items, spec_id);
             },
         }
     }
@@ -666,30 +662,41 @@ pub fn createAddress(sender: primitives.Address, nonce: u64) primitives.Address 
     // List header: 0xC0 + content_len
     var buf: [30]u8 = undefined; // 1 + 20 + 1..9 = at most 30 bytes of content
     var pos: usize = 0;
-    buf[pos] = 0x94; pos += 1;
-    @memcpy(buf[pos..pos + 20], &sender); pos += 20;
+    buf[pos] = 0x94;
+    pos += 1;
+    @memcpy(buf[pos .. pos + 20], &sender);
+    pos += 20;
     if (nonce == 0) {
-        buf[pos] = 0x80; pos += 1;
+        buf[pos] = 0x80;
+        pos += 1;
     } else if (nonce < 0x80) {
-        buf[pos] = @intCast(nonce); pos += 1;
+        buf[pos] = @intCast(nonce);
+        pos += 1;
     } else {
         // Encode nonce as minimal big-endian bytes
         var tmp: [8]u8 = undefined;
         var len: usize = 0;
         var n = nonce;
-        while (n > 0) : (n >>= 8) { len += 1; }
+        while (n > 0) : (n >>= 8) {
+            len += 1;
+        }
         var m = nonce;
         var idx: usize = len;
-        while (idx > 0) : (idx -= 1) { tmp[idx - 1] = @intCast(m & 0xFF); m >>= 8; }
-        buf[pos] = @intCast(0x80 + len); pos += 1;
-        @memcpy(buf[pos..pos + len], tmp[0..len]); pos += len;
+        while (idx > 0) : (idx -= 1) {
+            tmp[idx - 1] = @intCast(m & 0xFF);
+            m >>= 8;
+        }
+        buf[pos] = @intCast(0x80 + len);
+        pos += 1;
+        @memcpy(buf[pos .. pos + len], tmp[0..len]);
+        pos += len;
     }
     // List prefix: 0xC0 + content_len
     var rlp: [31]u8 = undefined;
     rlp[0] = @intCast(0xC0 + pos);
-    @memcpy(rlp[1..1 + pos], buf[0..pos]);
+    @memcpy(rlp[1 .. 1 + pos], buf[0..pos]);
     var hash: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(rlp[0..1 + pos], &hash, .{});
+    std.crypto.hash.sha3.Keccak256.hash(rlp[0 .. 1 + pos], &hash, .{});
     var addr: primitives.Address = undefined;
     @memcpy(&addr, hash[12..32]);
     return addr;
@@ -704,7 +711,10 @@ pub fn create2Address(sender: primitives.Address, salt: primitives.U256, init_co
     var salt_bytes: [32]u8 = undefined;
     var s = salt;
     var i: usize = 32;
-    while (i > 0) : (i -= 1) { salt_bytes[i - 1] = @intCast(s & 0xFF); s >>= 8; }
+    while (i > 0) : (i -= 1) {
+        salt_bytes[i - 1] = @intCast(s & 0xFF);
+        s >>= 8;
+    }
     @memcpy(preimage[21..53], &salt_bytes);
     @memcpy(preimage[53..85], &init_code_hash);
     var hash: [32]u8 = undefined;

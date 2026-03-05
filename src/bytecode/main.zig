@@ -662,7 +662,6 @@ pub const LegacyRawBytecode = struct {
     pub fn intoAnalyzed(self: Self) LegacyAnalyzedBytecode {
         return analyzeLegacy(self.bytecode);
     }
-
 };
 
 /// EIP-7702 bytecode

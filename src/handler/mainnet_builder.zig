@@ -270,16 +270,22 @@ pub const MainnetHandler = struct {
                             interpreter_mod.Memory.new(),
                             interpreter_mod.ExtBytecode.newOwned(init_bytecode),
                             interpreter_mod.InputsImpl.new(
-                                tx.caller, s.new_addr, tx.value,
-                                @constCast(&[_]u8{}), exec_gas, .call, false, 0,
+                                tx.caller,
+                                s.new_addr,
+                                tx.value,
+                                @constCast(&[_]u8{}),
+                                exec_gas,
+                                .call,
+                                false,
+                                0,
                             ),
-                            false, spec, exec_gas,
+                            false,
+                            spec,
+                            exec_gas,
                         );
                         const ir = try executeIterative(root_interp, &host, &return_data_buf);
-                        const cr = host.finalizeCreate(s.checkpoint, s.new_addr, ir.raw_result,
-                            ir.gas_remaining, ir.gas_refunded, ir.return_data, spec);
-                        const cr_status: main.ExecutionStatus = if (cr.success) .Success
-                            else if (cr.is_revert) .Revert else .Halt;
+                        const cr = host.finalizeCreate(s.checkpoint, s.new_addr, ir.raw_result, ir.gas_remaining, ir.gas_refunded, ir.return_data, spec);
+                        const cr_status: main.ExecutionStatus = if (cr.success) .Success else if (cr.is_revert) .Revert else .Halt;
                         var exec_result = main.ExecutionResult.new(cr_status, exec_gas - cr.gas_remaining);
                         exec_result.return_data = std.heap.c_allocator.dupe(u8, cr.return_data) catch @constCast(&[_]u8{});
                         return main.FrameResult.new(exec_result, cr.gas_remaining, cr.gas_refunded);
@@ -295,8 +301,7 @@ pub const MainnetHandler = struct {
                 if (callee_code.isEip7702()) {
                     const del_addr = callee_code.eip7702.address;
                     if (ctx.journaled_state.loadAccountWithCode(del_addr)) |del_load| {
-                        callee_code = if (del_load.data.info.code) |del_code| del_code
-                            else bytecode.Bytecode.new();
+                        callee_code = if (del_load.data.info.code) |del_code| del_code else bytecode.Bytecode.new();
                     } else |_| {
                         callee_code = bytecode.Bytecode.new();
                     }
@@ -311,7 +316,9 @@ pub const MainnetHandler = struct {
                     if (xfer_err != null) {
                         ctx.journaled_state.checkpointRevert(call_checkpoint);
                         return main.FrameResult.new(
-                            main.ExecutionResult.new(.Fail, exec_gas), 0, 0,
+                            main.ExecutionResult.new(.Fail, exec_gas),
+                            0,
+                            0,
                         );
                     }
                 }
@@ -324,19 +331,24 @@ pub const MainnetHandler = struct {
                             if (out.reverted) {
                                 ctx.journaled_state.checkpointRevert(call_checkpoint);
                                 return main.FrameResult.new(
-                                    main.ExecutionResult.new(.Revert, exec_gas), 0, 0,
+                                    main.ExecutionResult.new(.Revert, exec_gas),
+                                    0,
+                                    0,
                                 );
                             }
                             ctx.journaled_state.checkpointCommit();
                             return main.FrameResult.new(
                                 main.ExecutionResult.new(.Success, out.gas_used),
-                                exec_gas - out.gas_used, 0,
+                                exec_gas - out.gas_used,
+                                0,
                             );
                         },
                         .err => {
                             ctx.journaled_state.checkpointRevert(call_checkpoint);
                             return main.FrameResult.new(
-                                main.ExecutionResult.new(.Fail, exec_gas), 0, 0,
+                                main.ExecutionResult.new(.Fail, exec_gas),
+                                0,
+                                0,
                             );
                         },
                     }
@@ -346,10 +358,18 @@ pub const MainnetHandler = struct {
                     interpreter_mod.Memory.new(),
                     interpreter_mod.ExtBytecode.new(callee_code),
                     interpreter_mod.InputsImpl.new(
-                        tx.caller, target, tx.value,
-                        @constCast(calldata), exec_gas, .call, false, 0,
+                        tx.caller,
+                        target,
+                        tx.value,
+                        @constCast(calldata),
+                        exec_gas,
+                        .call,
+                        false,
+                        0,
                     ),
-                    false, spec, exec_gas,
+                    false,
+                    spec,
+                    exec_gas,
                 );
                 const ir = try executeIterative(root_interp, &host, &return_data_buf);
 
@@ -528,11 +548,18 @@ fn executeIterative(
                         interpreter_mod.Memory.new(),
                         interpreter_mod.ExtBytecode.new(pc.code),
                         interpreter_mod.InputsImpl.new(
-                            pc.inputs.caller, pc.inputs.target, pc.inputs.value,
-                            @constCast(pc.inputs.data), pc.inputs.gas_limit,
-                            pc.inputs.scheme, pc.inputs.is_static, sub_depth,
+                            pc.inputs.caller,
+                            pc.inputs.target,
+                            pc.inputs.value,
+                            @constCast(pc.inputs.data),
+                            pc.inputs.gas_limit,
+                            pc.inputs.scheme,
+                            pc.inputs.is_static,
+                            sub_depth,
                         ),
-                        pc.inputs.is_static, spec, pc.inputs.gas_limit,
+                        pc.inputs.is_static,
+                        spec,
+                        pc.inputs.gas_limit,
                     );
                     try frames.append(std.heap.c_allocator, .{ .interp = sub_interp, .cause = .{ .call = pc } });
                 },
@@ -542,10 +569,18 @@ fn executeIterative(
                         interpreter_mod.Memory.new(),
                         interpreter_mod.ExtBytecode.newOwned(init_bytecode),
                         interpreter_mod.InputsImpl.new(
-                            pc.inputs.caller, pc.new_addr, pc.inputs.value,
-                            @constCast(&[_]u8{}), pc.inputs.gas_limit, .call, false, sub_depth,
+                            pc.inputs.caller,
+                            pc.new_addr,
+                            pc.inputs.value,
+                            @constCast(&[_]u8{}),
+                            pc.inputs.gas_limit,
+                            .call,
+                            false,
+                            sub_depth,
                         ),
-                        false, spec, pc.inputs.gas_limit,
+                        false,
+                        spec,
+                        pc.inputs.gas_limit,
                     );
                     try frames.append(std.heap.c_allocator, .{ .interp = sub_interp, .cause = .{ .create = pc } });
                 },
@@ -559,7 +594,9 @@ fn executeIterative(
                 const gas_rem = frame.interp.gas.remaining;
                 const gas_ref = frame.interp.gas.refunded;
                 const rd_raw: []const u8 = if (raw.isSuccess() or raw == .revert)
-                    frame.interp.return_data.data else &[_]u8{};
+                    frame.interp.return_data.data
+                else
+                    &[_]u8{};
                 return_data_buf.clearRetainingCapacity();
                 return_data_buf.appendSlice(std.heap.c_allocator, rd_raw) catch {};
                 // defer fires here, deiniting frames[0].interp — return_data_buf is safe.
@@ -576,7 +613,9 @@ fn executeIterative(
             const sub_gas_rem = frame.interp.gas.remaining;
             const sub_gas_ref = frame.interp.gas.refunded;
             const rd_raw: []const u8 = if (sub_result.isSuccess() or sub_result == .revert)
-                frame.interp.return_data.data else &[_]u8{};
+                frame.interp.return_data.data
+            else
+                &[_]u8{};
             return_data_buf.clearRetainingCapacity();
             return_data_buf.appendSlice(std.heap.c_allocator, rd_raw) catch {};
 
@@ -588,13 +627,11 @@ fn executeIterative(
 
             switch (cause) {
                 .call => |pc| {
-                    const r = host.finalizeCall(pc.checkpoint, sub_result,
-                        pc.inputs.gas_limit, sub_gas_rem, sub_gas_ref, return_data_buf.items);
+                    const r = host.finalizeCall(pc.checkpoint, sub_result, pc.inputs.gas_limit, sub_gas_rem, sub_gas_ref, return_data_buf.items);
                     call_ops.resumeCall(&parent.interp, r, pc.ret_off, pc.ret_size);
                 },
                 .create => |pc| {
-                    const r = host.finalizeCreate(pc.checkpoint, pc.new_addr, sub_result,
-                        sub_gas_rem, sub_gas_ref, return_data_buf.items, parent_spec);
+                    const r = host.finalizeCreate(pc.checkpoint, pc.new_addr, sub_result, sub_gas_rem, sub_gas_ref, return_data_buf.items, parent_spec);
                     call_ops.resumeCreate(&parent.interp, r);
                 },
             }

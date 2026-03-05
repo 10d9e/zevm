@@ -16,7 +16,7 @@ pub const G_SRESET = 5000; // Storage reset (non-zero to non-zero or zero)
 
 // Call costs
 pub const G_CALL_FRONTIER = 40; // Frontier/Homestead CALL base gas
-pub const G_CALL = 700;         // Tangerine+ (EIP-150) through pre-Berlin CALL base gas
+pub const G_CALL = 700; // Tangerine+ (EIP-150) through pre-Berlin CALL base gas
 pub const COLD_ACCOUNT_ACCESS = 2600;
 pub const WARM_ACCOUNT_ACCESS = 100;
 pub const COLD_SLOAD = 2100;
@@ -24,9 +24,9 @@ pub const WARM_SLOAD = 100;
 pub const CALL_STIPEND = 2300; // Gas gifted to callee on value-bearing CALL (not deducted from caller)
 
 // Storage costs - Pre-Berlin
-pub const G_SLOAD_FRONTIER = 50;   // Frontier/Homestead SLOAD gas
+pub const G_SLOAD_FRONTIER = 50; // Frontier/Homestead SLOAD gas
 pub const G_SLOAD_TANGERINE = 200; // Tangerine (EIP-150) through pre-Istanbul SLOAD gas
-pub const G_SLOAD_ISTANBUL = 800;  // Istanbul (EIP-1884) SLOAD gas
+pub const G_SLOAD_ISTANBUL = 800; // Istanbul (EIP-1884) SLOAD gas
 
 // Storage costs - Berlin and later (EIP-2929)
 pub const G_SLOAD_BERLIN_COLD = 2100;
@@ -68,8 +68,8 @@ pub const G_KECCAK256WORD = 6;
 
 // EXP costs
 pub const G_EXP = 10;
-pub const G_EXPBYTE = 50;           // Post-Spurious Dragon (EIP-160)
-pub const G_EXPBYTE_FRONTIER = 10;  // Pre-Spurious Dragon
+pub const G_EXPBYTE = 50; // Post-Spurious Dragon (EIP-160)
+pub const G_EXPBYTE_FRONTIER = 10; // Pre-Spurious Dragon
 
 // SELFDESTRUCT
 pub const G_SELFDESTRUCT = 5000;

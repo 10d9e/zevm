@@ -50,8 +50,12 @@ const c = if (build_options.enable_blst) blk: {
     pub fn blst_p2_add_or_double_affine(_: *blst_p2, _: *const blst_p2, _: *const blst_p2_affine) void {}
     pub fn blst_p1s_mult_pippenger(_: *blst_p1, _: [*]const *const blst_p1_affine, _: i32, _: [*]const *const u8, _: i32, _: ?*anyopaque) void {}
     pub fn blst_p2s_mult_pippenger(_: *blst_p2, _: [*]const *const blst_p2_affine, _: i32, _: [*]const *const u8, _: i32, _: ?*anyopaque) void {}
-    pub fn blst_p1s_mult_pippenger_scratch_sizeof(_: usize) usize { return 0; }
-    pub fn blst_p2s_mult_pippenger_scratch_sizeof(_: usize) usize { return 0; }
+    pub fn blst_p1s_mult_pippenger_scratch_sizeof(_: usize) usize {
+        return 0;
+    }
+    pub fn blst_p2s_mult_pippenger_scratch_sizeof(_: usize) usize {
+        return 0;
+    }
     pub fn blst_p1_cneg(_: *blst_p1, _: bool) void {}
     pub fn blst_p2_cneg(_: *blst_p2, _: bool) void {}
     pub fn blst_p1_add(_: *blst_p1, _: *const blst_p1, _: *const blst_p1) void {}

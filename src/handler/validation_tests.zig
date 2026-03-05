@@ -42,7 +42,6 @@ test "intrinsic gas: zero byte costs 4, nonzero costs 16" {
     try std.testing.expectEqual(@as(u64, 21000 + 4 + 16), gas);
 }
 
-
 test "floor gas: zero for pre-Prague" {
     var tx = context.TxEnv.default();
     defer tx.deinit();
@@ -162,7 +161,7 @@ test "validateAgainstStateAndDeductCaller: EIP-3607 rejects account with code" {
     var db = database.InMemoryDB.init(std.heap.c_allocator);
     defer db.deinit();
     // Give caller a non-empty code_hash (simulating deployed code)
-    const fake_code_hash = [_]u8{0xDE, 0xAD, 0xBE, 0xEF} ++ [_]u8{0} ** 28;
+    const fake_code_hash = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF } ++ [_]u8{0} ** 28;
     try db.insertAccount(caller, state.AccountInfo{
         .balance = 1_000_000_000_000_000_000,
         .nonce = 0,

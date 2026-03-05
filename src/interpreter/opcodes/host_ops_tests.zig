@@ -277,7 +277,7 @@ test "TSTORE then TLOAD round-trips a value" {
 
     // TSTORE: stack [key (top), value]
     interp.stack.pushUnsafe(@as(U, 99)); // value
-    interp.stack.pushUnsafe(@as(U, 5));  // key (top)
+    interp.stack.pushUnsafe(@as(U, 5)); // key (top)
     host_ops.opTstore(&ic);
     try expect(interp.bytecode.continue_execution);
 

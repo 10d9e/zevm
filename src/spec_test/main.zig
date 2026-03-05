@@ -272,205 +272,205 @@ fn parseTestCases(
     // All fixture fork names ZEVM supports, newest to oldest.
     // Each fork present in the post section produces its own set of test cases.
     const all_forks = [_][]const u8{
-        "Osaka", "Prague", "Cancun", "Shanghai", "Paris",
-        "London", "Berlin", "Istanbul", "ConstantinopleFix",
-        "Constantinople", "Byzantium", "Homestead", "Frontier",
+        "Osaka",     "Prague",    "Cancun",   "Shanghai",          "Paris",
+        "London",    "Berlin",    "Istanbul", "ConstantinopleFix", "Constantinople",
+        "Byzantium", "Homestead", "Frontier",
     };
     for (all_forks) |fork_name| {
         const post_fork = post_val.object.get(fork_name) orelse continue;
         if (post_fork != .array) continue;
 
-    for (post_fork.array.items) |post_entry| {
-        if (post_entry != .object) continue;
-        const indexes = post_entry.object.get("indexes") orelse continue;
-        if (indexes != .object) continue;
+        for (post_fork.array.items) |post_entry| {
+            if (post_entry != .object) continue;
+            const indexes = post_entry.object.get("indexes") orelse continue;
+            if (indexes != .object) continue;
 
-        const di = getUint(indexes.object, "data") orelse continue;
-        const gi = getUint(indexes.object, "gas") orelse continue;
-        const vi = getUint(indexes.object, "value") orelse continue;
+            const di = getUint(indexes.object, "data") orelse continue;
+            const gi = getUint(indexes.object, "gas") orelse continue;
+            const vi = getUint(indexes.object, "value") orelse continue;
 
-        if (di >= tx_data_arr.array.items.len) continue;
-        if (gi >= tx_gas_arr.array.items.len) continue;
-        if (vi >= tx_value_arr.array.items.len) continue;
+            if (di >= tx_data_arr.array.items.len) continue;
+            if (gi >= tx_gas_arr.array.items.len) continue;
+            if (vi >= tx_value_arr.array.items.len) continue;
 
-        const calldata = hexToBytes(a, getJsonStr(tx_data_arr.array.items[di]) orelse continue) catch continue;
-        const gas_limit = parseU64Hex(getJsonStr(tx_gas_arr.array.items[gi]) orelse continue) catch continue;
-        const value = parseU256Hex(getJsonStr(tx_value_arr.array.items[vi]) orelse continue) catch continue;
+            const calldata = hexToBytes(a, getJsonStr(tx_data_arr.array.items[di]) orelse continue) catch continue;
+            const gas_limit = parseU64Hex(getJsonStr(tx_gas_arr.array.items[gi]) orelse continue) catch continue;
+            const value = parseU256Hex(getJsonStr(tx_value_arr.array.items[vi]) orelse continue) catch continue;
 
-        // EIP-2930: parse access list for this variation (per-data-index or shared)
-        var al_addr_count: u32 = 0;
-        var al_slot_count: u32 = 0;
-        var al_entries: std.ArrayList(types.AccessListEntry) = .{};
-        var has_access_list = false;
-        {
-            const al_opt: ?std.json.Value = blk: {
-                if (tx_val.object.get("accessLists")) |als| {
-                    if (als == .array and di < als.array.items.len) {
-                        has_access_list = true;
-                        break :blk als.array.items[di];
+            // EIP-2930: parse access list for this variation (per-data-index or shared)
+            var al_addr_count: u32 = 0;
+            var al_slot_count: u32 = 0;
+            var al_entries: std.ArrayList(types.AccessListEntry) = .{};
+            var has_access_list = false;
+            {
+                const al_opt: ?std.json.Value = blk: {
+                    if (tx_val.object.get("accessLists")) |als| {
+                        if (als == .array and di < als.array.items.len) {
+                            has_access_list = true;
+                            break :blk als.array.items[di];
+                        }
                     }
-                }
-                if (tx_val.object.get("accessList")) |al| {
-                    has_access_list = true;
-                    break :blk al;
-                }
-                break :blk null;
-            };
-            if (al_opt) |al| {
-                if (al == .array) {
-                    al_addr_count = @intCast(al.array.items.len);
-                    for (al.array.items) |item| {
-                        if (item != .object) continue;
-                        const item_addr = parseAddress(getStr(item.object, "address") orelse continue) catch continue;
-                        var key_list: std.ArrayList([32]u8) = .{};
-                        if (item.object.get("storageKeys")) |sk| {
-                            if (sk == .array) {
-                                al_slot_count += @intCast(sk.array.items.len);
-                                for (sk.array.items) |key_val| {
-                                    const key_str = getJsonStr(key_val) orelse continue;
-                                    const key_bytes = parseU256Hex(key_str) catch continue;
-                                    key_list.append(a, key_bytes) catch continue;
+                    if (tx_val.object.get("accessList")) |al| {
+                        has_access_list = true;
+                        break :blk al;
+                    }
+                    break :blk null;
+                };
+                if (al_opt) |al| {
+                    if (al == .array) {
+                        al_addr_count = @intCast(al.array.items.len);
+                        for (al.array.items) |item| {
+                            if (item != .object) continue;
+                            const item_addr = parseAddress(getStr(item.object, "address") orelse continue) catch continue;
+                            var key_list: std.ArrayList([32]u8) = .{};
+                            if (item.object.get("storageKeys")) |sk| {
+                                if (sk == .array) {
+                                    al_slot_count += @intCast(sk.array.items.len);
+                                    for (sk.array.items) |key_val| {
+                                        const key_str = getJsonStr(key_val) orelse continue;
+                                        const key_bytes = parseU256Hex(key_str) catch continue;
+                                        key_list.append(a, key_bytes) catch continue;
+                                    }
                                 }
                             }
-                        }
-                        al_entries.append(a, .{
-                            .address = item_addr,
-                            .storage_keys = key_list.items,
-                        }) catch continue;
-                    }
-                }
-            }
-        }
-
-        // EIP-7702: count authorization tuples for intrinsic gas (25000 per tuple)
-        // Extract (authority → delegation target) pairs for code setting.
-        // Also capture chain_id and nonce for validity checking in the runner.
-        // has_authorization_list: true when the JSON field exists (even for empty lists),
-        // so the runner can set tx.authorization_list = Some([]) and trigger empty-list rejection.
-        var auth_count: u32 = 0;
-        var has_authorization_list = false;
-        var auth_entries: std.ArrayList(types.AuthorizationEntry) = .{};
-        if (tx_val.object.get("authorizationList")) |al| {
-            if (al == .array) {
-                has_authorization_list = true;
-                auth_count = @intCast(al.array.items.len);
-                for (al.array.items) |entry| {
-                    if (entry != .object) continue;
-                    const signer_str = getStr(entry.object, "signer") orelse continue;
-                    const signer_addr = parseAddress(signer_str) catch continue;
-                    const delegate_str = getStr(entry.object, "address") orelse continue;
-                    const delegate_addr = parseAddress(delegate_str) catch continue;
-                    // Use maxInt(u64) as a sentinel for chain IDs that overflow u64 (e.g. 2^256-1).
-                    // maxInt(u64) != 0 (any chain) and != mainnet, so it's always treated as invalid.
-                    const chain_id = parseU64Hex(getStr(entry.object, "chainId") orelse "0x0") catch std.math.maxInt(u64);
-                    const entry_nonce = parseU64Hex(getStr(entry.object, "nonce") orelse "0x0") catch 0;
-                    auth_entries.append(a, .{
-                        .authority = signer_addr,
-                        .address = delegate_addr,
-                        .chain_id = chain_id,
-                        .nonce = entry_nonce,
-                    }) catch {};
-                }
-            }
-        }
-
-        // EIP-4844: parse blob fields
-        var blob_hashes_count: u32 = 0;
-        var blob_hash_list: std.ArrayList([32]u8) = .{};
-        if (tx_val.object.get("blobVersionedHashes")) |bvh| {
-            if (bvh == .array) {
-                blob_hashes_count = @intCast(bvh.array.items.len);
-                for (bvh.array.items) |hash_val| {
-                    const hash_str = getJsonStr(hash_val) orelse continue;
-                    const hash_bytes = parseU256Hex(hash_str) catch continue;
-                    blob_hash_list.append(a, hash_bytes) catch continue;
-                }
-            }
-        }
-        const max_fee_per_blob_gas = parseU128Hex(
-            getStr(tx_val.object, "maxFeePerBlobGas") orelse "0x0",
-        ) catch 0;
-        const excess_blob_gas = parseU64Hex(
-            getStr(env_val.object, "currentExcessBlobGas") orelse "0x0",
-        ) catch 0;
-
-        const expect_exception = post_entry.object.get("expectException") != null;
-
-        const expected_state = post_entry.object.get("state") orelse continue;
-        if (expected_state != .object) continue;
-
-        var exp_list: std.ArrayList(types.ExpectedAccount) = .{};
-        {
-            var ei = expected_state.object.iterator();
-            while (ei.next()) |ee| {
-                const ea = ee.value_ptr.*;
-                if (ea != .object) continue;
-                const addr2 = parseAddress(ee.key_ptr.*) catch continue;
-
-                // Parse balance, nonce, code (always present in fixture post.state entries)
-                const balance = parseU256Hex(getStr(ea.object, "balance") orelse "0x0") catch [_]u8{0} ** 32;
-                const nonce = parseU64Hex(getStr(ea.object, "nonce") orelse "0x0") catch 0;
-                const code = hexToBytes(a, getStr(ea.object, "code") orelse "0x") catch &[_]u8{};
-
-                // Parse storage (may be absent or empty)
-                var sl: std.ArrayList(types.StorageEntry) = .{};
-                if (ea.object.get("storage")) |sv| {
-                    if (sv == .object) {
-                        var si2 = sv.object.iterator();
-                        while (si2.next()) |se2| {
-                            const k = parseU256Hex(se2.key_ptr.*) catch continue;
-                            const v = parseU256Hex(getJsonStr(se2.value_ptr.*) orelse continue) catch continue;
-                            sl.append(a, .{ .key = k, .value = v }) catch continue;
+                            al_entries.append(a, .{
+                                .address = item_addr,
+                                .storage_keys = key_list.items,
+                            }) catch continue;
                         }
                     }
                 }
-
-                exp_list.append(a, .{
-                    .address = addr2,
-                    .balance = balance,
-                    .nonce = nonce,
-                    .code = code,
-                    .storage = sl.items,
-                }) catch continue;
             }
-        }
 
-        const name = try std.fmt.allocPrint(a, "{s}_{s}_{d}_{d}_{d}", .{ test_name, fork_name, di, gi, vi });
+            // EIP-7702: count authorization tuples for intrinsic gas (25000 per tuple)
+            // Extract (authority → delegation target) pairs for code setting.
+            // Also capture chain_id and nonce for validity checking in the runner.
+            // has_authorization_list: true when the JSON field exists (even for empty lists),
+            // so the runner can set tx.authorization_list = Some([]) and trigger empty-list rejection.
+            var auth_count: u32 = 0;
+            var has_authorization_list = false;
+            var auth_entries: std.ArrayList(types.AuthorizationEntry) = .{};
+            if (tx_val.object.get("authorizationList")) |al| {
+                if (al == .array) {
+                    has_authorization_list = true;
+                    auth_count = @intCast(al.array.items.len);
+                    for (al.array.items) |entry| {
+                        if (entry != .object) continue;
+                        const signer_str = getStr(entry.object, "signer") orelse continue;
+                        const signer_addr = parseAddress(signer_str) catch continue;
+                        const delegate_str = getStr(entry.object, "address") orelse continue;
+                        const delegate_addr = parseAddress(delegate_str) catch continue;
+                        // Use maxInt(u64) as a sentinel for chain IDs that overflow u64 (e.g. 2^256-1).
+                        // maxInt(u64) != 0 (any chain) and != mainnet, so it's always treated as invalid.
+                        const chain_id = parseU64Hex(getStr(entry.object, "chainId") orelse "0x0") catch std.math.maxInt(u64);
+                        const entry_nonce = parseU64Hex(getStr(entry.object, "nonce") orelse "0x0") catch 0;
+                        auth_entries.append(a, .{
+                            .authority = signer_addr,
+                            .address = delegate_addr,
+                            .chain_id = chain_id,
+                            .nonce = entry_nonce,
+                        }) catch {};
+                    }
+                }
+            }
 
-        try out.append(a, .{
-            .name = name,
-            .fork = fork_name,
-            .coinbase = coinbase,
-            .block_number = block_number,
-            .block_timestamp = block_timestamp,
-            .block_gaslimit = block_gaslimit,
-            .block_basefee = block_basefee,
-            .block_difficulty = block_difficulty,
-            .prevrandao = prevrandao,
-            .caller = tx_sender,
-            .target = tx_to,
-            .is_create = is_create,
-            .value = value,
-            .calldata = calldata,
-            .gas_limit = gas_limit,
-            .gas_price = tx_gas_price,
-            .max_priority_fee_per_gas = tx_max_priority_fee,
-            .access_list_addr_count = al_addr_count,
-            .access_list_slot_count = al_slot_count,
-            .has_access_list = has_access_list,
-            .access_list = al_entries.items,
-            .authorization_count = auth_count,
-            .has_authorization_list = has_authorization_list,
-            .authorization_entries = auth_entries.items,
-            .blob_versioned_hashes_count = blob_hashes_count,
-            .blob_versioned_hashes = blob_hash_list.items,
-            .max_fee_per_blob_gas = max_fee_per_blob_gas,
-            .excess_blob_gas = excess_blob_gas,
-            .pre_accounts = pre_list.items,
-            .expected_storage = exp_list.items,
-            .expect_exception = expect_exception,
-        });
-    } // end for (post_fork.array.items)
+            // EIP-4844: parse blob fields
+            var blob_hashes_count: u32 = 0;
+            var blob_hash_list: std.ArrayList([32]u8) = .{};
+            if (tx_val.object.get("blobVersionedHashes")) |bvh| {
+                if (bvh == .array) {
+                    blob_hashes_count = @intCast(bvh.array.items.len);
+                    for (bvh.array.items) |hash_val| {
+                        const hash_str = getJsonStr(hash_val) orelse continue;
+                        const hash_bytes = parseU256Hex(hash_str) catch continue;
+                        blob_hash_list.append(a, hash_bytes) catch continue;
+                    }
+                }
+            }
+            const max_fee_per_blob_gas = parseU128Hex(
+                getStr(tx_val.object, "maxFeePerBlobGas") orelse "0x0",
+            ) catch 0;
+            const excess_blob_gas = parseU64Hex(
+                getStr(env_val.object, "currentExcessBlobGas") orelse "0x0",
+            ) catch 0;
+
+            const expect_exception = post_entry.object.get("expectException") != null;
+
+            const expected_state = post_entry.object.get("state") orelse continue;
+            if (expected_state != .object) continue;
+
+            var exp_list: std.ArrayList(types.ExpectedAccount) = .{};
+            {
+                var ei = expected_state.object.iterator();
+                while (ei.next()) |ee| {
+                    const ea = ee.value_ptr.*;
+                    if (ea != .object) continue;
+                    const addr2 = parseAddress(ee.key_ptr.*) catch continue;
+
+                    // Parse balance, nonce, code (always present in fixture post.state entries)
+                    const balance = parseU256Hex(getStr(ea.object, "balance") orelse "0x0") catch [_]u8{0} ** 32;
+                    const nonce = parseU64Hex(getStr(ea.object, "nonce") orelse "0x0") catch 0;
+                    const code = hexToBytes(a, getStr(ea.object, "code") orelse "0x") catch &[_]u8{};
+
+                    // Parse storage (may be absent or empty)
+                    var sl: std.ArrayList(types.StorageEntry) = .{};
+                    if (ea.object.get("storage")) |sv| {
+                        if (sv == .object) {
+                            var si2 = sv.object.iterator();
+                            while (si2.next()) |se2| {
+                                const k = parseU256Hex(se2.key_ptr.*) catch continue;
+                                const v = parseU256Hex(getJsonStr(se2.value_ptr.*) orelse continue) catch continue;
+                                sl.append(a, .{ .key = k, .value = v }) catch continue;
+                            }
+                        }
+                    }
+
+                    exp_list.append(a, .{
+                        .address = addr2,
+                        .balance = balance,
+                        .nonce = nonce,
+                        .code = code,
+                        .storage = sl.items,
+                    }) catch continue;
+                }
+            }
+
+            const name = try std.fmt.allocPrint(a, "{s}_{s}_{d}_{d}_{d}", .{ test_name, fork_name, di, gi, vi });
+
+            try out.append(a, .{
+                .name = name,
+                .fork = fork_name,
+                .coinbase = coinbase,
+                .block_number = block_number,
+                .block_timestamp = block_timestamp,
+                .block_gaslimit = block_gaslimit,
+                .block_basefee = block_basefee,
+                .block_difficulty = block_difficulty,
+                .prevrandao = prevrandao,
+                .caller = tx_sender,
+                .target = tx_to,
+                .is_create = is_create,
+                .value = value,
+                .calldata = calldata,
+                .gas_limit = gas_limit,
+                .gas_price = tx_gas_price,
+                .max_priority_fee_per_gas = tx_max_priority_fee,
+                .access_list_addr_count = al_addr_count,
+                .access_list_slot_count = al_slot_count,
+                .has_access_list = has_access_list,
+                .access_list = al_entries.items,
+                .authorization_count = auth_count,
+                .has_authorization_list = has_authorization_list,
+                .authorization_entries = auth_entries.items,
+                .blob_versioned_hashes_count = blob_hashes_count,
+                .blob_versioned_hashes = blob_hash_list.items,
+                .max_fee_per_blob_gas = max_fee_per_blob_gas,
+                .excess_blob_gas = excess_blob_gas,
+                .pre_accounts = pre_list.items,
+                .expected_storage = exp_list.items,
+                .expect_exception = expect_exception,
+            });
+        } // end for (post_fork.array.items)
     } // end for (all_forks)
 }
 

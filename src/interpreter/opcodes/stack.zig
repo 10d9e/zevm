@@ -7,7 +7,10 @@ const InstructionFn = @import("../instruction_context.zig").InstructionFn;
 /// Stack: [a] -> []   Gas: 2 (G_BASE, charged by dispatch)
 pub fn opPop(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     stack.shrinkUnsafe(1);
 }
 
@@ -15,7 +18,10 @@ pub fn opPop(ctx: *InstructionContext) void {
 /// Stack: [] -> [0]   Gas: 2 (G_BASE, charged by dispatch)
 pub fn opPush0(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(0);
 }
 
@@ -26,7 +32,10 @@ pub fn makePushFn(comptime n: u8) InstructionFn {
     return struct {
         fn op(ctx: *InstructionContext) void {
             const stack = &ctx.interpreter.stack;
-            if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+            if (!stack.hasSpace(1)) {
+                ctx.interpreter.halt(.stack_overflow);
+                return;
+            }
 
             // Read n immediate bytes (zero-padded at end if near code boundary)
             const imm = ctx.interpreter.bytecode.readImmediates(n);
@@ -54,8 +63,14 @@ pub fn makeDupFn(comptime n: u8) InstructionFn {
     return struct {
         fn op(ctx: *InstructionContext) void {
             const stack = &ctx.interpreter.stack;
-            if (!stack.hasItems(n)) { ctx.interpreter.halt(.stack_underflow); return; }
-            if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+            if (!stack.hasItems(n)) {
+                ctx.interpreter.halt(.stack_underflow);
+                return;
+            }
+            if (!stack.hasSpace(1)) {
+                ctx.interpreter.halt(.stack_overflow);
+                return;
+            }
             stack.dupUnsafe(n);
         }
     }.op;
@@ -68,7 +83,10 @@ pub fn makeSwapFn(comptime n: u8) InstructionFn {
     return struct {
         fn op(ctx: *InstructionContext) void {
             const stack = &ctx.interpreter.stack;
-            if (!stack.hasItems(n + 1)) { ctx.interpreter.halt(.stack_underflow); return; }
+            if (!stack.hasItems(n + 1)) {
+                ctx.interpreter.halt(.stack_underflow);
+                return;
+            }
             stack.swapUnsafe(n);
         }
     }.op;

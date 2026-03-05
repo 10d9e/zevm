@@ -15,42 +15,55 @@ fn memoryCostWords(num_words: usize) u64 {
 /// Gas: 30 (G_KECCAK256, dispatch) + 6*ceil(length/32) (word cost) + memory_expansion
 pub fn opKeccak256(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const offset = stack.peekUnsafe(0);
     const length = stack.peekUnsafe(1);
 
     if (length > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     }
     const length_usize: usize = @intCast(length);
     // When length == 0, offset is unused — do not halt on huge offset.
     if (length_usize > 0 and offset > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     }
     const offset_usize: usize = if (length_usize == 0) 0 else @intCast(offset);
 
     // Dynamic: word cost
     const num_words: u64 = (length_usize + 31) / 32;
     const word_cost = gas_costs.G_KECCAK256WORD * num_words;
-    if (!ctx.interpreter.gas.spend(word_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(word_cost)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     // Dynamic: memory expansion
     const end = std.math.add(usize, offset_usize, length_usize) catch {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     };
     if (length_usize > 0) {
         const current_words = (ctx.interpreter.memory.size() + 31) / 32;
         const new_words = (end + 31) / 32;
         if (new_words > current_words) {
             const expansion_cost = memoryCostWords(new_words) - memoryCostWords(current_words);
-            if (!ctx.interpreter.gas.spend(expansion_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+            if (!ctx.interpreter.gas.spend(expansion_cost)) {
+                ctx.interpreter.halt(.out_of_gas);
+                return;
+            }
         }
         const aligned_end = ((end + 31) / 32) * 32;
         if (aligned_end > ctx.interpreter.memory.size()) {
             const old_size = ctx.interpreter.memory.size();
             ctx.interpreter.memory.buffer.resize(std.heap.c_allocator, aligned_end) catch {
-                ctx.interpreter.halt(.memory_limit_oog); return;
+                ctx.interpreter.halt(.memory_limit_oog);
+                return;
             };
             @memset(ctx.interpreter.memory.buffer.items[old_size..aligned_end], 0);
         }

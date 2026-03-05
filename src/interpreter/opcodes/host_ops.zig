@@ -41,21 +41,31 @@ fn expandMemory(ctx: *InstructionContext, new_size: usize) bool {
 /// Stack: [addr] -> [balance]
 /// Gas: pre-Berlin 400 static; Berlin+ dynamic warm/cold
 pub fn opBalance(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const addr_val = stack.peekUnsafe(0);
     const addr = host_module.u256ToAddress(addr_val);
 
     const info = h.accountInfo(addr) orelse {
-        ctx.interpreter.halt(.invalid_opcode); return;
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
     };
 
     // Post-Berlin: charge dynamic warm/cold cost (static_gas is 0)
     if (primitives.isEnabledIn(ctx.interpreter.runtime_flags.spec_id, .berlin)) {
         const dyn_gas: u64 = if (info.is_cold) gas_costs.COLD_ACCOUNT_ACCESS else gas_costs.WARM_ACCOUNT_ACCESS;
-        if (!ctx.interpreter.gas.spend(dyn_gas)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!ctx.interpreter.gas.spend(dyn_gas)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
     }
 
     stack.setTopUnsafe().* = info.balance;
@@ -64,9 +74,15 @@ pub fn opBalance(ctx: *InstructionContext) void {
 /// SELFBALANCE (0x47): Push the balance of the currently executing contract.
 /// Stack: [] -> [balance]   Gas: 5 (G_LOW, dispatch, Istanbul+)
 pub fn opSelfbalance(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
 
     const self_addr = ctx.interpreter.input.target;
     const info = h.accountInfo(self_addr) orelse {
@@ -80,9 +96,15 @@ pub fn opSelfbalance(ctx: *InstructionContext) void {
 /// Stack: [addr] -> [size]
 /// Gas: pre-Berlin 700 static; Berlin+ dynamic warm/cold
 pub fn opExtcodesize(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const addr_val = stack.peekUnsafe(0);
     const addr = host_module.u256ToAddress(addr_val);
@@ -95,7 +117,10 @@ pub fn opExtcodesize(ctx: *InstructionContext) void {
     // Post-Berlin: charge dynamic warm/cold cost (static_gas is 0)
     if (primitives.isEnabledIn(ctx.interpreter.runtime_flags.spec_id, .berlin)) {
         const dyn_gas: u64 = if (info.is_cold) gas_costs.COLD_ACCOUNT_ACCESS else gas_costs.WARM_ACCOUNT_ACCESS;
-        if (!ctx.interpreter.gas.spend(dyn_gas)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!ctx.interpreter.gas.spend(dyn_gas)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
     }
 
     // Use originalBytes().len: the analyzed bytecode may include a STOP-padding byte
@@ -107,9 +132,15 @@ pub fn opExtcodesize(ctx: *InstructionContext) void {
 /// Stack: [addr, memOff, codeOff, size] -> []
 /// Gas: pre-Berlin 700 static + copy; Berlin+ dynamic warm/cold + copy
 pub fn opExtcodecopy(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(4)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(4)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const addr_val = stack.peekUnsafe(0);
     const mem_off = stack.peekUnsafe(1);
@@ -122,18 +153,24 @@ pub fn opExtcodecopy(ctx: *InstructionContext) void {
         // Address doesn't exist; still need to expand memory and pay copy cost
         if (size == 0) return;
         if (mem_off > std.math.maxInt(usize) or size > std.math.maxInt(usize)) {
-            ctx.interpreter.halt(.memory_limit_oog); return;
+            ctx.interpreter.halt(.memory_limit_oog);
+            return;
         }
         const mem_off_u: usize = @intCast(mem_off);
         const size_u: usize = @intCast(size);
         const num_words = (size_u + 31) / 32;
         if (!ctx.interpreter.gas.spend(gas_costs.G_COPY * @as(u64, @intCast(num_words)))) {
-            ctx.interpreter.halt(.out_of_gas); return;
+            ctx.interpreter.halt(.out_of_gas);
+            return;
         }
         const end_off = std.math.add(usize, mem_off_u, size_u) catch {
-            ctx.interpreter.halt(.memory_limit_oog); return;
+            ctx.interpreter.halt(.memory_limit_oog);
+            return;
         };
-        if (!expandMemory(ctx, end_off)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!expandMemory(ctx, end_off)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
         @memset(ctx.interpreter.memory.buffer.items[mem_off_u..end_off], 0);
         return;
     };
@@ -141,28 +178,37 @@ pub fn opExtcodecopy(ctx: *InstructionContext) void {
     // Post-Berlin: dynamic warm/cold access cost
     if (primitives.isEnabledIn(ctx.interpreter.runtime_flags.spec_id, .berlin)) {
         const dyn_gas: u64 = if (info.is_cold) gas_costs.COLD_ACCOUNT_ACCESS else gas_costs.WARM_ACCOUNT_ACCESS;
-        if (!ctx.interpreter.gas.spend(dyn_gas)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!ctx.interpreter.gas.spend(dyn_gas)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
     }
 
     if (size == 0) return;
 
     if (mem_off > std.math.maxInt(usize) or size > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     }
 
     const mem_off_u: usize = @intCast(mem_off);
     const size_u: usize = @intCast(size);
     const new_size = std.math.add(usize, mem_off_u, size_u) catch {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     };
 
     // Dynamic: copy cost
     const num_words = (size_u + 31) / 32;
     if (!ctx.interpreter.gas.spend(gas_costs.G_COPY * @as(u64, @intCast(num_words)))) {
-        ctx.interpreter.halt(.out_of_gas); return;
+        ctx.interpreter.halt(.out_of_gas);
+        return;
     }
 
-    if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!expandMemory(ctx, new_size)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     const code = info.bytecode.bytecode();
     const dest = ctx.interpreter.memory.buffer.items[mem_off_u..new_size];
@@ -186,9 +232,15 @@ pub fn opExtcodecopy(ctx: *InstructionContext) void {
 /// Stack: [addr] -> [hash]
 /// Gas: Istanbul: 700 static; Berlin+ dynamic warm/cold
 pub fn opExtcodehash(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const addr_val = stack.peekUnsafe(0);
     const addr = host_module.u256ToAddress(addr_val);
@@ -201,7 +253,10 @@ pub fn opExtcodehash(ctx: *InstructionContext) void {
     // Post-Berlin: dynamic warm/cold cost (static_gas is 0)
     if (primitives.isEnabledIn(ctx.interpreter.runtime_flags.spec_id, .berlin)) {
         const dyn_gas: u64 = if (info.is_cold) gas_costs.COLD_ACCOUNT_ACCESS else gas_costs.WARM_ACCOUNT_ACCESS;
-        if (!ctx.interpreter.gas.spend(dyn_gas)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!ctx.interpreter.gas.spend(dyn_gas)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
     }
 
     // Empty account → push 0
@@ -215,9 +270,15 @@ pub fn opExtcodehash(ctx: *InstructionContext) void {
 /// BLOCKHASH (0x40): Push the hash of one of the 256 most recent blocks.
 /// Stack: [blockNumber] -> [hash]   Gas: 20 (G_BLOCKHASH, dispatch)
 pub fn opBlockhash(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const number = stack.peekUnsafe(0);
     if (number > std.math.maxInt(u64)) {
@@ -237,22 +298,32 @@ pub fn opBlockhash(ctx: *InstructionContext) void {
 /// Stack: [key] -> [value]
 /// Gas: dynamic based on cold/warm and spec
 pub fn opSload(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const key = stack.peekUnsafe(0);
     const self_addr = ctx.interpreter.input.target;
     const spec = ctx.interpreter.runtime_flags.spec_id;
 
     const result = h.sload(self_addr, key) orelse {
-        ctx.interpreter.halt(.invalid_opcode); return;
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
     };
 
     // Dynamic gas for Berlin+ (static_gas is 0 for Berlin+)
     if (primitives.isEnabledIn(spec, .berlin)) {
         const dyn_gas: u64 = if (result.is_cold) gas_costs.COLD_SLOAD else gas_costs.WARM_SLOAD;
-        if (!ctx.interpreter.gas.spend(dyn_gas)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!ctx.interpreter.gas.spend(dyn_gas)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
     }
 
     stack.setTopUnsafe().* = result.value;
@@ -262,15 +333,22 @@ pub fn opSload(ctx: *InstructionContext) void {
 /// Stack: [key, value] -> []
 /// Gas: complex EIP-2200/EIP-2929 calculation
 pub fn opSstore(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
 
     // Static call check
     if (ctx.interpreter.runtime_flags.is_static) {
-        ctx.interpreter.halt(.invalid_static); return;
+        ctx.interpreter.halt(.invalid_static);
+        return;
     }
 
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const key = stack.peekUnsafe(0);
     const new_value = stack.peekUnsafe(1);
@@ -283,18 +361,23 @@ pub fn opSstore(ctx: *InstructionContext) void {
     // This prevents a callee that received only the 2300-gas stipend from mutating storage.
     if (primitives.isEnabledIn(spec, .istanbul)) {
         if (ctx.interpreter.gas.remaining <= gas_costs.CALL_STIPEND) {
-            ctx.interpreter.halt(.out_of_gas); return;
+            ctx.interpreter.halt(.out_of_gas);
+            return;
         }
     }
 
     const result = h.sstore(self_addr, key, new_value) orelse {
-        ctx.interpreter.halt(.invalid_opcode); return;
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
     };
 
     // Compute gas cost using EIP-2200/EIP-2929 rules
     const sstore_gas = gas_costs.getSstoreCost(spec, result.original, result.current, result.new, result.is_cold);
 
-    if (!ctx.interpreter.gas.spend(sstore_gas.gas_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(sstore_gas.gas_cost)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     // Apply gas refund (can be positive or negative)
     if (sstore_gas.gas_refund > 0) {
@@ -308,9 +391,15 @@ pub fn opSstore(ctx: *InstructionContext) void {
 /// TLOAD (0x5C): Load a word from transient storage (EIP-1153, Cancun+).
 /// Stack: [key] -> [value]   Gas: 100 (WARM_SLOAD, dispatch)
 pub fn opTload(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const key = stack.peekUnsafe(0);
     const self_addr = ctx.interpreter.input.target;
@@ -320,15 +409,22 @@ pub fn opTload(ctx: *InstructionContext) void {
 /// TSTORE (0x5D): Save a word to transient storage (EIP-1153, Cancun+).
 /// Stack: [key, value] -> []   Gas: 100 (WARM_SLOAD, dispatch)
 pub fn opTstore(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
 
     // Static call check
     if (ctx.interpreter.runtime_flags.is_static) {
-        ctx.interpreter.halt(.invalid_static); return;
+        ctx.interpreter.halt(.invalid_static);
+        return;
     }
 
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const key = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
@@ -348,27 +444,36 @@ pub fn opTstore(ctx: *InstructionContext) void {
 pub fn makeLogFn(comptime n: u8) *const fn (ctx: *InstructionContext) void {
     const impl = struct {
         fn logN(ctx: *InstructionContext) void {
-            const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+            const h = ctx.host orelse {
+                ctx.interpreter.halt(.invalid_opcode);
+                return;
+            };
 
             // Static call check
             if (ctx.interpreter.runtime_flags.is_static) {
-                ctx.interpreter.halt(.invalid_static); return;
+                ctx.interpreter.halt(.invalid_static);
+                return;
             }
 
             const stack = &ctx.interpreter.stack;
             const required = 2 + @as(usize, n);
-            if (!stack.hasItems(required)) { ctx.interpreter.halt(.stack_underflow); return; }
+            if (!stack.hasItems(required)) {
+                ctx.interpreter.halt(.stack_underflow);
+                return;
+            }
 
             const offset = stack.peekUnsafe(0);
             const size = stack.peekUnsafe(1);
 
             // size=0 means no memory access; offset is irrelevant in that case.
             if (size > std.math.maxInt(usize)) {
-                ctx.interpreter.halt(.memory_limit_oog); return;
+                ctx.interpreter.halt(.memory_limit_oog);
+                return;
             }
             const size_u: usize = @intCast(size);
             if (size_u > 0 and offset > std.math.maxInt(usize)) {
-                ctx.interpreter.halt(.memory_limit_oog); return;
+                ctx.interpreter.halt(.memory_limit_oog);
+                return;
             }
             const offset_u: usize = if (size_u == 0) 0 else @intCast(offset);
 
@@ -376,15 +481,20 @@ pub fn makeLogFn(comptime n: u8) *const fn (ctx: *InstructionContext) void {
             const data_cost: u64 = gas_costs.G_LOGDATA * @as(u64, @intCast(size_u));
             const topic_cost: u64 = gas_costs.G_LOGTOPIC * @as(u64, n);
             if (!ctx.interpreter.gas.spend(data_cost + topic_cost)) {
-                ctx.interpreter.halt(.out_of_gas); return;
+                ctx.interpreter.halt(.out_of_gas);
+                return;
             }
 
             // Dynamic: memory expansion
             if (size_u > 0) {
                 const log_end = std.math.add(usize, offset_u, size_u) catch {
-                    ctx.interpreter.halt(.memory_limit_oog); return;
+                    ctx.interpreter.halt(.memory_limit_oog);
+                    return;
                 };
-                if (!expandMemory(ctx, log_end)) { ctx.interpreter.halt(.out_of_gas); return; }
+                if (!expandMemory(ctx, log_end)) {
+                    ctx.interpreter.halt(.out_of_gas);
+                    return;
+                }
             }
 
             // Collect topics into a heap-allocated slice so the pointer remains
@@ -393,7 +503,8 @@ pub fn makeLogFn(comptime n: u8) *const fn (ctx: *InstructionContext) void {
                 &[_]primitives.Hash{}
             else blk: {
                 const t = std.heap.page_allocator.alloc(primitives.Hash, n) catch {
-                    ctx.interpreter.halt(.out_of_gas); return;
+                    ctx.interpreter.halt(.out_of_gas);
+                    return;
                 };
                 inline for (0..n) |i| {
                     const topic_val = stack.peekUnsafe(2 + i);
@@ -437,15 +548,22 @@ pub const opLog4 = makeLogFn(4);
 /// Stack: [target] -> []
 /// Gas: G_SELFDESTRUCT (5000, static) + dynamic warm/cold + had_value+new_account
 pub fn opSelfdestruct(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
 
     // Static call check
     if (ctx.interpreter.runtime_flags.is_static) {
-        ctx.interpreter.halt(.invalid_static); return;
+        ctx.interpreter.halt(.invalid_static);
+        return;
     }
 
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const target_val = stack.popUnsafe();
     const target = host_module.u256ToAddress(target_val);
@@ -453,7 +571,8 @@ pub fn opSelfdestruct(ctx: *InstructionContext) void {
     const spec = ctx.interpreter.runtime_flags.spec_id;
 
     const result = h.selfdestruct(self_addr, target) orelse {
-        ctx.interpreter.halt(.invalid_opcode); return;
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
     };
 
     // Dynamic gas costs
@@ -477,7 +596,10 @@ pub fn opSelfdestruct(ctx: *InstructionContext) void {
         }
     }
 
-    if (!ctx.interpreter.gas.spend(dyn_gas)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(dyn_gas)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     // Pre-London: SELFDESTRUCT gives a refund of R_SELFDESTRUCT (24000), but only on the
     // FIRST selfdestruct of this account in the current transaction. Subsequent selfdestruct

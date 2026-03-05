@@ -6,7 +6,10 @@ const InstructionContext = @import("../instruction_context.zig").InstructionCont
 /// Stack: [a, b] -> [a < b ? 1 : 0]   Static gas: 3 (VERYLOW, charged by dispatch)
 pub fn opLt(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -17,7 +20,10 @@ pub fn opLt(ctx: *InstructionContext) void {
 /// Stack: [a, b] -> [a > b ? 1 : 0]   Static gas: 3 (VERYLOW)
 pub fn opGt(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -28,7 +34,10 @@ pub fn opGt(ctx: *InstructionContext) void {
 /// Stack: [a, b] -> [a < b ? 1 : 0]   Static gas: 3 (VERYLOW)
 pub fn opSlt(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -50,7 +59,10 @@ pub fn opSlt(ctx: *InstructionContext) void {
 /// Stack: [a, b] -> [a > b ? 1 : 0]   Static gas: 3 (VERYLOW)
 pub fn opSgt(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -72,7 +84,10 @@ pub fn opSgt(ctx: *InstructionContext) void {
 /// Stack: [a, b] -> [a == b ? 1 : 0]   Static gas: 3 (VERYLOW)
 pub fn opEq(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -83,7 +98,10 @@ pub fn opEq(ctx: *InstructionContext) void {
 /// Stack: [a] -> [a == 0 ? 1 : 0]   Static gas: 3 (VERYLOW)
 pub fn opIsZero(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const ptr = stack.setTopUnsafe();
     ptr.* = if (ptr.* == 0) 1 else 0;
 }

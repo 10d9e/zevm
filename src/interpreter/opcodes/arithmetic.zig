@@ -7,7 +7,10 @@ const gas_costs = @import("../gas_costs.zig");
 /// Stack: [a, b] -> [a + b]   Static gas: 3 (VERYLOW, charged by dispatch)
 pub fn opAdd(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -18,7 +21,10 @@ pub fn opAdd(ctx: *InstructionContext) void {
 /// Stack: [a, b] -> [a - b]   Static gas: 3 (VERYLOW)
 pub fn opSub(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -29,7 +35,10 @@ pub fn opSub(ctx: *InstructionContext) void {
 /// Stack: [a, b] -> [a * b]   Static gas: 5 (LOW)
 pub fn opMul(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -40,7 +49,10 @@ pub fn opMul(ctx: *InstructionContext) void {
 /// Stack: [a, b] -> [a / b]   Static gas: 5 (LOW)
 pub fn opDiv(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -51,7 +63,10 @@ pub fn opDiv(ctx: *InstructionContext) void {
 /// Stack: [a, b] -> [a / b]   Static gas: 5 (LOW)
 pub fn opSdiv(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -62,7 +77,10 @@ pub fn opSdiv(ctx: *InstructionContext) void {
 /// Stack: [a, b] -> [a % b]   Static gas: 5 (LOW)
 pub fn opMod(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -73,7 +91,10 @@ pub fn opMod(ctx: *InstructionContext) void {
 /// Stack: [a, b] -> [a % b]   Static gas: 5 (LOW)
 pub fn opSmod(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
@@ -84,7 +105,10 @@ pub fn opSmod(ctx: *InstructionContext) void {
 /// Stack: [a, b, N] -> [(a + b) % N]   Static gas: 8 (MID)
 pub fn opAddmod(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(3)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(3)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     const n = stack.peekUnsafe(2);
@@ -96,7 +120,10 @@ pub fn opAddmod(ctx: *InstructionContext) void {
 /// Stack: [a, b, N] -> [(a * b) % N]   Static gas: 8 (MID)
 pub fn opMulmod(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(3)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(3)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     const n = stack.peekUnsafe(2);
@@ -110,7 +137,10 @@ pub fn opMulmod(ctx: *InstructionContext) void {
 /// EIP-160 (Spurious Dragon): G_EXPBYTE raised from 10 to 50.
 pub fn opExp(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const exponent = stack.peekUnsafe(1);
     // Dynamic gas: G_EXPBYTE per byte of exponent (10 pre-Spurious Dragon, 50 post)
     const spec = ctx.interpreter.runtime_flags.spec_id;
@@ -119,7 +149,10 @@ pub fn opExp(ctx: *InstructionContext) void {
     else
         gas_costs.G_EXPBYTE_FRONTIER;
     const dynamic_gas = expbyte_cost * byteSize(exponent);
-    if (!ctx.interpreter.gas.spend(dynamic_gas)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(dynamic_gas)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
     const base = stack.peekUnsafe(0);
     stack.shrinkUnsafe(1);
     stack.setTopUnsafe().* = expMod256(base, exponent);
@@ -129,7 +162,10 @@ pub fn opExp(ctx: *InstructionContext) void {
 /// Stack: [byte_pos, value] -> [extended_value]   Static gas: 5 (LOW)
 pub fn opSignextend(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const byte_pos = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);

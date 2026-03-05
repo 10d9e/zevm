@@ -16,12 +16,19 @@ pub fn opStop(ctx: *InstructionContext) void {
 /// Stack: [dest] -> []   Gas: 8 (G_MID, charged by dispatch)
 pub fn opJump(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const dest = stack.popUnsafe();
-    if (dest > std.math.maxInt(usize)) { ctx.interpreter.halt(.invalid_jump); return; }
+    if (dest > std.math.maxInt(usize)) {
+        ctx.interpreter.halt(.invalid_jump);
+        return;
+    }
     const dest_usize: usize = @intCast(dest);
     if (!ctx.interpreter.bytecode.isValidJump(dest_usize)) {
-        ctx.interpreter.halt(.invalid_jump); return;
+        ctx.interpreter.halt(.invalid_jump);
+        return;
     }
     ctx.interpreter.bytecode.absoluteJump(dest_usize);
 }
@@ -30,15 +37,22 @@ pub fn opJump(ctx: *InstructionContext) void {
 /// Stack: [dest, cond] -> []   Gas: 10 (G_HIGH, charged by dispatch)
 pub fn opJumpi(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(2)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const dest = stack.peekUnsafe(0);
     const cond = stack.peekUnsafe(1);
     stack.shrinkUnsafe(2);
     if (cond == 0) return;
-    if (dest > std.math.maxInt(usize)) { ctx.interpreter.halt(.invalid_jump); return; }
+    if (dest > std.math.maxInt(usize)) {
+        ctx.interpreter.halt(.invalid_jump);
+        return;
+    }
     const dest_usize: usize = @intCast(dest);
     if (!ctx.interpreter.bytecode.isValidJump(dest_usize)) {
-        ctx.interpreter.halt(.invalid_jump); return;
+        ctx.interpreter.halt(.invalid_jump);
+        return;
     }
     ctx.interpreter.bytecode.absoluteJump(dest_usize);
 }
@@ -54,7 +68,10 @@ pub fn opJumpdest(ctx: *InstructionContext) void {
 /// Note: step() advances PC by 1 before calling handler; pc-1 is the opcode address.
 pub fn opPc(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(@intCast(ctx.interpreter.bytecode.pc - 1));
 }
 
@@ -62,7 +79,10 @@ pub fn opPc(ctx: *InstructionContext) void {
 /// Stack: [] -> [gas]   Gas: 2 (G_BASE, charged by dispatch before handler is called)
 pub fn opGas(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(ctx.interpreter.gas.remaining);
 }
 

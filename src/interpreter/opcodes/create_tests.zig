@@ -24,26 +24,28 @@ const expectEqual = std.testing.expectEqual;
 fn runPendingCreate(host: *Host, interp: *Interpreter, spec: primitives.SpecId) void {
     switch (interp.pending) {
         .none => {},
-        .call => {},  // not handled here (no CALL tests in this file)
+        .call => {}, // not handled here (no CALL tests in this file)
         .create => |pc| {
             const table = protocol_schedule.makeInstructionTable(spec);
             const init_bc = bytecode_mod.Bytecode.newRaw(pc.inputs.init_code);
             var sub = Interpreter.new(
                 Memory.new(),
                 ExtBytecode.newOwned(init_bc),
-                InputsImpl.new(pc.inputs.caller, pc.new_addr, pc.inputs.value,
-                    @constCast(&[_]u8{}), pc.inputs.gas_limit, .call, false, 1),
-                false, spec, pc.inputs.gas_limit,
+                InputsImpl.new(pc.inputs.caller, pc.new_addr, pc.inputs.value, @constCast(&[_]u8{}), pc.inputs.gas_limit, .call, false, 1),
+                false,
+                spec,
+                pc.inputs.gas_limit,
             );
             defer sub.deinit();
             _ = sub.runWithHost(&table, host);
             const rd: []const u8 = if (sub.result.isSuccess() or sub.result == .revert)
-                sub.return_data.data else &[_]u8{};
+                sub.return_data.data
+            else
+                &[_]u8{};
             var rd_buf: std.ArrayList(u8) = .{};
             defer rd_buf.deinit(std.heap.c_allocator);
             rd_buf.appendSlice(std.heap.c_allocator, rd) catch {};
-            const r = host.finalizeCreate(pc.checkpoint, pc.new_addr, sub.result,
-                sub.gas.remaining, sub.gas.refunded, rd_buf.items, spec);
+            const r = host.finalizeCreate(pc.checkpoint, pc.new_addr, sub.result, sub.gas.remaining, sub.gas.refunded, rd_buf.items, spec);
             call_ops.resumeCreate(interp, r);
             interp.pending = .none;
         },
@@ -67,7 +69,12 @@ test "createAddress: deterministic — same inputs give same address" {
     try expect(std.mem.eql(u8, &addr, &addr2));
     // Result must be non-zero (a real keccak hash)
     var all_zero = true;
-    for (addr) |b| { if (b != 0) { all_zero = false; break; } }
+    for (addr) |b| {
+        if (b != 0) {
+            all_zero = false;
+            break;
+        }
+    }
     try expect(!all_zero);
 }
 
@@ -93,7 +100,12 @@ test "create2Address: same inputs produce same address" {
     const a2 = host_module.create2Address(sender, salt, init_hash);
     try expect(std.mem.eql(u8, &a1, &a2));
     var all_zero = true;
-    for (a1) |b| { if (b != 0) { all_zero = false; break; } }
+    for (a1) |b| {
+        if (b != 0) {
+            all_zero = false;
+            break;
+        }
+    }
     try expect(!all_zero);
 }
 
@@ -216,9 +228,9 @@ test "opCreate: STOP init code deploys empty contract, returns non-zero address"
     @memcpy(interp.memory.buffer.items[0..INIT_CODE.len], &INIT_CODE);
 
     // Stack layout for CREATE (top to bottom): value, offset, size
-    interp.stack.pushUnsafe(0);              // value (top)
-    interp.stack.pushUnsafe(0);              // offset
-    interp.stack.pushUnsafe(INIT_CODE.len);  // size
+    interp.stack.pushUnsafe(0); // value (top)
+    interp.stack.pushUnsafe(0); // offset
+    interp.stack.pushUnsafe(INIT_CODE.len); // size
 
     var host = Host{ .ctx = &ctx };
     var ic = InstructionContext{ .interpreter = &interp, .host = &host };
@@ -247,10 +259,10 @@ test "opCreate2: same inputs produce same address on stack" {
             @memcpy(interp.memory.buffer.items[0..INIT_CODE.len], &INIT_CODE);
 
             // Stack: salt (top), value, offset, size
-            interp.stack.pushUnsafe(42);             // salt (top)
-            interp.stack.pushUnsafe(0);              // value
-            interp.stack.pushUnsafe(0);              // offset
-            interp.stack.pushUnsafe(INIT_CODE.len);  // size
+            interp.stack.pushUnsafe(42); // salt (top)
+            interp.stack.pushUnsafe(0); // value
+            interp.stack.pushUnsafe(0); // offset
+            interp.stack.pushUnsafe(INIT_CODE.len); // size
 
             var host = Host{ .ctx = &ctx };
             var ic = InstructionContext{ .interpreter = &interp, .host = &host };

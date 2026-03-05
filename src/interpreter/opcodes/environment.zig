@@ -40,7 +40,10 @@ fn expandMemory(ctx: *InstructionContext, new_size: usize) bool {
 /// Stack: [] -> [address]   Gas: 2 (G_BASE, dispatch)
 pub fn opAddress(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(host_module.addressToU256(ctx.interpreter.input.target));
 }
 
@@ -48,7 +51,10 @@ pub fn opAddress(ctx: *InstructionContext) void {
 /// Stack: [] -> [caller]   Gas: 2 (G_BASE, dispatch)
 pub fn opCaller(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(host_module.addressToU256(ctx.interpreter.input.caller));
 }
 
@@ -56,7 +62,10 @@ pub fn opCaller(ctx: *InstructionContext) void {
 /// Stack: [] -> [value]   Gas: 2 (G_BASE, dispatch)
 pub fn opCallvalue(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(ctx.interpreter.input.value);
 }
 
@@ -64,7 +73,10 @@ pub fn opCallvalue(ctx: *InstructionContext) void {
 /// Stack: [] -> [size]   Gas: 2 (G_BASE, dispatch)
 pub fn opCalldatasize(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(@intCast(ctx.interpreter.input.data.len));
 }
 
@@ -72,7 +84,10 @@ pub fn opCalldatasize(ctx: *InstructionContext) void {
 /// Stack: [offset] -> [data]   Gas: 3 (G_VERYLOW, dispatch)
 pub fn opCalldataload(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const offset = stack.peekUnsafe(0);
     const data = ctx.interpreter.input.data;
@@ -100,7 +115,10 @@ pub fn opCalldataload(ctx: *InstructionContext) void {
 /// Stack: [memOff, dataOff, size] -> []   Gas: 3 + copy_words*3 + mem_expansion
 pub fn opCalldatacopy(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(3)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(3)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const mem_off = stack.peekUnsafe(0);
     const data_off = stack.peekUnsafe(1);
@@ -110,22 +128,30 @@ pub fn opCalldatacopy(ctx: *InstructionContext) void {
     if (size == 0) return;
 
     if (mem_off > std.math.maxInt(usize) or size > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     }
 
     const mem_off_usize: usize = @intCast(mem_off);
     const size_usize: usize = @intCast(size);
     const new_size = std.math.add(usize, mem_off_usize, size_usize) catch {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     };
 
     // Dynamic: copy cost
     const num_words = (size_usize + 31) / 32;
     const copy_cost: u64 = gas_costs.G_COPY * @as(u64, @intCast(num_words));
-    if (!ctx.interpreter.gas.spend(copy_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(copy_cost)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     // Dynamic: memory expansion
-    if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!expandMemory(ctx, new_size)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     const dest = ctx.interpreter.memory.buffer.items[mem_off_usize..new_size];
     const data = ctx.interpreter.input.data;
@@ -148,7 +174,10 @@ pub fn opCalldatacopy(ctx: *InstructionContext) void {
 /// Stack: [] -> [size]   Gas: 2 (G_BASE, dispatch)
 pub fn opCodesize(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     const code_len = ctx.interpreter.bytecode.bytecode.bytecode().len;
     stack.pushUnsafe(@intCast(code_len));
 }
@@ -157,7 +186,10 @@ pub fn opCodesize(ctx: *InstructionContext) void {
 /// Stack: [memOff, codeOff, size] -> []   Gas: 3 + copy_words*3 + mem_expansion
 pub fn opCodecopy(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(3)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(3)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const mem_off = stack.peekUnsafe(0);
     const code_off = stack.peekUnsafe(1);
@@ -167,22 +199,30 @@ pub fn opCodecopy(ctx: *InstructionContext) void {
     if (size == 0) return;
 
     if (mem_off > std.math.maxInt(usize) or size > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     }
 
     const mem_off_usize: usize = @intCast(mem_off);
     const size_usize: usize = @intCast(size);
     const new_size = std.math.add(usize, mem_off_usize, size_usize) catch {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     };
 
     // Dynamic: copy cost
     const num_words = (size_usize + 31) / 32;
     const copy_cost: u64 = gas_costs.G_COPY * @as(u64, @intCast(num_words));
-    if (!ctx.interpreter.gas.spend(copy_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(copy_cost)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     // Dynamic: memory expansion
-    if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!expandMemory(ctx, new_size)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     const dest = ctx.interpreter.memory.buffer.items[mem_off_usize..new_size];
     const code = ctx.interpreter.bytecode.bytecode.bytecode();
@@ -206,7 +246,10 @@ pub fn opCodecopy(ctx: *InstructionContext) void {
 /// Stack: [] -> [size]   Gas: 2 (G_BASE, dispatch)
 pub fn opReturndatasize(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(@intCast(ctx.interpreter.return_data.data.len));
 }
 
@@ -214,7 +257,10 @@ pub fn opReturndatasize(ctx: *InstructionContext) void {
 /// Stack: [memOff, srcOff, size] -> []   Gas: 3 + copy_words*3 + mem_expansion
 pub fn opReturndatacopy(ctx: *InstructionContext) void {
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(3)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(3)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const mem_off = stack.peekUnsafe(0);
     const src_off = stack.peekUnsafe(1);
@@ -225,18 +271,21 @@ pub fn opReturndatacopy(ctx: *InstructionContext) void {
     // EIP-211: if src_offset + size > returndata.len, the call frame reverts.
     // When size==0, this reduces to: src_offset > returndata.len.
     if (src_off > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.invalid_returndata); return;
+        ctx.interpreter.halt(.invalid_returndata);
+        return;
     }
     const src_off_usize: usize = @intCast(src_off);
     const return_data = ctx.interpreter.return_data.data;
     if (src_off_usize > return_data.len) {
-        ctx.interpreter.halt(.invalid_returndata); return;
+        ctx.interpreter.halt(.invalid_returndata);
+        return;
     }
 
     if (size == 0) return;
 
     if (mem_off > std.math.maxInt(usize) or size > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     }
 
     const mem_off_usize: usize = @intCast(mem_off);
@@ -244,20 +293,28 @@ pub fn opReturndatacopy(ctx: *InstructionContext) void {
 
     // Bounds check: src_off + size must be within return data
     if (size_usize > return_data.len - src_off_usize) {
-        ctx.interpreter.halt(.invalid_returndata); return;
+        ctx.interpreter.halt(.invalid_returndata);
+        return;
     }
 
     const new_size = std.math.add(usize, mem_off_usize, size_usize) catch {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     };
 
     // Dynamic: copy cost
     const num_words = (size_usize + 31) / 32;
     const copy_cost: u64 = gas_costs.G_COPY * @as(u64, @intCast(num_words));
-    if (!ctx.interpreter.gas.spend(copy_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(copy_cost)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     // Dynamic: memory expansion
-    if (!expandMemory(ctx, new_size)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!expandMemory(ctx, new_size)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     // Use direction-safe copy: return_data may alias execution memory (e.g. identity precompile).
     const dst = ctx.interpreter.memory.buffer.items[mem_off_usize..new_size];
@@ -276,54 +333,90 @@ pub fn opReturndatacopy(ctx: *InstructionContext) void {
 /// ORIGIN (0x32): Push the origin address of the transaction (tx.origin).
 /// Stack: [] -> [origin]   Gas: 2 (G_BASE, dispatch)
 pub fn opOrigin(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(host_module.addressToU256(h.origin()));
 }
 
 /// GASPRICE (0x3A): Push the effective gas price of this transaction.
 /// Stack: [] -> [gasPrice]   Gas: 2 (G_BASE, dispatch)
 pub fn opGasprice(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(h.gasPrice());
 }
 
 /// COINBASE (0x41): Push the block's beneficiary address.
 /// Stack: [] -> [coinbase]   Gas: 2 (G_BASE, dispatch)
 pub fn opCoinbase(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(host_module.addressToU256(h.coinbase()));
 }
 
 /// TIMESTAMP (0x42): Push the block timestamp.
 /// Stack: [] -> [timestamp]   Gas: 2 (G_BASE, dispatch)
 pub fn opTimestamp(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(h.timestamp());
 }
 
 /// NUMBER (0x43): Push the current block number.
 /// Stack: [] -> [number]   Gas: 2 (G_BASE, dispatch)
 pub fn opNumber(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(h.blockNumber());
 }
 
 /// DIFFICULTY (0x44): Push block difficulty (or PREVRANDAO after Paris).
 /// Stack: [] -> [difficulty]   Gas: 2 (G_BASE, dispatch)
 pub fn opDifficulty(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
 
     // After Paris (EIP-4399): use prevrandao if available
     const spec = ctx.interpreter.runtime_flags.spec_id;
@@ -339,36 +432,60 @@ pub fn opDifficulty(ctx: *InstructionContext) void {
 /// GASLIMIT (0x45): Push the block gas limit.
 /// Stack: [] -> [gasLimit]   Gas: 2 (G_BASE, dispatch)
 pub fn opGaslimit(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(@as(primitives.U256, h.blockGasLimit()));
 }
 
 /// CHAINID (0x46): Push the chain ID (EIP-1344, Istanbul+).
 /// Stack: [] -> [chainId]   Gas: 2 (G_BASE, dispatch)
 pub fn opChainid(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(@as(primitives.U256, h.chainId()));
 }
 
 /// BASEFEE (0x48): Push the base fee per gas (EIP-3198, London+).
 /// Stack: [] -> [basefee]   Gas: 2 (G_BASE, dispatch)
 pub fn opBasefee(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(@as(primitives.U256, h.basefee()));
 }
 
 /// BLOBHASH (0x49): Push a blob versioned hash (EIP-4844, Cancun+).
 /// Stack: [index] -> [blobHash]   Gas: 3 (G_VERYLOW, dispatch)
 pub fn opBlobhash(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(1)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(1)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     const index = stack.peekUnsafe(0);
     if (index > std.math.maxInt(usize)) {
@@ -383,8 +500,14 @@ pub fn opBlobhash(ctx: *InstructionContext) void {
 /// BLOBBASEFEE (0x4A): Push the blob base fee (EIP-7516, Cancun+).
 /// Stack: [] -> [blobBasefee]   Gas: 2 (G_BASE, dispatch)
 pub fn opBlobbasefee(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasSpace(1)) { ctx.interpreter.halt(.stack_overflow); return; }
+    if (!stack.hasSpace(1)) {
+        ctx.interpreter.halt(.stack_overflow);
+        return;
+    }
     stack.pushUnsafe(@as(primitives.U256, h.blobBasefee()));
 }

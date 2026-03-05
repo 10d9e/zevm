@@ -26,24 +26,40 @@ const c = if (build_options.enable_mcl) blk: {
     pub const mclBnFr = extern struct { d: [4]u64 = .{0} ** 4 };
     pub const mclBnGT = extern struct { d: [12]mclBnFp = [1]mclBnFp{.{}} ** 12 };
     pub const mclSize = usize;
-    pub fn mclBnFp_setBigEndianMod(_: *mclBnFp, _: *const anyopaque, _: mclSize) c_int { return -1; }
+    pub fn mclBnFp_setBigEndianMod(_: *mclBnFp, _: *const anyopaque, _: mclSize) c_int {
+        return -1;
+    }
     pub fn mclBnFp_setInt32(_: *mclBnFp, _: c_int) void {}
-    pub fn mclBnFp_getLittleEndian(_: *anyopaque, _: mclSize, _: *const mclBnFp) mclSize { return 0; }
+    pub fn mclBnFp_getLittleEndian(_: *anyopaque, _: mclSize, _: *const mclBnFp) mclSize {
+        return 0;
+    }
     pub fn mclBnG1_clear(_: *mclBnG1) void {}
-    pub fn mclBnG1_isZero(_: *const mclBnG1) c_int { return 1; }
-    pub fn mclBnG1_isValid(_: *const mclBnG1) c_int { return 0; }
+    pub fn mclBnG1_isZero(_: *const mclBnG1) c_int {
+        return 1;
+    }
+    pub fn mclBnG1_isValid(_: *const mclBnG1) c_int {
+        return 0;
+    }
     pub fn mclBnG1_add(_: *mclBnG1, _: *const mclBnG1, _: *const mclBnG1) void {}
     pub fn mclBnG1_mul(_: *mclBnG1, _: *const mclBnG1, _: *const mclBnFr) void {}
     pub fn mclBnG1_normalize(_: *mclBnG1, _: *const mclBnG1) void {}
     pub fn mclBnG2_clear(_: *mclBnG2) void {}
-    pub fn mclBnG2_isZero(_: *const mclBnG2) c_int { return 1; }
-    pub fn mclBnG2_isValid(_: *const mclBnG2) c_int { return 0; }
+    pub fn mclBnG2_isZero(_: *const mclBnG2) c_int {
+        return 1;
+    }
+    pub fn mclBnG2_isValid(_: *const mclBnG2) c_int {
+        return 0;
+    }
     pub fn mclBnG2_normalize(_: *mclBnG2, _: *const mclBnG2) void {}
-    pub fn mclBnFr_setBigEndianMod(_: *mclBnFr, _: *const anyopaque, _: mclSize) c_int { return -1; }
+    pub fn mclBnFr_setBigEndianMod(_: *mclBnFr, _: *const anyopaque, _: mclSize) c_int {
+        return -1;
+    }
     pub fn mclBn_pairing(_: *mclBnGT, _: *const mclBnG1, _: *const mclBnG2) void {}
     pub fn mclBnGT_setInt(_: *mclBnGT, _: c_int) void {}
     pub fn mclBnGT_mul(_: *mclBnGT, _: *const mclBnGT, _: *const mclBnGT) void {}
-    pub fn mclBnGT_isOne(_: *const mclBnGT) i32 { return 0; }
+    pub fn mclBnGT_isOne(_: *const mclBnGT) i32 {
+        return 0;
+    }
 };
 
 // Initialize mcl once (thread-safe initialization)
@@ -82,7 +98,10 @@ fn g1FromEVM(p: *c.mclBnG1, bytes: *const [64]u8) !void {
     // Identity / point-at-infinity: all zeros
     var all_zero = true;
     for (bytes) |b| {
-        if (b != 0) { all_zero = false; break; }
+        if (b != 0) {
+            all_zero = false;
+            break;
+        }
     }
     if (all_zero) {
         c.mclBnG1_clear(p);
@@ -139,7 +158,10 @@ fn isValidFpElement(bytes: *const [32]u8) bool {
 fn g2FromEVM(p: *c.mclBnG2, bytes: *const [128]u8) !void {
     var all_zero = true;
     for (bytes) |b| {
-        if (b != 0) { all_zero = false; break; }
+        if (b != 0) {
+            all_zero = false;
+            break;
+        }
     }
     if (all_zero) {
         c.mclBnG2_clear(p);
@@ -148,14 +170,14 @@ fn g2FromEVM(p: *c.mclBnG2, bytes: *const [128]u8) !void {
 
     // Strict field element validation per EIP-197: each 32-byte coordinate must be < p.
     // mclBnFp_setBigEndianMod silently reduces inputs mod p; we must reject inputs >= p explicitly.
-    if (!isValidFpElement(bytes[0..32])) return error.InvalidG2Point;   // x.imag
-    if (!isValidFpElement(bytes[32..64])) return error.InvalidG2Point;  // x.real
-    if (!isValidFpElement(bytes[64..96])) return error.InvalidG2Point;  // y.imag
+    if (!isValidFpElement(bytes[0..32])) return error.InvalidG2Point; // x.imag
+    if (!isValidFpElement(bytes[32..64])) return error.InvalidG2Point; // x.real
+    if (!isValidFpElement(bytes[64..96])) return error.InvalidG2Point; // y.imag
     if (!isValidFpElement(bytes[96..128])) return error.InvalidG2Point; // y.real
 
-    if (c.mclBnFp_setBigEndianMod(&p.x.d[1], bytes[0..32].ptr, 32) != 0) return error.InvalidG2Point;   // x.imag
-    if (c.mclBnFp_setBigEndianMod(&p.x.d[0], bytes[32..64].ptr, 32) != 0) return error.InvalidG2Point;  // x.real
-    if (c.mclBnFp_setBigEndianMod(&p.y.d[1], bytes[64..96].ptr, 32) != 0) return error.InvalidG2Point;  // y.imag
+    if (c.mclBnFp_setBigEndianMod(&p.x.d[1], bytes[0..32].ptr, 32) != 0) return error.InvalidG2Point; // x.imag
+    if (c.mclBnFp_setBigEndianMod(&p.x.d[0], bytes[32..64].ptr, 32) != 0) return error.InvalidG2Point; // x.real
+    if (c.mclBnFp_setBigEndianMod(&p.y.d[1], bytes[64..96].ptr, 32) != 0) return error.InvalidG2Point; // y.imag
     if (c.mclBnFp_setBigEndianMod(&p.y.d[0], bytes[96..128].ptr, 32) != 0) return error.InvalidG2Point; // y.real
     c.mclBnFp_setInt32(&p.z.d[0], 1); // affine z.real=1
     c.mclBnFp_setInt32(&p.z.d[1], 0); // z.imag=0

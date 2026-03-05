@@ -53,11 +53,17 @@ fn callImpl(
     comptime has_value: bool,
     comptime scheme: CallScheme,
 ) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
     const stack = &ctx.interpreter.stack;
 
     const stack_items: usize = if (has_value) 7 else 6;
-    if (!stack.hasItems(stack_items)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(stack_items)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
     // Pop stack items
     const gas_val = stack.peekUnsafe(0);
@@ -77,7 +83,8 @@ fn callImpl(
     // forbidden list because it does not transfer ETH to an external account.
     if (comptime (has_value and scheme == .call)) {
         if (is_static and value > 0) {
-            ctx.interpreter.halt(.invalid_static); return;
+            ctx.interpreter.halt(.invalid_static);
+            return;
         }
     }
 
@@ -87,14 +94,16 @@ fn callImpl(
     // Offsets only need to fit when the corresponding size is non-zero; a giant offset
     // with size=0 is valid (no memory is touched).
     if (args_size > std.math.maxInt(usize) or ret_size > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     }
     const args_size_u: usize = @intCast(args_size);
     const ret_size_u: usize = @intCast(ret_size);
     if ((args_size_u > 0 and args_off > std.math.maxInt(usize)) or
         (ret_size_u > 0 and ret_off > std.math.maxInt(usize)))
     {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     }
     const args_off_u: usize = if (args_size_u > 0) @intCast(args_off) else 0;
     const ret_off_u: usize = if (ret_size_u > 0) @intCast(ret_off) else 0;
@@ -102,16 +111,24 @@ fn callImpl(
     // Memory expansion for args region
     if (args_size_u > 0) {
         const args_end = std.math.add(usize, args_off_u, args_size_u) catch {
-            ctx.interpreter.halt(.memory_limit_oog); return;
+            ctx.interpreter.halt(.memory_limit_oog);
+            return;
         };
-        if (!expandMemory(ctx, args_end)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!expandMemory(ctx, args_end)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
     }
     // Memory expansion for return region
     if (ret_size_u > 0) {
         const ret_end = std.math.add(usize, ret_off_u, ret_size_u) catch {
-            ctx.interpreter.halt(.memory_limit_oog); return;
+            ctx.interpreter.halt(.memory_limit_oog);
+            return;
         };
-        if (!expandMemory(ctx, ret_end)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!expandMemory(ctx, ret_end)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
     }
 
     // Determine warm/cold access for target address (code source)
@@ -144,7 +161,10 @@ fn callImpl(
 
     // Determine forwarded gas (EIP-150 introduces 63/64 rule; pre-EIP-150 uses all remaining).
     const remaining = ctx.interpreter.gas.remaining;
-    if (remaining < base_cost) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (remaining < base_cost) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     const after_base = remaining - base_cost;
 
@@ -156,7 +176,8 @@ fn callImpl(
         const gas_val_u64: u64 = if (gas_val > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas_val));
         const total_cost = std.math.add(u64, base_cost, gas_val_u64) catch std.math.maxInt(u64);
         if (remaining < total_cost) {
-            ctx.interpreter.halt(.out_of_gas); return;
+            ctx.interpreter.halt(.out_of_gas);
+            return;
         }
     }
 
@@ -178,8 +199,14 @@ fn callImpl(
     const sub_gas_limit: u64 = forwarded +| stipend;
 
     // Deduct base cost then the forwarded amount from this frame's gas.
-    if (!ctx.interpreter.gas.spend(base_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
-    if (!ctx.interpreter.gas.spend(forwarded)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(base_cost)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
+    if (!ctx.interpreter.gas.spend(forwarded)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     // Build call inputs. For DELEGATECALL, caller and value come from parent frame.
     // For CALLCODE, target (storage context) stays as current contract.
@@ -218,8 +245,12 @@ fn callImpl(
     // On success (.ready), suspend this frame by setting interpreter.pending.
     const setup = h.setupCall(inputs, ctx.interpreter.input.depth);
     switch (setup) {
-        .failed => |r| { resumeCall(ctx.interpreter, r, ret_off_u, ret_size_u); },
-        .precompile => |r| { resumeCall(ctx.interpreter, r, ret_off_u, ret_size_u); },
+        .failed => |r| {
+            resumeCall(ctx.interpreter, r, ret_off_u, ret_size_u);
+        },
+        .precompile => |r| {
+            resumeCall(ctx.interpreter, r, ret_off_u, ret_size_u);
+        },
         .ready => |s| {
             ctx.interpreter.pending = .{ .call = PendingCallData{
                 .inputs = inputs,
@@ -227,7 +258,7 @@ fn callImpl(
                 .checkpoint = s.checkpoint,
                 .ret_off = ret_off_u,
                 .ret_size = ret_size_u,
-            }};
+            } };
         },
     }
 }
@@ -250,7 +281,10 @@ pub fn resumeCall(interp: *Interpreter, result: host_module.CallResult, ret_off:
     }
     interp.return_data.data = @constCast(result.return_data);
 
-    if (!interp.stack.hasSpace(1)) { interp.halt(.stack_overflow); return; }
+    if (!interp.stack.hasSpace(1)) {
+        interp.halt(.stack_overflow);
+        return;
+    }
     interp.stack.pushUnsafe(if (result.success) 1 else 0);
 }
 
@@ -260,7 +294,10 @@ pub fn resumeCreate(interp: *Interpreter, result: host_module.CreateResult) void
     interp.gas.refunded += result.gas_refunded;
     interp.return_data.data = @constCast(result.return_data);
 
-    if (!interp.stack.hasSpace(1)) { interp.halt(.stack_overflow); return; }
+    if (!interp.stack.hasSpace(1)) {
+        interp.halt(.stack_overflow);
+        return;
+    }
     interp.stack.pushUnsafe(if (result.success) host_module.addressToU256(result.address) else 0);
 }
 
@@ -295,47 +332,69 @@ pub fn opStaticcall(ctx: *InstructionContext) void {
 /// CREATE (0xF0): Create a new contract.
 /// Stack: [value, offset, size] -> [addr]
 pub fn opCreate(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
-    if (ctx.interpreter.runtime_flags.is_static) { ctx.interpreter.halt(.invalid_static); return; }
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
+    if (ctx.interpreter.runtime_flags.is_static) {
+        ctx.interpreter.halt(.invalid_static);
+        return;
+    }
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(3)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(3)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
-    const value  = stack.peekUnsafe(0);
+    const value = stack.peekUnsafe(0);
     const offset = stack.peekUnsafe(1);
-    const size   = stack.peekUnsafe(2);
+    const size = stack.peekUnsafe(2);
     stack.shrinkUnsafe(3);
 
     const spec = ctx.interpreter.runtime_flags.spec_id;
 
     // Base cost
-    if (!ctx.interpreter.gas.spend(gas_costs.G_CREATE)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(gas_costs.G_CREATE)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     // Validate and resolve memory region
     const size_u: usize = if (size > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     } else @intCast(size);
     const off_u: usize = if (size_u == 0) 0 else if (offset > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     } else @intCast(offset);
 
     if (size_u > 0) {
         const create_end = std.math.add(usize, off_u, size_u) catch {
-            ctx.interpreter.halt(.memory_limit_oog); return;
+            ctx.interpreter.halt(.memory_limit_oog);
+            return;
         };
-        if (!expandMemory(ctx, create_end)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!expandMemory(ctx, create_end)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
     }
 
     // EIP-3860 (Shanghai+): oversized initcode causes exceptional halt in calling frame.
     if (primitives.isEnabledIn(spec, .shanghai)) {
         if (size_u > 49152) { // MAX_INITCODE_SIZE = 2 * 24576
-            ctx.interpreter.halt(.out_of_gas); return;
+            ctx.interpreter.halt(.out_of_gas);
+            return;
         }
     }
 
     // EIP-3860 (Shanghai+): initcode word gas
     if (primitives.isEnabledIn(spec, .shanghai)) {
         const word_cost: u64 = 2 * @as(u64, @intCast((size_u + 31) / 32));
-        if (!ctx.interpreter.gas.spend(word_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!ctx.interpreter.gas.spend(word_cost)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
     }
 
     // EIP-150 (Tangerine Whistle): forward at most 63/64 of remaining gas.
@@ -348,15 +407,21 @@ pub fn opCreate(ctx: *InstructionContext) void {
 
     const init_code: []const u8 = if (size_u > 0)
         ctx.interpreter.memory.buffer.items[off_u .. off_u + size_u]
-    else &[_]u8{};
+    else
+        &[_]u8{};
 
     // Pre-spend forwarded gas from parent (mirroring callImpl pattern).
-    if (!ctx.interpreter.gas.spend(forwarded)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(forwarded)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     const caller = ctx.interpreter.input.target;
     const setup = h.setupCreate(caller, value, init_code, forwarded, false, 0, false, ctx.interpreter.input.depth);
     switch (setup) {
-        .failed => |r| { resumeCreate(ctx.interpreter, r); },
+        .failed => |r| {
+            resumeCreate(ctx.interpreter, r);
+        },
         .ready => |s| {
             ctx.interpreter.pending = .{ .create = PendingCreateData{
                 .inputs = CreateInputs{
@@ -369,7 +434,7 @@ pub fn opCreate(ctx: *InstructionContext) void {
                 },
                 .new_addr = s.new_addr,
                 .checkpoint = s.checkpoint,
-            }};
+            } };
         },
     }
 }
@@ -377,51 +442,76 @@ pub fn opCreate(ctx: *InstructionContext) void {
 /// CREATE2 (0xF5): Create a new contract with deterministic address.
 /// Stack: [value, offset, size, salt] -> [addr]
 pub fn opCreate2(ctx: *InstructionContext) void {
-    const h = ctx.host orelse { ctx.interpreter.halt(.invalid_opcode); return; };
-    if (ctx.interpreter.runtime_flags.is_static) { ctx.interpreter.halt(.invalid_static); return; }
+    const h = ctx.host orelse {
+        ctx.interpreter.halt(.invalid_opcode);
+        return;
+    };
+    if (ctx.interpreter.runtime_flags.is_static) {
+        ctx.interpreter.halt(.invalid_static);
+        return;
+    }
     const stack = &ctx.interpreter.stack;
-    if (!stack.hasItems(4)) { ctx.interpreter.halt(.stack_underflow); return; }
+    if (!stack.hasItems(4)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
 
-    const value  = stack.peekUnsafe(0);
+    const value = stack.peekUnsafe(0);
     const offset = stack.peekUnsafe(1);
-    const size   = stack.peekUnsafe(2);
-    const salt   = stack.peekUnsafe(3);
+    const size = stack.peekUnsafe(2);
+    const salt = stack.peekUnsafe(3);
     stack.shrinkUnsafe(4);
 
     const spec = ctx.interpreter.runtime_flags.spec_id;
 
-    if (!ctx.interpreter.gas.spend(gas_costs.G_CREATE)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(gas_costs.G_CREATE)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     const size_u: usize = if (size > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     } else @intCast(size);
     const off_u: usize = if (size_u == 0) 0 else if (offset > std.math.maxInt(usize)) {
-        ctx.interpreter.halt(.memory_limit_oog); return;
+        ctx.interpreter.halt(.memory_limit_oog);
+        return;
     } else @intCast(offset);
 
     if (size_u > 0) {
         const create2_end = std.math.add(usize, off_u, size_u) catch {
-            ctx.interpreter.halt(.memory_limit_oog); return;
+            ctx.interpreter.halt(.memory_limit_oog);
+            return;
         };
-        if (!expandMemory(ctx, create2_end)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!expandMemory(ctx, create2_end)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
     }
 
     // EIP-3860 (Shanghai+): oversized initcode causes exceptional halt in calling frame.
     if (primitives.isEnabledIn(spec, .shanghai)) {
         if (size_u > 49152) { // MAX_INITCODE_SIZE = 2 * 24576
-            ctx.interpreter.halt(.out_of_gas); return;
+            ctx.interpreter.halt(.out_of_gas);
+            return;
         }
     }
 
     // CREATE2 keccak word cost (charged for the init_code hash)
     {
         const word_cost: u64 = gas_costs.G_KECCAK256WORD * @as(u64, @intCast((size_u + 31) / 32));
-        if (!ctx.interpreter.gas.spend(word_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!ctx.interpreter.gas.spend(word_cost)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
     }
     // EIP-3860 (Shanghai+): additional initcode word gas
     if (primitives.isEnabledIn(spec, .shanghai)) {
         const word_cost: u64 = 2 * @as(u64, @intCast((size_u + 31) / 32));
-        if (!ctx.interpreter.gas.spend(word_cost)) { ctx.interpreter.halt(.out_of_gas); return; }
+        if (!ctx.interpreter.gas.spend(word_cost)) {
+            ctx.interpreter.halt(.out_of_gas);
+            return;
+        }
     }
 
     // EIP-150 (Tangerine Whistle): forward at most 63/64 of remaining gas.
@@ -434,16 +524,22 @@ pub fn opCreate2(ctx: *InstructionContext) void {
 
     const init_code: []const u8 = if (size_u > 0)
         ctx.interpreter.memory.buffer.items[off_u .. off_u + size_u]
-    else &[_]u8{};
+    else
+        &[_]u8{};
 
     // Pre-spend forwarded gas from parent.
-    if (!ctx.interpreter.gas.spend(forwarded)) { ctx.interpreter.halt(.out_of_gas); return; }
+    if (!ctx.interpreter.gas.spend(forwarded)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
 
     const caller = ctx.interpreter.input.target;
     const salt_hash = host_module.u256ToHash(salt);
     const setup = h.setupCreate(caller, value, init_code, forwarded, true, salt, false, ctx.interpreter.input.depth);
     switch (setup) {
-        .failed => |r| { resumeCreate(ctx.interpreter, r); },
+        .failed => |r| {
+            resumeCreate(ctx.interpreter, r);
+        },
         .ready => |s| {
             ctx.interpreter.pending = .{ .create = PendingCreateData{
                 .inputs = CreateInputs{
@@ -456,7 +552,7 @@ pub fn opCreate2(ctx: *InstructionContext) void {
                 },
                 .new_addr = s.new_addr,
                 .checkpoint = s.checkpoint,
-            }};
+            } };
         },
     }
 }
