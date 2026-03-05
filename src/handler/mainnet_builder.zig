@@ -189,8 +189,17 @@ pub const MainnetHandler = struct {
                                     // Per EIP-7702: skip if authority has non-empty, non-EIP-7702 code.
                                     // Only EOAs (empty code) or accounts already holding an EIP-7702
                                     // delegation designator may re-delegate.
+                                    // Code with EF 01 00 prefix is treated as a delegation designator
+                                    // regardless of total length (handles pre-state test fixtures).
                                     if (journaled.account.info.code) |existing_code| {
-                                        if (!existing_code.isEip7702() and !existing_code.isEmpty()) continue;
+                                        const is_delegation = switch (existing_code) {
+                                            .eip7702 => true,
+                                            .legacy_analyzed => |bc| blk: {
+                                                const orig = bc.originalBytes();
+                                                break :blk orig.len >= 3 and orig[0] == 0xEF and orig[1] == 0x01 and orig[2] == 0x00;
+                                            },
+                                        };
+                                        if (!is_delegation and !existing_code.isEmpty()) continue;
                                     }
 
                                     // Nonce must match exactly — skip if stale

@@ -359,9 +359,20 @@ pub const Validation = struct {
             return ValidationError.EmptyBlobList;
         }
 
-        // Blob count limit
-        if (blob_hashes.items.len > primitives.MAX_BLOB_NUMBER_PER_BLOCK) {
-            return ValidationError.TooManyBlobs;
+        // EIP-7594 (Osaka): per-transaction blob count limit = 6 (separate from per-block limit)
+        if (primitives.isEnabledIn(spec, .osaka)) {
+            if (blob_hashes.items.len > primitives.MAX_BLOB_NUMBER_PER_TX) {
+                return ValidationError.TooManyBlobs;
+            }
+        } else {
+            // Blob count limit (EIP-7691: Prague increases max blobs from 6 to 9)
+            const max_blobs = if (primitives.isEnabledIn(spec, .prague))
+                primitives.MAX_BLOB_NUMBER_PER_BLOCK_PRAGUE
+            else
+                primitives.MAX_BLOB_NUMBER_PER_BLOCK;
+            if (blob_hashes.items.len > max_blobs) {
+                return ValidationError.TooManyBlobs;
+            }
         }
 
         // All blob hashes must use KZG version prefix 0x01

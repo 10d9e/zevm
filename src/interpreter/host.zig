@@ -316,6 +316,11 @@ pub const Host = struct {
                                 .gas_used = inputs.gas_limit, .gas_remaining = 0, .gas_refunded = 0, .delegation_gas = 0 } };
                         }
                         self.ctx.journaled_state.checkpointCommit();
+                        // Touch the callee so it appears in post-state for pre-EIP-161 forks
+                        // (Frontier/Homestead). The account was already loaded into evm_state by
+                        // accountInfo() in the CALL opcode handler. For EIP-161+ forks, the
+                        // empty account will be cleaned up by the state-clear logic anyway.
+                        self.ctx.journaled_state.touchAccount(inputs.callee);
                         return .{ .precompile = .{ .success = true, .return_data = out.bytes,
                             .gas_used = out.gas_used, .gas_remaining = inputs.gas_limit - out.gas_used,
                             .gas_refunded = 0, .delegation_gas = 0 } };

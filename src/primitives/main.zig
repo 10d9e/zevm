@@ -76,8 +76,12 @@ pub const BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE: u64 = 3338477;
 /// EIP-4844: gas consumed per blob
 pub const GAS_PER_BLOB: u64 = 131_072;
 
-/// EIP-4844: maximum blobs per block (6 for Cancun/Prague)
+/// EIP-4844: maximum blobs per block (Cancun: 6, Prague+: 9 via EIP-7691)
 pub const MAX_BLOB_NUMBER_PER_BLOCK: usize = 6;
+/// EIP-7691: maximum blobs per block for Prague (9)
+pub const MAX_BLOB_NUMBER_PER_BLOCK_PRAGUE: usize = 9;
+/// EIP-7594: maximum blobs per transaction for Osaka (6)
+pub const MAX_BLOB_NUMBER_PER_TX: usize = 6;
 
 /// EIP-4844: versioned hash version byte for KZG commitments
 pub const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;

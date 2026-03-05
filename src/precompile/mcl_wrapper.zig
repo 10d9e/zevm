@@ -20,11 +20,11 @@ const c = if (build_options.enable_mcl) blk: {
 } else struct {
     // Stub types when mcl is disabled (should not happen by default)
     pub const mclBnFp = extern struct { d: [6]u64 = .{0} ** 6 };
-    pub const mclBnFp2 = extern struct { d: [2]mclBnFp = .{.{}} ** 2 };
+    pub const mclBnFp2 = extern struct { d: [2]mclBnFp = [1]mclBnFp{.{}} ** 2 };
     pub const mclBnG1 = extern struct { x: mclBnFp = .{}, y: mclBnFp = .{}, z: mclBnFp = .{} };
     pub const mclBnG2 = extern struct { x: mclBnFp2 = .{}, y: mclBnFp2 = .{}, z: mclBnFp2 = .{} };
     pub const mclBnFr = extern struct { d: [4]u64 = .{0} ** 4 };
-    pub const mclBnGT = extern struct { d: [12]mclBnFp = .{.{}} ** 12 };
+    pub const mclBnGT = extern struct { d: [12]mclBnFp = [1]mclBnFp{.{}} ** 12 };
     pub const mclSize = usize;
     pub fn mclBnFp_setBigEndianMod(_: *mclBnFp, _: *const anyopaque, _: mclSize) c_int { return -1; }
     pub fn mclBnFp_setInt32(_: *mclBnFp, _: c_int) void {}
