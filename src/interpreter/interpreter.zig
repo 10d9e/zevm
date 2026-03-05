@@ -197,7 +197,12 @@ pub const ExtBytecode = struct {
     is_eof: bool,
     eof_version: ?u8,
     eof_sections: ?std.ArrayList(EofSection),
+    /// If true, deinit() will free the bytecode's heap allocations.
+    /// CALL frames share bytecode with account state (DB) and must NOT free it.
+    /// CREATE init-code frames and test frames own their bytecode.
+    owns_bytecode: bool,
 
+    /// Borrow semantics: bytecode is shared with account state, will NOT be freed on deinit.
     pub fn new(bytecode_data: bytecode.Bytecode) ExtBytecode {
         return ExtBytecode{
             .bytecode = bytecode_data,
@@ -206,6 +211,21 @@ pub const ExtBytecode = struct {
             .is_eof = false,
             .eof_version = null,
             .eof_sections = null,
+            .owns_bytecode = false,
+        };
+    }
+
+    /// Ownership semantics: bytecode is owned by this frame and freed on deinit.
+    /// Use for CREATE init-code frames and test frames with locally-created bytecodes.
+    pub fn newOwned(bytecode_data: bytecode.Bytecode) ExtBytecode {
+        return ExtBytecode{
+            .bytecode = bytecode_data,
+            .pc = 0,
+            .continue_execution = true,
+            .is_eof = false,
+            .eof_version = null,
+            .eof_sections = null,
+            .owns_bytecode = true,
         };
     }
 
@@ -217,10 +237,14 @@ pub const ExtBytecode = struct {
             .is_eof = false,
             .eof_version = null,
             .eof_sections = null,
+            .owns_bytecode = false,
         };
     }
 
     pub fn deinit(self: *ExtBytecode) void {
+        if (self.owns_bytecode) {
+            self.bytecode.deinit();
+        }
         if (self.eof_sections) |*sections| {
             sections.deinit(std.heap.c_allocator);
         }

@@ -268,7 +268,7 @@ pub const MainnetHandler = struct {
                         const init_bytecode = bytecode.Bytecode.newRaw(calldata);
                         const root_interp = interpreter_mod.Interpreter.new(
                             interpreter_mod.Memory.new(),
-                            interpreter_mod.ExtBytecode.new(init_bytecode),
+                            interpreter_mod.ExtBytecode.newOwned(init_bytecode),
                             interpreter_mod.InputsImpl.new(
                                 tx.caller, s.new_addr, tx.value,
                                 @constCast(&[_]u8{}), exec_gas, .call, false, 0,
@@ -419,6 +419,7 @@ pub const MainnetHandler = struct {
         // Per Yellow Paper: g* = gas_limit - gas_remaining_after_exec = total_gas_spent.
         var capped_refund = @min(raw_refund, total_gas_spent / quotient);
         var final_cost = total_gas_spent - capped_refund;
+
         if (primitives.isEnabledIn(spec, .prague) and !ctx.cfg.disable_eip7623 and initial_gas.floor_gas > 0) {
             // floor_total = TX_BASE_COST + floor_exec_gas (validated: gas_limit >= floor_total)
             const floor_total = 21000 + initial_gas.floor_gas;
@@ -539,7 +540,7 @@ fn executeIterative(
                     const init_bytecode = bytecode.Bytecode.newRaw(pc.inputs.init_code);
                     const sub_interp = interpreter_mod.Interpreter.new(
                         interpreter_mod.Memory.new(),
-                        interpreter_mod.ExtBytecode.new(init_bytecode),
+                        interpreter_mod.ExtBytecode.newOwned(init_bytecode),
                         interpreter_mod.InputsImpl.new(
                             pc.inputs.caller, pc.new_addr, pc.inputs.value,
                             @constCast(&[_]u8{}), pc.inputs.gas_limit, .call, false, sub_depth,

@@ -590,7 +590,7 @@ pub const Host = struct {
                 const init_bytecode = bytecode_mod.Bytecode.newRaw(init_code);
                 var sub_interp = Interpreter.new(
                     Memory.new(),
-                    ExtBytecode.new(init_bytecode),
+                    ExtBytecode.newOwned(init_bytecode),
                     InputsImpl.new(caller, s.new_addr, value, @constCast(&[_]u8{}),
                         gas_limit, .call, false, 1),
                     false, spec_id, gas_limit,

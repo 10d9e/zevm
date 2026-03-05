@@ -90,9 +90,10 @@ test "GAS: stack overflow" {
 
 test "JUMP: valid jump to JUMPDEST" {
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     // Bytecode: 5 NOP bytes then JUMPDEST at index 5
     const code = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x5B }; // 0x5B = JUMPDEST
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.stack.pushUnsafe(@as(U, 5));
     var ctx = InstructionContext{ .interpreter = &interp };
     opJump(&ctx);
@@ -102,8 +103,9 @@ test "JUMP: valid jump to JUMPDEST" {
 
 test "JUMP: invalid destination (no JUMPDEST)" {
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     const code = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.stack.pushUnsafe(@as(U, 5));
     var ctx = InstructionContext{ .interpreter = &interp };
     opJump(&ctx);
@@ -112,8 +114,9 @@ test "JUMP: invalid destination (no JUMPDEST)" {
 
 test "JUMP: out of bounds destination" {
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     const code = [_]u8{ 0x00, 0x00 };
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.stack.pushUnsafe(@as(U, 100));
     var ctx = InstructionContext{ .interpreter = &interp };
     opJump(&ctx);
@@ -122,8 +125,9 @@ test "JUMP: out of bounds destination" {
 
 test "JUMP: stack underflow" {
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     const code = [_]u8{0x5B};
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     var ctx = InstructionContext{ .interpreter = &interp };
     opJump(&ctx);
     try expectEqual(.stack_underflow, interp.result);
@@ -133,8 +137,9 @@ test "JUMP: stack underflow" {
 
 test "JUMPI: condition true => jump" {
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     const code = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x5B };
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.stack.pushUnsafe(@as(U, 1)); // condition (non-zero = true)
     interp.stack.pushUnsafe(@as(U, 5)); // destination
     var ctx = InstructionContext{ .interpreter = &interp };
@@ -145,8 +150,9 @@ test "JUMPI: condition true => jump" {
 
 test "JUMPI: condition false => no jump" {
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     const code = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x5B };
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.bytecode.pc = 10; // pretend we're at position 10
     interp.stack.pushUnsafe(@as(U, 0)); // condition = false
     interp.stack.pushUnsafe(@as(U, 5)); // destination (not taken)
@@ -158,8 +164,9 @@ test "JUMPI: condition false => no jump" {
 
 test "JUMPI: condition true but invalid destination" {
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     const code = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }; // no JUMPDEST
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.stack.pushUnsafe(@as(U, 1));
     interp.stack.pushUnsafe(@as(U, 5));
     var ctx = InstructionContext{ .interpreter = &interp };
@@ -169,8 +176,9 @@ test "JUMPI: condition true but invalid destination" {
 
 test "JUMPI: MAX condition is true" {
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     const code = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x5B };
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.stack.pushUnsafe(std.math.maxInt(U));
     interp.stack.pushUnsafe(@as(U, 5));
     var ctx = InstructionContext{ .interpreter = &interp };
@@ -180,8 +188,9 @@ test "JUMPI: MAX condition is true" {
 
 test "JUMPI: stack underflow" {
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     const code = [_]u8{0x5B};
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.stack.pushUnsafe(@as(U, 1)); // only 1 value, need 2
     var ctx = InstructionContext{ .interpreter = &interp };
     opJumpi(&ctx);

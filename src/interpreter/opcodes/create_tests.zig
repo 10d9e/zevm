@@ -30,7 +30,7 @@ fn runPendingCreate(host: *Host, interp: *Interpreter, spec: primitives.SpecId) 
             const init_bc = bytecode_mod.Bytecode.newRaw(pc.inputs.init_code);
             var sub = Interpreter.new(
                 Memory.new(),
-                ExtBytecode.new(init_bc),
+                ExtBytecode.newOwned(init_bc),
                 InputsImpl.new(pc.inputs.caller, pc.new_addr, pc.inputs.value,
                     @constCast(&[_]u8{}), pc.inputs.gas_limit, .call, false, 1),
                 false, spec, pc.inputs.gas_limit,

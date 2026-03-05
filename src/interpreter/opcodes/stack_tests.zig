@@ -61,9 +61,10 @@ test "PUSH0: stack overflow" {
 test "PUSH1: read 1 byte immediate" {
     const opPush1 = makePushFn(1);
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     // Bytecode: PUSH1 0x42 (but step() already consumed the PUSH1 byte; pc points to 0x42)
     const code = [_]u8{ 0x60, 0x42 }; // PUSH1 0x42
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.bytecode.pc = 1; // simulates step() having advanced past opcode byte
     var ctx = InstructionContext{ .interpreter = &interp };
     opPush1(&ctx);
@@ -75,8 +76,9 @@ test "PUSH1: read 1 byte immediate" {
 test "PUSH2: read 2 byte immediate" {
     const opPush2 = makePushFn(2);
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     const code = [_]u8{ 0x61, 0xAB, 0xCD }; // PUSH2 0xABCD
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.bytecode.pc = 1;
     var ctx = InstructionContext{ .interpreter = &interp };
     opPush2(&ctx);
@@ -87,8 +89,9 @@ test "PUSH2: read 2 byte immediate" {
 test "PUSH4: 4-byte immediate big-endian" {
     const opPush4 = makePushFn(4);
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     const code = [_]u8{ 0x63, 0xDE, 0xAD, 0xBE, 0xEF };
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.bytecode.pc = 1;
     var ctx = InstructionContext{ .interpreter = &interp };
     opPush4(&ctx);
@@ -98,9 +101,10 @@ test "PUSH4: 4-byte immediate big-endian" {
 test "PUSH1: near end of code (zero padding)" {
     const opPush1 = makePushFn(1);
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     // Only the PUSH1 opcode, no data byte
     const code = [_]u8{0x60};
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.bytecode.pc = 1; // past end
     var ctx = InstructionContext{ .interpreter = &interp };
     opPush1(&ctx);
@@ -111,8 +115,9 @@ test "PUSH1: near end of code (zero padding)" {
 test "PUSH1: stack overflow" {
     const opPush1 = makePushFn(1);
     var interp = Interpreter.defaultExt();
+    defer interp.deinit();
     const code = [_]u8{ 0x60, 0x01 };
-    interp.bytecode = ExtBytecode.new(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
     interp.bytecode.pc = 1;
     var i: usize = 0;
     while (i < 1024) : (i += 1) interp.stack.pushUnsafe(@as(U, i));

@@ -603,6 +603,14 @@ pub const Bytecode = union(enum) {
     pub fn newRaw(raw: []const u8) Self {
         return Self.newLegacy(raw);
     }
+
+    /// Free any heap memory owned by this Bytecode (the jump table bit vector for legacy analyzed).
+    pub fn deinit(self: *Self) void {
+        switch (self.*) {
+            .legacy_analyzed => |*bc| bc.deinit(),
+            .eip7702 => {}, // 23-byte inline array, no heap allocation
+        }
+    }
 };
 
 /// Legacy analyzed bytecode with jump table
@@ -628,6 +636,17 @@ pub const LegacyAnalyzedBytecode = struct {
     pub fn originalBytes(self: Self) []const u8 {
         return self.bytecode[0..self.original_len];
     }
+
+    pub fn deinit(self: *LegacyAnalyzedBytecode) void {
+        // The bit vector is heap-allocated via c_allocator only when original_len > 0
+        // (non-empty bytecode) AND the allocation succeeded (data.len > 0).
+        // Cases that must NOT be freed:
+        //   - default() / empty input: original_len == 0, data is a static &[_]u8{0}
+        //   - alloc-failure fallback: jump_table.data.len == 0, data is static &[_]u8{}
+        if (self.original_len > 0 and self.jump_table.data.len > 0) {
+            std.heap.c_allocator.free(self.jump_table.data);
+        }
+    }
 };
 
 /// Legacy raw bytecode
@@ -643,6 +662,7 @@ pub const LegacyRawBytecode = struct {
     pub fn intoAnalyzed(self: Self) LegacyAnalyzedBytecode {
         return analyzeLegacy(self.bytecode);
     }
+
 };
 
 /// EIP-7702 bytecode
