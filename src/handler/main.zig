@@ -246,6 +246,9 @@ pub const Frame = struct {
 
     /// Create new frame
     pub fn init(data: FrameData, instructions: *Instructions, precompiles: *Precompiles) Frame {
+        // Extract spec from instructions provider (configured for this hardfork)
+        const spec = instructions.spec;
+
         return Frame{
             .data = data,
             .instructions = instructions,
@@ -264,7 +267,7 @@ pub const Frame = struct {
                     0,
                 ),
                 data.is_static,
-                primitives.SpecId.prague,
+                spec, // Use spec from instructions instead of hardcoding
                 data.gas_limit,
             ),
         };
@@ -290,11 +293,34 @@ pub const Frame = struct {
     }
 };
 
-/// Instructions implementation
+/// Instructions provider for EVM execution
 pub const Instructions = struct {
-    /// Create new instructions
-    pub fn new() Instructions {
-        return Instructions{};
+    /// Instruction table for the configured spec
+    table: interpreter.instruction_table.InstructionTable,
+    /// Hardfork specification
+    spec: primitives.SpecId,
+
+    /// Create instructions provider for a specific hardfork spec
+    pub fn new(spec: primitives.SpecId) Instructions {
+        return Instructions{
+            .table = interpreter.instruction_table.makeInstructionTable(spec),
+            .spec = spec,
+        };
+    }
+
+    /// Get instruction entry for an opcode
+    pub fn getInstruction(self: *const Instructions, opcode: u8) interpreter.instruction_table.InstructionEntry {
+        return self.table[opcode];
+    }
+
+    /// Check if opcode is enabled for this spec
+    pub fn isEnabled(self: *const Instructions, opcode: u8) bool {
+        return self.table[opcode].enabled;
+    }
+
+    /// Get base gas cost for an opcode
+    pub fn getBaseGas(self: *const Instructions, opcode: u8) u64 {
+        return self.table[opcode].base_gas;
     }
 };
 
@@ -302,11 +328,16 @@ pub const Instructions = struct {
 pub const Precompiles = struct {
     /// Precompiles collection
     precompiles: precompile.Precompiles,
+    /// Hardfork specification
+    spec: primitives.SpecId,
 
-    /// Create new precompiles
-    pub fn new() Precompiles {
+    /// Create precompiles provider for a specific hardfork spec
+    pub fn new(spec: primitives.SpecId) Precompiles {
+        // Map full SpecId to PrecompileSpecId (groups similar specs)
+        const precompile_spec = precompile.PrecompileSpecId.fromSpec(spec);
         return Precompiles{
-            .precompiles = precompile.Precompiles.forSpec(.Prague),
+            .precompiles = precompile.Precompiles.forSpec(precompile_spec),
+            .spec = spec,
         };
     }
 
@@ -454,8 +485,8 @@ pub const testing = struct {
             .call,
         );
 
-        var instructions = Instructions{};
-        var precompiles = Precompiles.new();
+        var instructions = Instructions.new(primitives.SpecId.prague);
+        var precompiles = Precompiles.new(primitives.SpecId.prague);
         const frame = Frame.init(frame_data, &instructions, &precompiles);
         try stack.push(frame);
 

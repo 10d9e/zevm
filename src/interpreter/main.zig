@@ -26,9 +26,19 @@ pub const InstructionResult = @import("instruction_result.zig").InstructionResul
 pub const InterpreterAction = @import("interpreter_action.zig").InterpreterAction;
 pub const CallScheme = @import("interpreter_action.zig").CallScheme;
 pub const InstructionContext = @import("instruction_context.zig").InstructionContext;
+pub const opcodes = @import("opcodes/main.zig");
+pub const instruction_table = @import("instruction_table.zig");
+pub const gas_costs = @import("gas_costs.zig");
 
 // Constants
 pub const STACK_LIMIT = 1024;
+
+// Pull in tests from submodules
+test {
+    _ = @import("stack.zig");
+    _ = @import("opcodes/arithmetic.zig");
+    _ = @import("opcodes/arithmetic_tests.zig");
+}
 
 /// Main interpreter module for EVM bytecode execution
 pub const testing = struct {

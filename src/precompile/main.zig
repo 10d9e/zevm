@@ -219,6 +219,20 @@ pub const PrecompileSpecId = enum {
     Prague,
     /// Osaka spec
     Osaka,
+
+    /// Map from full SpecId to PrecompileSpecId
+    /// Groups similar specs together since precompiles only change at certain hardforks
+    pub fn fromSpec(spec: primitives.SpecId) PrecompileSpecId {
+        return switch (spec) {
+            .frontier, .frontier_thawing, .homestead, .dao_fork, .tangerine, .spurious_dragon => .Homestead,
+            .byzantium, .constantinople, .petersburg => .Byzantium,
+            .istanbul, .muir_glacier => .Istanbul,
+            .berlin, .london, .arrow_glacier, .gray_glacier, .merge, .shanghai => .Berlin,
+            .cancun => .Cancun,
+            .prague => .Prague,
+            .osaka, .amsterdam => .Osaka,
+        };
+    }
 };
 
 /// Precompile structure

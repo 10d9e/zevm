@@ -16,9 +16,14 @@ pub const MainnetContext = context.Context;
 pub const MainBuilder = struct {
     /// Build mainnet EVM without inspector
     pub fn buildMainnet(self: *MainnetContext) MainnetEvm {
-        var instructions = main.Instructions{};
-        var precompiles = main.Precompiles.new();
+        // Extract spec from context configuration
+        const spec = self.cfg.spec;
+
+        // Initialize instruction table and precompiles for this spec
+        var instructions = main.Instructions.new(spec);
+        var precompiles = main.Precompiles.new(spec);
         var frame_stack = main.FrameStack.newPrealloc(8);
+
         return main.Evm.init(
             self,
             null,
@@ -30,9 +35,14 @@ pub const MainBuilder = struct {
 
     /// Build mainnet EVM with inspector
     pub fn buildMainnetWithInspector(self: *MainnetContext, inspector: *main.Inspector) MainnetEvm {
-        var instructions = main.Instructions{};
-        var precompiles = main.Precompiles.new();
+        // Extract spec from context configuration
+        const spec = self.cfg.spec;
+
+        // Initialize instruction table and precompiles for this spec
+        var instructions = main.Instructions.new(spec);
+        var precompiles = main.Precompiles.new(spec);
         var frame_stack = main.FrameStack.newPrealloc(8);
+
         return main.Evm.init(
             self,
             inspector,
