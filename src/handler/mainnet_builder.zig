@@ -261,7 +261,7 @@ pub const MainnetHandler = struct {
                     .failed => |r| {
                         const status: main.ExecutionStatus = if (r.is_revert) .Revert else .Halt;
                         var exec_result = main.ExecutionResult.new(status, exec_gas - r.gas_remaining);
-                        exec_result.return_data = r.return_data;
+                        exec_result.return_data = std.heap.c_allocator.dupe(u8, r.return_data) catch @constCast(&[_]u8{});
                         return main.FrameResult.new(exec_result, r.gas_remaining, r.gas_refunded);
                     },
                     .ready => |s| {
@@ -281,7 +281,7 @@ pub const MainnetHandler = struct {
                         const cr_status: main.ExecutionStatus = if (cr.success) .Success
                             else if (cr.is_revert) .Revert else .Halt;
                         var exec_result = main.ExecutionResult.new(cr_status, exec_gas - cr.gas_remaining);
-                        exec_result.return_data = cr.return_data;
+                        exec_result.return_data = std.heap.c_allocator.dupe(u8, cr.return_data) catch @constCast(&[_]u8{});
                         return main.FrameResult.new(exec_result, cr.gas_remaining, cr.gas_refunded);
                     },
                 }
@@ -365,7 +365,7 @@ pub const MainnetHandler = struct {
                     else => .Halt,
                 };
                 var exec_result = main.ExecutionResult.new(status, exec_gas - ir.gas_remaining);
-                exec_result.return_data = ir.return_data;
+                exec_result.return_data = std.heap.c_allocator.dupe(u8, ir.return_data) catch @constCast(&[_]u8{});
                 return main.FrameResult.new(exec_result, ir.gas_remaining, ir.gas_refunded);
             },
         }

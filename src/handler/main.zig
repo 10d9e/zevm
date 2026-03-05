@@ -40,8 +40,8 @@ pub const ExecutionResult = struct {
     gas_refunded: u64,
     /// Logs emitted during execution
     logs: std.ArrayList(primitives.Log),
-    /// Return data
-    return_data: []const u8,
+    /// Return data (heap-allocated copy; freed in deinit)
+    return_data: []u8,
     /// Halt reason if execution halted
     halt_reason: ?HaltReason,
 
@@ -52,7 +52,7 @@ pub const ExecutionResult = struct {
             .gas_used = gas_used,
             .gas_refunded = 0,
             .logs = std.ArrayList(primitives.Log){},
-            .return_data = &[_]u8{},
+            .return_data = @constCast(&[_]u8{}),
             .halt_reason = null,
         };
     }
@@ -66,6 +66,10 @@ pub const ExecutionResult = struct {
             }
         }
         self.logs.deinit(std.heap.page_allocator);
+        // Free heap-allocated return data copy (len==0 means static empty slice, skip).
+        if (self.return_data.len > 0) {
+            std.heap.c_allocator.free(self.return_data);
+        }
     }
 };
 

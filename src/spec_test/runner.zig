@@ -406,6 +406,7 @@ pub fn runTestCase(tc: types.TestCase, allocator: std.mem.Allocator) TestOutcome
         }
         return .{ .result = .fail, .detail = .{ .reason = "unexpected execution error" } };
     };
+    defer frame_result.deinit();
 
     // ---------------------------------------------------------------------------
     // Post-execution: gas refund, floor gas, reimburse caller, pay beneficiary, commit
