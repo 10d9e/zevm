@@ -392,8 +392,18 @@ install-vcpkg-deps:
 # Build the project
 build: check-deps
 	@echo "$(BLUE)Building ZEVM...$(NC)"
-	@echo "$(YELLOW)Build command: $(ZIG_BUILD_CMD)$(NC)"
-	@$(ZIG_BUILD_CMD)
+	@echo "$(YELLOW)Build command: $(ZIG_BUILD_CMD) install$(NC)"
+	@$(ZIG_BUILD_CMD) install
+	@if [ "$(UNAME_S)" = "Darwin" ]; then \
+		echo "$(BLUE)Cleaning up duplicate RPATHs in installed binaries...$(NC)"; \
+		for bin in zig-out/bin/zevm-test zig-out/bin/zevm-bench zig-out/bin/zevm-example; do \
+			if [ -f "$$bin" ]; then \
+				install_name_tool -delete_rpath "/opt/homebrew/Cellar/openssl@3/3.6.0/lib" "$$bin" 2>/dev/null || true; \
+				install_name_tool -delete_rpath "/opt/homebrew/Cellar/openssl@3/3.6.0/lib" "$$bin" 2>/dev/null || true; \
+				otool -l "$$bin" | grep -q "path /opt/homebrew/Cellar/openssl@3/3.6.0/lib" || install_name_tool -add_rpath "/opt/homebrew/Cellar/openssl@3/3.6.0/lib" "$$bin" 2>/dev/null || true; \
+			fi; \
+		done; \
+	fi
 	@echo "$(GREEN)✓ Build complete!$(NC)"
 
 # Build with dependency installation

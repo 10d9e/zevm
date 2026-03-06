@@ -400,9 +400,19 @@ pub fn build(b: *std.Build) void {
     test_exe.root_module.addImport("handler", handler_module);
     test_exe.root_module.addImport("inspector", inspector_module);
 
+    // Run tests
+    const run_tests = b.addRunArtifact(test_exe);
+
+    // Remove duplicate rpaths on macOS before installation and running tests
+    removeDuplicateRpaths(b, test_exe, run_tests);
+
     b.installArtifact(test_exe);
 
     // Benchmark executable (always ReleaseFast for accurate timing)
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_tests.step);
+
+    // Benchmark executable
     const bench_exe = b.addExecutable(.{
         .name = "zevm-bench",
         .root_module = b.addModule("zevm-bench", .{
@@ -429,15 +439,6 @@ pub fn build(b: *std.Build) void {
     bench_exe.root_module.addImport("zbench", zbench_dep.module("zbench"));
 
     b.installArtifact(bench_exe);
-
-    // Run tests
-    const run_tests = b.addRunArtifact(test_exe);
-
-    // Remove duplicate rpaths on macOS before installation and running tests
-    removeDuplicateRpaths(b, test_exe, run_tests);
-
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_tests.step);
 
     // Inline zig tests for interpreter module (discovers tests in all imported files)
     const interpreter_tests = b.addTest(.{
