@@ -34,6 +34,105 @@ pub fn build(b: *std.Build) void {
     lib_options.addOption(bool, "enable_mcl", enable_mcl);
     const lib_options_module = lib_options.createModule();
 
+    // Helper function to remove duplicate rpaths on macOS
+    //
+    // ROOT CAUSE:
+    // Zig's build system automatically adds an LC_RPATH entry for each library linked via
+    // linkSystemLibrary(). When multiple libraries are in the same directory (e.g., libssl.3.dylib
+    // and libcrypto.3.dylib both in /opt/homebrew/Cellar/openssl@3/3.6.0/lib), Zig adds the same
+    // rpath multiple times, causing duplicate LC_RPATH entries that dyld rejects.
+    //
+    // This is a known Zig issue: https://github.com/ziglang/zig/issues/24349
+    // System libraries shouldn't need rpaths at all since they're in standard search paths.
+    //
+    // WORKAROUND:
+    // We remove duplicate rpaths using install_name_tool. Since Zig's addFileArg doesn't work
+    // reliably with shell scripts, we use individual install_name_tool commands. We remove the
+    // duplicate rpath twice (to handle the common case of 2 duplicates) and add it back once.
+    // This is a temporary fix until Zig addresses the root cause upstream.
+    //
+    // NOTE: This hardcodes the OpenSSL rpath path. For non-Homebrew installations or different
+    // OpenSSL versions, you may need to adjust the path or add additional rpath cleanup steps.
+    //
+    // TODO: Remove this workaround when Zig addresses the root cause upstream in v0.16.0+
+    const removeDuplicateRpaths = struct {
+        fn remove(
+            b_ctx: *std.Build,
+            exe: *std.Build.Step.Compile,
+            run_step: ?*std.Build.Step.Run,
+        ) void {
+            // Output warning about workaround in yellow
+            std.debug.print("\x1b[33mWarning: Removing duplicate rpaths as a workaround for a known Zig issue (https://github.com/ziglang/zig/issues/24349). This will be removed when Zig addresses the root cause upstream in v0.16.0+\x1b[0m\n", .{});
+
+            const exe_target = exe.root_module.resolved_target orelse return;
+            if (exe_target.result.os.tag != .macos) return;
+
+            const bin_file = exe.getEmittedBin();
+            // Common OpenSSL rpath for Homebrew installations
+            // Adjust this if your OpenSSL is installed elsewhere
+            const rpath = "/opt/homebrew/Cellar/openssl@3/3.6.0/lib";
+
+            // Remove first instance (ignore errors if it doesn't exist)
+            // Use sh -c to wrap the command so we can ignore errors with || true
+            // Redirect stderr to /dev/null to suppress error messages
+            // Add a dummy arg so the file path becomes $1 (first arg after -c script becomes $0)
+            const remove1_cmd = std.fmt.allocPrint(b_ctx.allocator, "install_name_tool -delete_rpath '{s}' \"$1\" 2>/dev/null || true", .{rpath}) catch @panic("OOM");
+            const remove1 = b_ctx.addSystemCommand(&.{ "sh", "-c", remove1_cmd, "dummy" });
+            remove1.addFileArg(bin_file);
+            remove1.step.dependOn(&exe.step);
+
+            // Remove second instance (ignore errors if it doesn't exist)
+            const remove2_cmd = std.fmt.allocPrint(b_ctx.allocator, "install_name_tool -delete_rpath '{s}' \"$1\" 2>/dev/null || true", .{rpath}) catch @panic("OOM");
+            const remove2 = b_ctx.addSystemCommand(&.{ "sh", "-c", remove2_cmd, "dummy" });
+            remove2.addFileArg(bin_file);
+            remove2.step.dependOn(&remove1.step);
+
+            // Add it back once (only if it doesn't already exist after removal)
+            // This ensures we have exactly one rpath if any existed before
+            const add_back_cmd = std.fmt.allocPrint(b_ctx.allocator, "otool -l \"$1\" | grep -q \"path {s}\" || (install_name_tool -add_rpath '{s}' \"$1\" 2>/dev/null || true)", .{ rpath, rpath }) catch @panic("OOM");
+            const add_back = b_ctx.addSystemCommand(&.{ "sh", "-c", add_back_cmd, "dummy" });
+            add_back.addFileArg(bin_file);
+            add_back.step.dependOn(&remove2.step);
+
+            // Make the run step depend on cleaning rpaths so it runs before execution
+            if (run_step) |run| {
+                run.step.dependOn(&add_back.step);
+            }
+
+            // Also add to install step so installed binaries are clean
+            // Since we clean the build binary before install, the installed copy should be clean
+            // But we also clean the installed binary after installation to be safe
+            const install_step = b_ctx.getInstallStep();
+            install_step.dependOn(&add_back.step);
+
+            // Also clean the installed binary after it's copied
+            // Get the installed binary path - use absolute path from build root
+            const exe_name = exe.name;
+            // Construct absolute path: build_root/zig-out/bin/exe_name
+            const installed_bin_path = std.fmt.allocPrint(b_ctx.allocator, "zig-out/bin/{s}", .{exe_name}) catch @panic("OOM");
+
+            const install_remove1_cmd = std.fmt.allocPrint(b_ctx.allocator, "install_name_tool -delete_rpath '{s}' \"$1\" 2>/dev/null || true", .{rpath}) catch @panic("OOM");
+            const install_remove1 = b_ctx.addSystemCommand(&.{ "sh", "-c", install_remove1_cmd, "dummy" });
+            install_remove1.addArg(installed_bin_path);
+            install_remove1.step.dependOn(install_step);
+
+            const install_remove2_cmd = std.fmt.allocPrint(b_ctx.allocator, "install_name_tool -delete_rpath '{s}' \"$1\" 2>/dev/null || true", .{rpath}) catch @panic("OOM");
+            const install_remove2 = b_ctx.addSystemCommand(&.{ "sh", "-c", install_remove2_cmd, "dummy" });
+            install_remove2.addArg(installed_bin_path);
+            install_remove2.step.dependOn(&install_remove1.step);
+
+            const install_add_back_cmd = std.fmt.allocPrint(b_ctx.allocator, "otool -l \"$1\" | grep -q \"path {s}\" || (install_name_tool -add_rpath '{s}' \"$1\" 2>/dev/null || true)", .{ rpath, rpath }) catch @panic("OOM");
+            const install_add_back = b_ctx.addSystemCommand(&.{ "sh", "-c", install_add_back_cmd, "dummy" });
+            install_add_back.addArg(installed_bin_path);
+            install_add_back.step.dependOn(&install_remove2.step);
+
+            // Make run step also depend on installed binary cleanup
+            if (run_step) |run| {
+                run.step.dependOn(&install_add_back.step);
+            }
+        }
+    }.remove;
+
     // Helper function to add crypto library linking to a step
     const addCryptoLibraries = struct {
         fn add(
@@ -333,6 +432,10 @@ pub fn build(b: *std.Build) void {
 
     // Run tests
     const run_tests = b.addRunArtifact(test_exe);
+
+    // Remove duplicate rpaths on macOS before installation and running tests
+    removeDuplicateRpaths(b, test_exe, run_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
 
