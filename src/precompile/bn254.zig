@@ -106,16 +106,18 @@ fn runAdd(input: []const u8, gas_cost: u64, gas_limit: u64) main.PrecompileResul
     if (mcl_wrapper.isAvailable()) {
         if (mcl_wrapper.g1Add(p1_bytes, p2_bytes)) |result| {
             output = result;
-        } else |_| {
-            // Fallback to placeholder if mcl fails
-            @memset(&output, 0);
+        } else |err| switch (err) {
+            error.MclNotAvailable => @memset(&output, 0),
+            else => return main.PrecompileResult{ .err = main.PrecompileError.Bn254FieldPointNotAMember },
         }
     } else {
         // Placeholder if mcl not available
         @memset(&output, 0);
     }
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, &output) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &output) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, heap_out) };
 }
 
 /// BN254 elliptic curve scalar multiplication (Byzantium)
@@ -147,16 +149,18 @@ fn runMul(input: []const u8, gas_cost: u64, gas_limit: u64) main.PrecompileResul
     if (mcl_wrapper.isAvailable()) {
         if (mcl_wrapper.g1Mul(point_bytes, scalar_bytes)) |result| {
             output = result;
-        } else |_| {
-            // Fallback to placeholder if mcl fails
-            @memset(&output, 0);
+        } else |err| switch (err) {
+            error.MclNotAvailable => @memset(&output, 0),
+            else => return main.PrecompileResult{ .err = main.PrecompileError.Bn254FieldPointNotAMember },
         }
     } else {
         // Placeholder if mcl not available
         @memset(&output, 0);
     }
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, &output) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &output) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, heap_out) };
 }
 
 /// BN254 elliptic curve pairing check (Byzantium)
@@ -219,9 +223,10 @@ fn runPairing(input: []const u8, pair_per_point_cost: u64, pair_base_cost: u64, 
 
         if (mcl_wrapper.pairingCheck(@ptrCast(mcl_pairs))) |result| {
             pairing_valid = result;
-        } else |_| {
-            // Fallback: assume invalid if mcl fails
-            pairing_valid = false;
+        } else |err| switch (err) {
+            error.MclNotAvailable => pairing_valid = false,
+            // Invalid G1/G2 points: spec requires returning an error (empty output, CALL fails)
+            else => return main.PrecompileResult{ .err = main.PrecompileError.Bn254FieldPointNotAMember },
         }
     } else {
         // Placeholder: assume invalid if mcl not available
@@ -234,7 +239,9 @@ fn runPairing(input: []const u8, pair_per_point_cost: u64, pair_base_cost: u64, 
         output[31] = 1;
     }
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, &output) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &output) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, heap_out) };
 }
 
 /// Basic validation for G1 point (checks if coordinates are in valid range)

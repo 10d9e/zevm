@@ -1,149 +1,175 @@
 const std = @import("std");
 const primitives = @import("primitives");
-const Stack = @import("../stack.zig").Stack;
-const Gas = @import("../gas.zig").Gas;
-const InstructionResult = @import("../instruction_result.zig").InstructionResult;
-
-pub const GAS_VERYLOW: u64 = 3;
-pub const GAS_LOW: u64 = 5;
-pub const GAS_MID: u64 = 8;
-pub const GAS_EXP: u64 = 10;
-pub const GAS_EXP_BYTE: u64 = 50;
+const InstructionContext = @import("../instruction_context.zig").InstructionContext;
+const gas_costs = @import("../gas_costs.zig");
 
 /// ADD opcode (0x01): a + b (wrapping mod 2^256)
-/// Stack: [a, b] -> [a + b]   Gas: 3 (VERYLOW)
-pub inline fn opAdd(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+/// Stack: [a, b] -> [a + b]   Static gas: 3 (VERYLOW, charged by dispatch)
+pub fn opAdd(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
     stack.setTopUnsafe().* = a +% b;
-    return .continue_;
-}
-
-/// DIV opcode (0x04): a / b (unsigned, division by zero returns 0)
-/// Stack: [a, b] -> [a / b]   Gas: 5 (LOW)
-pub inline fn opDiv(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_LOW)) return .out_of_gas;
-    const a = stack.peekUnsafe(0);
-    const b = stack.peekUnsafe(1);
-    stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = if (b != 0) a / b else 0;
-    return .continue_;
 }
 
 /// SUB opcode (0x03): a - b (wrapping mod 2^256)
-/// Stack: [a, b] -> [a - b]   Gas: 3 (VERYLOW)
-pub inline fn opSub(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_VERYLOW)) return .out_of_gas;
+/// Stack: [a, b] -> [a - b]   Static gas: 3 (VERYLOW)
+pub fn opSub(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
     stack.setTopUnsafe().* = a -% b;
-    return .continue_;
 }
 
 /// MUL opcode (0x02): a * b (wrapping mod 2^256)
-/// Stack: [a, b] -> [a * b]   Gas: 5 (LOW)
-pub inline fn opMul(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_LOW)) return .out_of_gas;
+/// Stack: [a, b] -> [a * b]   Static gas: 5 (LOW)
+pub fn opMul(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
     stack.setTopUnsafe().* = a *% b;
-    return .continue_;
+}
+
+/// DIV opcode (0x04): a / b (unsigned, division by zero returns 0)
+/// Stack: [a, b] -> [a / b]   Static gas: 5 (LOW)
+pub fn opDiv(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
+    const a = stack.peekUnsafe(0);
+    const b = stack.peekUnsafe(1);
+    stack.shrinkUnsafe(1);
+    stack.setTopUnsafe().* = if (b != 0) a / b else 0;
+}
+
+/// SDIV opcode (0x05): a / b (signed, division by zero returns 0)
+/// Stack: [a, b] -> [a / b]   Static gas: 5 (LOW)
+pub fn opSdiv(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
+    const a = stack.peekUnsafe(0);
+    const b = stack.peekUnsafe(1);
+    stack.shrinkUnsafe(1);
+    stack.setTopUnsafe().* = sdiv(a, b);
 }
 
 /// MOD opcode (0x06): a % b (unsigned, mod by zero returns 0)
-/// Stack: [a, b] -> [a % b]   Gas: 5 (LOW)
-pub inline fn opMod(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_LOW)) return .out_of_gas;
+/// Stack: [a, b] -> [a % b]   Static gas: 5 (LOW)
+pub fn opMod(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
     stack.setTopUnsafe().* = if (b != 0) a % b else 0;
-    return .continue_;
+}
+
+/// SMOD opcode (0x07): a % b (signed, mod by zero returns 0)
+/// Stack: [a, b] -> [a % b]   Static gas: 5 (LOW)
+pub fn opSmod(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
+    const a = stack.peekUnsafe(0);
+    const b = stack.peekUnsafe(1);
+    stack.shrinkUnsafe(1);
+    stack.setTopUnsafe().* = smod(a, b);
 }
 
 /// ADDMOD opcode (0x08): (a + b) % N with u257 intermediate
-/// Stack: [a, b, N] -> [(a + b) % N]   Gas: 8 (MID)
-pub inline fn opAddmod(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(3)) return .stack_underflow;
-    if (!gas.spend(GAS_MID)) return .out_of_gas;
+/// Stack: [a, b, N] -> [(a + b) % N]   Static gas: 8 (MID)
+pub fn opAddmod(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(3)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     const n = stack.peekUnsafe(2);
     stack.shrinkUnsafe(2);
     stack.setTopUnsafe().* = addmod(a, b, n);
-    return .continue_;
 }
 
 /// MULMOD opcode (0x09): (a * b) % N with u512 intermediate
-/// Stack: [a, b, N] -> [(a * b) % N]   Gas: 8 (MID)
-pub inline fn opMulmod(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(3)) return .stack_underflow;
-    if (!gas.spend(GAS_MID)) return .out_of_gas;
+/// Stack: [a, b, N] -> [(a * b) % N]   Static gas: 8 (MID)
+pub fn opMulmod(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(3)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const a = stack.peekUnsafe(0);
     const b = stack.peekUnsafe(1);
     const n = stack.peekUnsafe(2);
     stack.shrinkUnsafe(2);
     stack.setTopUnsafe().* = mulmod(a, b, n);
-    return .continue_;
 }
 
 /// EXP opcode (0x0A): base ^ exponent (mod 2^256)
 /// Stack: [base, exponent] -> [base ^ exponent]
-/// Gas: 10 + 50 * byteSize(exponent)
-pub inline fn opExp(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
+/// Static gas: 10 (G_EXP, charged by dispatch) + dynamic: G_EXPBYTE * byteSize(exponent)
+/// EIP-160 (Spurious Dragon): G_EXPBYTE raised from 10 to 50.
+pub fn opExp(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const exponent = stack.peekUnsafe(1);
-    const gas_cost = GAS_EXP + GAS_EXP_BYTE * byteSize(exponent);
-    if (!gas.spend(gas_cost)) return .out_of_gas;
+    // Dynamic gas: G_EXPBYTE per byte of exponent (10 pre-Spurious Dragon, 50 post)
+    const spec = ctx.interpreter.runtime_flags.spec_id;
+    const expbyte_cost: u64 = if (primitives.isEnabledIn(spec, .spurious_dragon))
+        gas_costs.G_EXPBYTE
+    else
+        gas_costs.G_EXPBYTE_FRONTIER;
+    const dynamic_gas = expbyte_cost * byteSize(exponent);
+    if (!ctx.interpreter.gas.spend(dynamic_gas)) {
+        ctx.interpreter.halt(.out_of_gas);
+        return;
+    }
     const base = stack.peekUnsafe(0);
     stack.shrinkUnsafe(1);
     stack.setTopUnsafe().* = expMod256(base, exponent);
-    return .continue_;
-}
-
-/// SDIV opcode (0x05): a / b (signed, division by zero returns 0)
-/// Stack: [a, b] -> [a / b]   Gas: 5 (LOW)
-pub inline fn opSdiv(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_LOW)) return .out_of_gas;
-    const a = stack.peekUnsafe(0);
-    const b = stack.peekUnsafe(1);
-    stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = sdiv(a, b);
-    return .continue_;
-}
-
-/// SMOD opcode (0x07): a % b (signed, mod by zero returns 0)
-/// Stack: [a, b] -> [a % b]   Gas: 5 (LOW)
-pub inline fn opSmod(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_LOW)) return .out_of_gas;
-    const a = stack.peekUnsafe(0);
-    const b = stack.peekUnsafe(1);
-    stack.shrinkUnsafe(1);
-    stack.setTopUnsafe().* = smod(a, b);
-    return .continue_;
 }
 
 /// SIGNEXTEND opcode (0x0B): Sign extend value from byte position
-/// Stack: [byte_pos, value] -> [extended_value]   Gas: 5 (LOW)
-pub inline fn opSignextend(stack: *Stack, gas: *Gas) InstructionResult {
-    if (!stack.hasItems(2)) return .stack_underflow;
-    if (!gas.spend(GAS_LOW)) return .out_of_gas;
+/// Stack: [byte_pos, value] -> [extended_value]   Static gas: 5 (LOW)
+pub fn opSignextend(ctx: *InstructionContext) void {
+    const stack = &ctx.interpreter.stack;
+    if (!stack.hasItems(2)) {
+        ctx.interpreter.halt(.stack_underflow);
+        return;
+    }
     const byte_pos = stack.peekUnsafe(0);
     const value = stack.peekUnsafe(1);
     stack.shrinkUnsafe(1);
     stack.setTopUnsafe().* = signextend(byte_pos, value);
-    return .continue_;
 }
 
 // --- Helpers ---
@@ -312,9 +338,7 @@ pub fn limbMod(comptime M: comptime_int, a: [M]u64, b: [4]u64) [4]u64 {
         var i: usize = M;
         // If shift produced an extra limb
         if (u_shifted[M] != 0) {
-            // u_shifted[M] < d_norm is guaranteed since a < d * base^M
             rem = u_shifted[M];
-            // rem < d_norm guaranteed
         }
         while (i > 0) {
             i -= 1;
@@ -366,24 +390,16 @@ pub fn limbMod(comptime M: comptime_int, a: [M]u64, b: [4]u64) [4]u64 {
         var q_hat: u64 = undefined;
         var r_hat: u64 = undefined;
         if (u[j + n] >= v[n - 1]) {
-            // Would overflow div128by64 precondition; q_hat = 2^64 - 1
             q_hat = std.math.maxInt(u64);
             r_hat = u[j + n - 1] +% v[n - 1];
-            // If r_hat overflowed (wrapped around), skip refinement
             if (r_hat >= v[n - 1]) {
-                // r_hat didn't overflow only if r_hat >= v[n-1], but we need
-                // to check if the addition actually overflowed
-                // Overflow happened if r_hat < v[n-1] (impossible here since we're in this branch)
-                // Actually: overflow if old + v[n-1] >= 2^64, i.e. r_hat < u[j+n-1]
                 if (r_hat < u[j + n - 1]) {
                     // Overflowed, skip refinement
                 } else if (n >= 2) {
-                    // Refine: check q_hat * v[n-2] > (r_hat << 64) | u[j+n-2]
                     const prod_check: u128 = @as(u128, q_hat) * v[n - 2];
                     const rhs: u128 = (@as(u128, r_hat) << 64) | u[j + n - 2];
                     if (prod_check > rhs) {
                         q_hat -= 1;
-                        // Could refine further but one step suffices almost always
                     }
                 }
             }
@@ -392,7 +408,6 @@ pub fn limbMod(comptime M: comptime_int, a: [M]u64, b: [4]u64) [4]u64 {
             q_hat = dv.q;
             r_hat = dv.r;
 
-            // Refine estimate
             if (n >= 2) {
                 while (true) {
                     const prod_check: u128 = @as(u128, q_hat) * v[n - 2];
@@ -427,9 +442,9 @@ pub fn limbMod(comptime M: comptime_int, a: [M]u64, b: [4]u64) [4]u64 {
         if (final_borrow != 0) {
             var add_carry: u64 = 0;
             for (0..n) |i| {
-                const sum: u128 = @as(u128, u[j + i]) + v[i] + add_carry;
-                u[j + i] = @truncate(sum);
-                add_carry = @intCast(sum >> 64);
+                const s: u128 = @as(u128, u[j + i]) + v[i] + add_carry;
+                u[j + i] = @truncate(s);
+                add_carry = @intCast(s >> 64);
             }
             u[j + n] +%= add_carry;
         }
@@ -488,14 +503,11 @@ pub fn sdiv(a: primitives.U256, b: primitives.U256) primitives.U256 {
     const a_negative = (a & sign_bit) != 0;
     const b_negative = (b & sign_bit) != 0;
 
-    // Convert to absolute values
     const abs_a = if (a_negative) (~a) +% 1 else a;
     const abs_b = if (b_negative) (~b) +% 1 else b;
 
-    // Perform unsigned division
     const abs_result = abs_a / abs_b;
 
-    // Apply sign: negative if signs differ
     const result_negative = a_negative != b_negative;
     return if (result_negative) (~abs_result) +% 1 else abs_result;
 }
@@ -510,36 +522,26 @@ pub fn smod(a: primitives.U256, b: primitives.U256) primitives.U256 {
     const a_negative = (a & sign_bit) != 0;
     const b_negative = (b & sign_bit) != 0;
 
-    // Convert to absolute values
     const abs_a = if (a_negative) (~a) +% 1 else a;
     const abs_b = if (b_negative) (~b) +% 1 else b;
 
-    // Perform unsigned modulo
     const abs_result = abs_a % abs_b;
 
-    // Result has the sign of dividend a
     return if (a_negative) (~abs_result) +% 1 else abs_result;
 }
 
 /// Sign extend value from byte position.
-/// byte_pos: which byte (0-31) to extend from
-/// value: the value to extend
-/// If byte_pos >= 31, returns value unchanged.
 pub fn signextend(byte_pos: primitives.U256, value: primitives.U256) primitives.U256 {
-    // If byte position is out of range (>= 31), no extension needed
     if (byte_pos >= 31) return value;
 
     const byte_pos_usize: usize = @intCast(byte_pos);
-    const bit_pos = (byte_pos_usize * 8) + 7; // Sign bit position
+    const bit_pos = (byte_pos_usize * 8) + 7;
     const sign_bit: primitives.U256 = @as(primitives.U256, 1) << @intCast(bit_pos);
 
-    // Check if sign bit is set
     if ((value & sign_bit) != 0) {
-        // Negative: set all higher bits to 1
         const mask = (~@as(primitives.U256, 0)) << @intCast(bit_pos);
         return value | mask;
     } else {
-        // Positive: clear all higher bits to 0
         const mask = (@as(primitives.U256, 1) << @intCast(bit_pos + 1)) -% 1;
         return value & mask;
     }

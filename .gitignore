@@ -2,3 +2,5 @@
 zig-cache/
 zig-out/
 .idea/
+spec-tests/
+.DS_Store

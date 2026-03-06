@@ -346,11 +346,15 @@ pub fn build(b: *std.Build) void {
     database_module.addImport("state", state_module);
     database_module.addImport("bytecode", bytecode_module);
     context_module.addImport("primitives", primitives_module);
+    context_module.addImport("bytecode", bytecode_module);
     context_module.addImport("state", state_module);
     context_module.addImport("database", database_module);
     interpreter_module.addImport("primitives", primitives_module);
     interpreter_module.addImport("bytecode", bytecode_module);
     interpreter_module.addImport("context", context_module);
+    interpreter_module.addImport("database", database_module);
+    interpreter_module.addImport("state", state_module);
+    interpreter_module.addImport("precompile", precompile_module);
     precompile_module.addImport("build_options", lib_options_module);
     precompile_module.addImport("primitives", primitives_module);
     handler_module.addImport("primitives", primitives_module);
@@ -447,8 +451,31 @@ pub fn build(b: *std.Build) void {
     interpreter_tests.root_module.addImport("primitives", primitives_module);
     interpreter_tests.root_module.addImport("bytecode", bytecode_module);
     interpreter_tests.root_module.addImport("context", context_module);
+    interpreter_tests.root_module.addImport("database", database_module);
+    interpreter_tests.root_module.addImport("state", state_module);
+    interpreter_tests.root_module.addImport("precompile", precompile_module);
+    addCryptoLibraries(b, interpreter_tests, enable_blst, enable_mcl, blst_include_path, mcl_include_path, is_windows, target_info.os.tag == .macos);
     const run_interpreter_tests = b.addRunArtifact(interpreter_tests);
     test_step.dependOn(&run_interpreter_tests.step);
+
+    // Inline zig tests for handler module (validation, gas calculation, etc.)
+    const handler_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/handler/main.zig" } },
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    handler_tests.root_module.addImport("primitives", primitives_module);
+    handler_tests.root_module.addImport("bytecode", bytecode_module);
+    handler_tests.root_module.addImport("context", context_module);
+    handler_tests.root_module.addImport("database", database_module);
+    handler_tests.root_module.addImport("state", state_module);
+    handler_tests.root_module.addImport("interpreter", interpreter_module);
+    handler_tests.root_module.addImport("precompile", precompile_module);
+    addCryptoLibraries(b, handler_tests, enable_blst, enable_mcl, blst_include_path, mcl_include_path, is_windows, target_info.os.tag == .macos);
+    const run_handler_tests = b.addRunArtifact(handler_tests);
+    test_step.dependOn(&run_handler_tests.step);
 
     // Precompile unit tests - these are run via zig test command in CI
     // The command needs to link libc and include all modules
@@ -652,4 +679,44 @@ pub fn build(b: *std.Build) void {
     cheatcode_inspector_exe.root_module.addImport("handler", handler_module);
     cheatcode_inspector_exe.root_module.addImport("inspector", inspector_module);
     b.installArtifact(cheatcode_inspector_exe);
+
+    // --- Spec test runner (links ZEVM modules, parses fixtures at runtime) ---
+    const spec_test_types_module = b.addModule("types", .{
+        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/spec_test/types.zig" } },
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const runner_exe = b.addExecutable(.{
+        .name = "spec-test-runner",
+        .root_module = b.createModule(.{
+            .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/spec_test/main.zig" } },
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    runner_exe.root_module.addImport("types", spec_test_types_module);
+    runner_exe.root_module.addImport("runner", b.addModule("runner", .{
+        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/spec_test/runner.zig" } },
+        .target = target,
+        .optimize = optimize,
+    }));
+
+    // The runner module needs access to ZEVM modules
+    const runner_mod = runner_exe.root_module.import_table.get("runner").?;
+    runner_mod.addImport("types", spec_test_types_module);
+    runner_mod.addImport("primitives", primitives_module);
+    runner_mod.addImport("bytecode", bytecode_module);
+    runner_mod.addImport("interpreter", interpreter_module);
+    runner_mod.addImport("context", context_module);
+    runner_mod.addImport("database", database_module);
+    runner_mod.addImport("state", state_module);
+    runner_mod.addImport("precompile", precompile_module);
+    runner_mod.addImport("handler", handler_module);
+
+    addCryptoLibraries(b, runner_exe, enable_blst, enable_mcl, blst_include_path, mcl_include_path, is_windows, target_info.os.tag == .macos);
+    b.installArtifact(runner_exe);
+
+    const runner_step = b.step("spec-test-runner", "Build the spec test runner");
+    runner_step.dependOn(&b.addInstallArtifact(runner_exe, .{}).step);
 }

@@ -109,14 +109,19 @@ const DISCOUNT_TABLE_G2_MSM: [128]u16 = .{
     524,  524,
 };
 
-/// Remove padding from G1 point (128 bytes -> 96 bytes)
+/// Remove padding from G1 point (128 bytes -> 96 bytes).
+/// EIP-2537: the top 16 bytes of each 64-byte element must be zero.
 fn removeG1Padding(padded: []const u8) ![2][FP_LENGTH]u8 {
     if (padded.len < PADDED_G1_LENGTH) {
         return main.PrecompileError.Bls12381G1AddInputLength;
     }
+    const zero16 = [_]u8{0} ** 16;
+    if (!std.mem.eql(u8, padded[0..16], &zero16) or !std.mem.eql(u8, padded[64..80], &zero16)) {
+        return main.PrecompileError.Bls12381G1AddInputLength;
+    }
     var result: [2][FP_LENGTH]u8 = undefined;
-    @memcpy(&result[0], padded[16 .. 16 + FP_LENGTH]); // Skip 16-byte padding
-    @memcpy(&result[1], padded[80 .. 80 + FP_LENGTH]); // Skip 16-byte padding
+    @memcpy(&result[0], padded[16 .. 16 + FP_LENGTH]);
+    @memcpy(&result[1], padded[80 .. 80 + FP_LENGTH]);
     return result;
 }
 
@@ -128,9 +133,16 @@ fn padG1Point(unpadded: []const u8) [PADDED_G1_LENGTH]u8 {
     return result;
 }
 
-/// Remove padding from G2 point (256 bytes -> 192 bytes)
+/// Remove padding from G2 point (256 bytes -> 192 bytes).
+/// EIP-2537: the top 16 bytes of each 64-byte element must be zero.
 fn removeG2Padding(padded: []const u8) ![4][FP_LENGTH]u8 {
     if (padded.len < PADDED_G2_LENGTH) {
+        return main.PrecompileError.Bls12381G2AddInputLength;
+    }
+    const zero16 = [_]u8{0} ** 16;
+    if (!std.mem.eql(u8, padded[0..16], &zero16) or !std.mem.eql(u8, padded[64..80], &zero16) or
+        !std.mem.eql(u8, padded[128..144], &zero16) or !std.mem.eql(u8, padded[192..208], &zero16))
+    {
         return main.PrecompileError.Bls12381G2AddInputLength;
     }
     var result: [4][FP_LENGTH]u8 = undefined;
@@ -145,9 +157,9 @@ fn removeG2Padding(padded: []const u8) ![4][FP_LENGTH]u8 {
 fn padG2Point(unpadded: []const u8) [PADDED_G2_LENGTH]u8 {
     var result: [PADDED_G2_LENGTH]u8 = [_]u8{0} ** PADDED_G2_LENGTH;
     @memcpy(result[16 .. 16 + FP_LENGTH], unpadded[0..FP_LENGTH]);
-    @memcpy(result[80 .. 80 + FP_LENGTH], unpadded[FP_LENGTH..]);
+    @memcpy(result[80 .. 80 + FP_LENGTH], unpadded[FP_LENGTH..][0..FP_LENGTH]);
     @memcpy(result[144 .. 144 + FP_LENGTH], unpadded[FP2_LENGTH..][0..FP_LENGTH]);
-    @memcpy(result[208 .. 208 + FP_LENGTH], unpadded[FP2_LENGTH..][FP_LENGTH..]);
+    @memcpy(result[208 .. 208 + FP_LENGTH], unpadded[FP2_LENGTH + FP_LENGTH ..][0..FP_LENGTH]);
     return result;
 }
 
@@ -178,25 +190,27 @@ pub fn bls12G1AddRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         if (blst_wrapper.g1Add(a_unpadded, b_unpadded)) |result| {
             unpadded_result = result;
         } else |_| {
-            // Fallback to placeholder if blst fails
-            @memset(&unpadded_result, 0);
+            return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
         }
     } else {
-        // Placeholder if blst not available
-        @memset(&unpadded_result, 0);
+        return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
     }
 
     const padded_result = padG1Point(&unpadded_result);
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(G1_ADD_BASE_GAS_FEE, &padded_result) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_result) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(G1_ADD_BASE_GAS_FEE, heap_out) };
 }
 
 /// BLS12-381 G1 multi-scalar multiplication
 pub fn bls12G1MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
-    if (input.len < PADDED_G1_LENGTH + PADDED_FP_LENGTH) {
+    // EIP-2537: G1MSM pair = 128-byte padded G1 point + 32-byte scalar = 160 bytes
+    const PAIR_LENGTH = PADDED_G1_LENGTH + SCALAR_LENGTH; // 160
+    if (input.len < PAIR_LENGTH) {
         return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G1MsmInputLength };
     }
 
-    const k = input.len / (PADDED_G1_LENGTH + PADDED_FP_LENGTH);
+    const k = input.len / PAIR_LENGTH;
     if (k == 0) {
         return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G1MsmInputLength };
     }
@@ -215,9 +229,12 @@ pub fn bls12G1MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
     };
 
     var i: usize = 0;
-    while (i < input.len) : (i += PADDED_G1_LENGTH + PADDED_FP_LENGTH) {
+    while (i < input.len) : (i += PAIR_LENGTH) {
+        if (i + PAIR_LENGTH > input.len) {
+            return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G1MsmInputLength };
+        }
         const point_padded = input[i..][0..PADDED_G1_LENGTH];
-        const scalar_padded = input[i + PADDED_G1_LENGTH ..][0..PADDED_FP_LENGTH];
+        const scalar_raw = input[i + PADDED_G1_LENGTH ..][0..SCALAR_LENGTH];
 
         // Remove padding from point (128 bytes -> 96 bytes)
         const point_coords = removeG1Padding(point_padded) catch {
@@ -229,9 +246,9 @@ pub fn bls12G1MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         @memcpy(point[0..48], &point_coords[0]);
         @memcpy(point[48..96], &point_coords[1]);
 
-        // Extract scalar (skip 16-byte padding, take 32 bytes)
+        // Scalar is 32 bytes, no padding
         var scalar: [32]u8 = undefined;
-        @memcpy(&scalar, scalar_padded[16..48]);
+        @memcpy(&scalar, scalar_raw);
 
         pairs.append(std.heap.c_allocator, .{ .point = point, .scalar = scalar }) catch {
             return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
@@ -254,16 +271,16 @@ pub fn bls12G1MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         if (blst_wrapper.g1Msm(@ptrCast(blst_pairs))) |result| {
             unpadded_result = result;
         } else |_| {
-            // Fallback to placeholder if blst fails
-            @memset(&unpadded_result, 0);
+            return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
         }
     } else {
-        // Placeholder if blst not available
-        @memset(&unpadded_result, 0);
+        return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
     }
 
     const padded_result = padG1Point(&unpadded_result);
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, &padded_result) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_result) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, heap_out) };
 }
 
 /// BLS12-381 G2 point addition
@@ -297,25 +314,27 @@ pub fn bls12G2AddRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         if (blst_wrapper.g2Add(a_unpadded, b_unpadded)) |result| {
             unpadded_result = result;
         } else |_| {
-            // Fallback to placeholder if blst fails
-            @memset(&unpadded_result, 0);
+            return main.PrecompileResult{ .err = error.Bls12381G2NotOnCurve };
         }
     } else {
-        // Placeholder if blst not available
-        @memset(&unpadded_result, 0);
+        return main.PrecompileResult{ .err = error.Bls12381G2NotOnCurve };
     }
 
     const padded_result = padG2Point(&unpadded_result);
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(G2_ADD_BASE_GAS_FEE, &padded_result) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_result) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(G2_ADD_BASE_GAS_FEE, heap_out) };
 }
 
 /// BLS12-381 G2 multi-scalar multiplication
 pub fn bls12G2MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
-    if (input.len < PADDED_G2_LENGTH + PADDED_FP_LENGTH) {
+    // EIP-2537: G2MSM pair = 256-byte padded G2 point + 32-byte scalar = 288 bytes
+    const PAIR_LENGTH = PADDED_G2_LENGTH + SCALAR_LENGTH; // 288
+    if (input.len < PAIR_LENGTH) {
         return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G2MsmInputLength };
     }
 
-    const k = input.len / (PADDED_G2_LENGTH + PADDED_FP_LENGTH);
+    const k = input.len / PAIR_LENGTH;
     if (k == 0) {
         return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G2MsmInputLength };
     }
@@ -334,9 +353,12 @@ pub fn bls12G2MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
     };
 
     var i: usize = 0;
-    while (i < input.len) : (i += PADDED_G2_LENGTH + PADDED_FP_LENGTH) {
+    while (i < input.len) : (i += PAIR_LENGTH) {
+        if (i + PAIR_LENGTH > input.len) {
+            return main.PrecompileResult{ .err = main.PrecompileError.Bls12381G2MsmInputLength };
+        }
         const point_padded = input[i..][0..PADDED_G2_LENGTH];
-        const scalar_padded = input[i + PADDED_G2_LENGTH ..][0..PADDED_FP_LENGTH];
+        const scalar_raw = input[i + PADDED_G2_LENGTH ..][0..SCALAR_LENGTH];
 
         // Remove padding from point (256 bytes -> 192 bytes)
         const point_coords = removeG2Padding(point_padded) catch {
@@ -350,9 +372,9 @@ pub fn bls12G2MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         @memcpy(point[96..144], &point_coords[2]);
         @memcpy(point[144..192], &point_coords[3]);
 
-        // Extract scalar (skip 16-byte padding, take 32 bytes)
+        // Scalar is 32 bytes, no padding
         var scalar: [32]u8 = undefined;
-        @memcpy(&scalar, scalar_padded[16..48]);
+        @memcpy(&scalar, scalar_raw);
 
         pairs.append(std.heap.c_allocator, .{ .point = point, .scalar = scalar }) catch {
             return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
@@ -375,16 +397,16 @@ pub fn bls12G2MsmRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         if (blst_wrapper.g2Msm(@ptrCast(blst_pairs))) |result| {
             unpadded_result = result;
         } else |_| {
-            // Fallback to placeholder if blst fails
-            @memset(&unpadded_result, 0);
+            return main.PrecompileResult{ .err = error.Bls12381G2NotOnCurve };
         }
     } else {
-        // Placeholder if blst not available
-        @memset(&unpadded_result, 0);
+        return main.PrecompileResult{ .err = error.Bls12381G2NotOnCurve };
     }
 
     const padded_result = padG2Point(&unpadded_result);
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, &padded_result) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_result) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, heap_out) };
 }
 
 /// BLS12-381 pairing check
@@ -455,12 +477,10 @@ pub fn bls12PairingRun(input: []const u8, gas_limit: u64) main.PrecompileResult 
         if (blst_wrapper.pairingCheck(@ptrCast(blst_pairs))) |result| {
             pairing_valid = result;
         } else |_| {
-            // Fallback: assume invalid if blst fails
-            pairing_valid = false;
+            return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
         }
     } else {
-        // Placeholder: assume invalid if blst not available
-        pairing_valid = false;
+        return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
     }
 
     // Result is 1 if pairing is valid, 0 otherwise
@@ -469,7 +489,9 @@ pub fn bls12PairingRun(input: []const u8, gas_limit: u64) main.PrecompileResult 
         output[31] = 1;
     }
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, &output) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &output) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, heap_out) };
 }
 
 /// BLS12-381 map field element to G1
@@ -479,6 +501,12 @@ pub fn bls12MapFpToG1Run(input: []const u8, gas_limit: u64) main.PrecompileResul
     }
 
     if (input.len != PADDED_FP_LENGTH) {
+        return main.PrecompileResult{ .err = main.PrecompileError.Bls12381MapFpToG1InputLength };
+    }
+
+    // EIP-2537: top 16 bytes must be zero
+    const zero16 = [_]u8{0} ** 16;
+    if (!std.mem.eql(u8, input[0..16], &zero16)) {
         return main.PrecompileResult{ .err = main.PrecompileError.Bls12381MapFpToG1InputLength };
     }
 
@@ -492,16 +520,16 @@ pub fn bls12MapFpToG1Run(input: []const u8, gas_limit: u64) main.PrecompileResul
         if (blst_wrapper.mapFpToG1(fp)) |result| {
             unpadded_result = result;
         } else |_| {
-            // Fallback to placeholder if blst fails
-            @memset(&unpadded_result, 0);
+            return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
         }
     } else {
-        // Placeholder if blst not available
-        @memset(&unpadded_result, 0);
+        return main.PrecompileResult{ .err = error.Bls12381G1NotOnCurve };
     }
 
     const padded_result = padG1Point(&unpadded_result);
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(MAP_FP_TO_G1_BASE_GAS_FEE, &padded_result) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_result) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(MAP_FP_TO_G1_BASE_GAS_FEE, heap_out) };
 }
 
 /// BLS12-381 map field element to G2
@@ -511,6 +539,12 @@ pub fn bls12MapFp2ToG2Run(input: []const u8, gas_limit: u64) main.PrecompileResu
     }
 
     if (input.len != PADDED_FP2_LENGTH) {
+        return main.PrecompileResult{ .err = main.PrecompileError.Bls12381MapFp2ToG2InputLength };
+    }
+
+    // EIP-2537: top 16 bytes of each 64-byte element must be zero
+    const zero16 = [_]u8{0} ** 16;
+    if (!std.mem.eql(u8, input[0..16], &zero16) or !std.mem.eql(u8, input[64..80], &zero16)) {
         return main.PrecompileResult{ .err = main.PrecompileError.Bls12381MapFp2ToG2InputLength };
     }
 
@@ -526,14 +560,14 @@ pub fn bls12MapFp2ToG2Run(input: []const u8, gas_limit: u64) main.PrecompileResu
         if (blst_wrapper.mapFp2ToG2(fp2)) |result| {
             unpadded_result = result;
         } else |_| {
-            // Fallback to placeholder if blst fails
-            @memset(&unpadded_result, 0);
+            return main.PrecompileResult{ .err = error.Bls12381G2NotOnCurve };
         }
     } else {
-        // Placeholder if blst not available
-        @memset(&unpadded_result, 0);
+        return main.PrecompileResult{ .err = error.Bls12381G2NotOnCurve };
     }
 
     const padded_result = padG2Point(&unpadded_result);
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(MAP_FP2_TO_G2_BASE_GAS_FEE, &padded_result) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_result) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(MAP_FP2_TO_G2_BASE_GAS_FEE, heap_out) };
 }

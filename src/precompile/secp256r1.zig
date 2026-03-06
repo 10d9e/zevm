@@ -47,7 +47,9 @@ fn p256VerifyInner(input: []const u8, gas_limit: u64, gas_cost: u64) main.Precom
     if (verifyImpl(input)) {
         var result: [32]u8 = [_]u8{0} ** 32;
         result[31] = 1;
-        return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, &result) };
+        const heap_out = std.heap.c_allocator.dupe(u8, &result) catch
+            return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+        return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, heap_out) };
     } else {
         return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_cost, &[_]u8{}) };
     }

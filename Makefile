@@ -71,7 +71,12 @@ ifneq ($(MCL_INCLUDE),)
 	ZIG_BUILD_CMD += -Dmcl-include=$(MCL_INCLUDE)
 endif
 
-.PHONY: help install-deps build test clean check-deps install-brew-deps install-apt-deps install-dnf-deps install-vcpkg-deps
+# Spec test options
+SPEC_TEST_VERSION = v5.4.0
+SPEC_TEST_HASH = 4752348fa84215a9bedfa28df049005d0e54d0e41d3c64c88ee64263388237dc
+SPEC_TEST_DIR = spec-tests
+
+.PHONY: help install-deps build test clean check-deps install-brew-deps install-apt-deps install-dnf-deps install-vcpkg-deps spec-tests
 
 help: ## Show this help message
 	@echo "$(BLUE)ZEVM Build System$(NC)"
@@ -83,6 +88,7 @@ help: ## Show this help message
 	@echo "  $(GREEN)install-deps$(NC)    - Install required dependencies"
 	@echo "  $(GREEN)check-deps$(NC)      - Check if dependencies are installed"
 	@echo "  $(GREEN)test$(NC)            - Run tests"
+	@echo "  $(GREEN)spec-tests$(NC)       - Download and run state test portion of execution-spec-tests"
 	@echo "  $(GREEN)clean$(NC)           - Clean build artifacts"
 	@echo ""
 	@echo "Build Options:"
@@ -417,6 +423,23 @@ clean:
 	@echo "$(BLUE)Cleaning build artifacts...$(NC)"
 	@rm -rf zig-out zig-cache .zig-cache
 	@echo "$(GREEN)✓ Clean complete!$(NC)"
+
+# Download execution-spec-tests fixtures; marker file tracks successful download
+$(SPEC_TEST_DIR)/.fixtures-$(SPEC_TEST_VERSION):
+	@echo "$(BLUE)Downloading execution-spec-tests $(SPEC_TEST_VERSION)...$(NC)"
+	rm -rf $(SPEC_TEST_DIR)/fixtures
+	mkdir -p $(SPEC_TEST_DIR)/fixtures
+	curl -fL "https://github.com/ethereum/execution-spec-tests/releases/download/$(SPEC_TEST_VERSION)/fixtures_develop.tar.gz" \
+		| tar xz --strip-components=1 -C $(SPEC_TEST_DIR)/fixtures/
+	touch $@
+	@echo "$(GREEN)Downloaded execution-spec-tests $(SPEC_TEST_VERSION)$(NC)"
+
+# Build and run spec tests (fixtures are parsed at runtime — no code generation step)
+spec-tests: $(SPEC_TEST_DIR)/.fixtures-$(SPEC_TEST_VERSION)
+	@echo "$(BLUE)Building spec test runner...$(NC)"
+	@$(ZIG_BUILD_CMD) spec-test-runner
+	@echo "$(BLUE)Running spec tests...$(NC)"
+	@./zig-out/bin/spec-test-runner $(SPEC_TEST_DIR)/fixtures/state_tests $(ARGS)
 
 # Install dependencies and build (convenience target)
 all: install-deps build

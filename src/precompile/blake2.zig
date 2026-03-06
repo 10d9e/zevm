@@ -63,7 +63,9 @@ pub fn blake2fRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         std.mem.writeInt(u64, output[i * 8 ..][0..8], h[i], .little);
     }
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, &output) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &output) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, heap_out) };
 }
 
 /// SIGMA from spec: https://datatracker.ietf.org/doc/html/rfc7693#section-2.7
@@ -101,17 +103,17 @@ inline fn g(v: *[16]u64, a: usize, b: usize, c: usize, d: usize, x: u64, y: u64)
 
     va = va +% vb +% x;
     vd = (vd ^ va);
-    vd = std.math.rotl(u64, vd, 32);
+    vd = std.math.rotr(u64, vd, 32);
     vc = vc +% vd;
     vb = (vb ^ vc);
-    vb = std.math.rotl(u64, vb, 24);
+    vb = std.math.rotr(u64, vb, 24);
 
     va = va +% vb +% y;
     vd = (vd ^ va);
-    vd = std.math.rotl(u64, vd, 16);
+    vd = std.math.rotr(u64, vd, 16);
     vc = vc +% vd;
     vb = (vb ^ vc);
-    vb = std.math.rotl(u64, vb, 63);
+    vb = std.math.rotr(u64, vb, 63);
 
     v[a] = va;
     v[b] = vb;

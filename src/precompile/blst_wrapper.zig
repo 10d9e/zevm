@@ -30,17 +30,17 @@ const c = if (build_options.enable_blst) blk: {
     pub fn blst_fp_from_bendian(_: *blst_fp, _: *const [48]u8) void {}
     pub fn blst_bendian_from_fp(_: *[48]u8, _: *const blst_fp) void {}
     pub fn blst_scalar_from_bendian(_: *blst_scalar, _: *const [32]u8) void {}
-    pub fn blst_p1_affine_on_curve(_: *const blst_p1_affine) i32 {
-        return 0;
+    pub fn blst_p1_affine_on_curve(_: *const blst_p1_affine) bool {
+        return false;
     }
-    pub fn blst_p1_affine_in_g1(_: *const blst_p1_affine) i32 {
-        return 0;
+    pub fn blst_p1_affine_in_g1(_: *const blst_p1_affine) bool {
+        return false;
     }
-    pub fn blst_p2_affine_on_curve(_: *const blst_p2_affine) i32 {
-        return 0;
+    pub fn blst_p2_affine_on_curve(_: *const blst_p2_affine) bool {
+        return false;
     }
-    pub fn blst_p2_affine_in_g2(_: *const blst_p2_affine) i32 {
-        return 0;
+    pub fn blst_p2_affine_in_g2(_: *const blst_p2_affine) bool {
+        return false;
     }
     pub fn blst_p1_from_affine(_: *blst_p1, _: *const blst_p1_affine) void {}
     pub fn blst_p1_to_affine(_: *blst_p1_affine, _: *const blst_p1) void {}
@@ -48,13 +48,23 @@ const c = if (build_options.enable_blst) blk: {
     pub fn blst_p2_to_affine(_: *blst_p2_affine, _: *const blst_p2) void {}
     pub fn blst_p1_add_or_double_affine(_: *blst_p1, _: *const blst_p1, _: *const blst_p1_affine) void {}
     pub fn blst_p2_add_or_double_affine(_: *blst_p2, _: *const blst_p2, _: *const blst_p2_affine) void {}
-    pub fn blst_p1s_mult_pippenger(_: *blst_p1, _: [*]const blst_p1_affine, _: i32, _: [*]const blst_scalar, _: i32) void {}
-    pub fn blst_p2s_mult_pippenger(_: *blst_p2, _: [*]const blst_p2_affine, _: i32, _: [*]const blst_scalar, _: i32) void {}
+    pub fn blst_p1s_mult_pippenger(_: *blst_p1, _: [*]const *const blst_p1_affine, _: i32, _: [*]const *const u8, _: i32, _: ?*anyopaque) void {}
+    pub fn blst_p2s_mult_pippenger(_: *blst_p2, _: [*]const *const blst_p2_affine, _: i32, _: [*]const *const u8, _: i32, _: ?*anyopaque) void {}
+    pub fn blst_p1s_mult_pippenger_scratch_sizeof(_: usize) usize {
+        return 0;
+    }
+    pub fn blst_p2s_mult_pippenger_scratch_sizeof(_: usize) usize {
+        return 0;
+    }
+    pub fn blst_p1_cneg(_: *blst_p1, _: bool) void {}
+    pub fn blst_p2_cneg(_: *blst_p2, _: bool) void {}
+    pub fn blst_p1_add(_: *blst_p1, _: *const blst_p1, _: *const blst_p1) void {}
+    pub fn blst_p2_add(_: *blst_p2, _: *const blst_p2, _: *const blst_p2) void {}
     pub fn blst_miller_loop(_: *blst_fp12, _: *const blst_p2_affine, _: *const blst_p1_affine) void {}
     pub fn blst_fp12_mul(_: *blst_fp12, _: *const blst_fp12, _: *const blst_fp12) void {}
     pub fn blst_final_exp(_: *blst_fp12, _: *const blst_fp12) void {}
-    pub fn blst_fp12_is_one(_: *const blst_fp12) i32 {
-        return 0;
+    pub fn blst_fp12_is_one(_: *const blst_fp12) bool {
+        return false;
     }
     pub fn blst_map_to_g1(_: *blst_p1, _: *const blst_fp, _: ?*const anyopaque) void {}
     pub fn blst_map_to_g2(_: *blst_p2, _: *const blst_fp2, _: ?*const anyopaque) void {}
@@ -77,74 +87,88 @@ pub fn isAvailable() bool {
     return build_options.enable_blst;
 }
 
+/// BLS12-381 field prime p (big-endian, 48 bytes):
+/// p = 0x1a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab
+const BLS_FP_MODULUS: [48]u8 = .{
+    0x1a, 0x01, 0x11, 0xea, 0x39, 0x7f, 0xe6, 0x9a,
+    0x4b, 0x1b, 0xa7, 0xb6, 0x43, 0x4b, 0xac, 0xd7,
+    0x64, 0x77, 0x4b, 0x84, 0xf3, 0x85, 0x12, 0xbf,
+    0x67, 0x30, 0xd2, 0xa0, 0xf6, 0xb0, 0xf6, 0x24,
+    0x1e, 0xab, 0xff, 0xfe, 0xb1, 0x53, 0xff, 0xff,
+    0xb9, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xaa, 0xab,
+};
+
+/// Returns true if the 48-byte big-endian value is a canonical field element (0 <= x < p).
+/// EIP-2537 requires all Fp inputs to be canonical; blst_fp_from_bendian silently reduces mod p.
+fn isFpCanonical(bytes: *const [48]u8) bool {
+    return std.mem.order(u8, bytes, &BLS_FP_MODULUS) == .lt;
+}
+
+/// Parse a G1 affine point from 96 bytes, returning error for invalid non-infinity points.
+/// Treats all-zero bytes as the point at infinity (valid).
+fn parseG1Affine(bytes: [96]u8, affine: *c.blst_p1_affine) !bool {
+    // All-zero bytes = point at infinity (identity element)
+    const zero96 = [_]u8{0} ** 96;
+    if (std.mem.eql(u8, &bytes, &zero96)) return true; // is_infinity
+
+    // EIP-2537: field elements must be canonical (0 <= x < p)
+    if (!isFpCanonical(bytes[0..48]) or !isFpCanonical(bytes[48..96])) {
+        return error.NonCanonicalFieldElement;
+    }
+
+    var fp_x: c.blst_fp = undefined;
+    var fp_y: c.blst_fp = undefined;
+    c.blst_fp_from_bendian(&fp_x, bytes[0..48]);
+    c.blst_fp_from_bendian(&fp_y, bytes[48..96]);
+    affine.x = fp_x;
+    affine.y = fp_y;
+
+    // For G1Add: only check on-curve, NOT subgroup membership (per EIP-2537)
+    if (!c.blst_p1_affine_on_curve(affine)) return error.InvalidG1Point;
+    return false; // not infinity
+}
+
 /// BLS12-381 G1 point addition
 /// Input: two 96-byte unpadded G1 points (x || y, each 48 bytes, big-endian)
 /// Output: 96-byte unpadded G1 point
+/// Note: EIP-2537 G1Add accepts points not in the prime-order subgroup (only on-curve required)
 pub fn g1Add(a: [96]u8, b: [96]u8) ![96]u8 {
     if (!isAvailable()) {
         return error.BlstNotAvailable;
     }
 
-    // Parse G1 points from bytes
-    // blst expects points in affine form (x, y coordinates)
     var p1_affine: c.blst_p1_affine = undefined;
     var p2_affine: c.blst_p1_affine = undefined;
 
-    // Parse first point (a)
-    // Points are stored as (x || y) where each is 48 bytes big-endian
-    const a_x = a[0..48].*;
-    const a_y = a[48..96].*;
+    const a_is_inf = try parseG1Affine(a, &p1_affine);
+    const b_is_inf = try parseG1Affine(b, &p2_affine);
 
-    // Convert big-endian bytes to blst_fp
-    var fp1_x: c.blst_fp = undefined;
-    var fp1_y: c.blst_fp = undefined;
-    c.blst_fp_from_bendian(&fp1_x, &a_x);
-    c.blst_fp_from_bendian(&fp1_y, &a_y);
-
-    // Set affine coordinates
-    p1_affine.x = fp1_x;
-    p1_affine.y = fp1_y;
-
-    // Parse second point (b)
-    const b_x = b[0..48].*;
-    const b_y = b[48..96].*;
-
-    var fp2_x: c.blst_fp = undefined;
-    var fp2_y: c.blst_fp = undefined;
-    c.blst_fp_from_bendian(&fp2_x, &b_x);
-    c.blst_fp_from_bendian(&fp2_y, &b_y);
-
-    p2_affine.x = fp2_x;
-    p2_affine.y = fp2_y;
-
-    // Verify points are on curve and in subgroup
-    if (!c.blst_p1_affine_on_curve(&p1_affine) or
-        !c.blst_p1_affine_in_g1(&p1_affine))
-    {
-        return error.InvalidG1Point;
+    // Handle infinity (identity element): infinity + P = P
+    if (a_is_inf and b_is_inf) return [_]u8{0} ** 96;
+    if (a_is_inf) {
+        var output: [96]u8 = undefined;
+        c.blst_bendian_from_fp(output[0..48], &p2_affine.x);
+        c.blst_bendian_from_fp(output[48..96], &p2_affine.y);
+        return output;
+    }
+    if (b_is_inf) {
+        var output: [96]u8 = undefined;
+        c.blst_bendian_from_fp(output[0..48], &p1_affine.x);
+        c.blst_bendian_from_fp(output[48..96], &p1_affine.y);
+        return output;
     }
 
-    if (!c.blst_p1_affine_on_curve(&p2_affine) or
-        !c.blst_p1_affine_in_g1(&p2_affine))
-    {
-        return error.InvalidG1Point;
-    }
-
-    // Convert to projective form for addition
+    // Convert to projective form and add
     var p1: c.blst_p1 = undefined;
-    var p2: c.blst_p1 = undefined;
     c.blst_p1_from_affine(&p1, &p1_affine);
-    c.blst_p1_from_affine(&p2, &p2_affine);
 
-    // Add points
     var result: c.blst_p1 = undefined;
     c.blst_p1_add_or_double_affine(&result, &p1, &p2_affine);
 
-    // Convert back to affine form
+    // Convert back to affine and serialize
     var result_affine: c.blst_p1_affine = undefined;
     c.blst_p1_to_affine(&result_affine, &result);
 
-    // Serialize result to bytes (big-endian)
     var output: [96]u8 = undefined;
     c.blst_bendian_from_fp(output[0..48], &result_affine.x);
     c.blst_bendian_from_fp(output[48..96], &result_affine.y);
@@ -155,6 +179,8 @@ pub fn g1Add(a: [96]u8, b: [96]u8) ![96]u8 {
 /// BLS12-381 G1 multi-scalar multiplication
 /// Input: array of (point, scalar) pairs
 /// Output: 96-byte unpadded G1 point
+/// Note: G1MSM requires points to be in the G1 prime-order subgroup (per EIP-2537)
+///       Scalars are 32 bytes big-endian (passed directly to pippenger)
 pub fn g1Msm(pairs: []const struct { point: [96]u8, scalar: [32]u8 }) ![96]u8 {
     if (!isAvailable()) {
         return error.BlstNotAvailable;
@@ -164,56 +190,62 @@ pub fn g1Msm(pairs: []const struct { point: [96]u8, scalar: [32]u8 }) ![96]u8 {
         return error.InvalidInput;
     }
 
-    // Parse points and scalars
-    var points: []c.blst_p1_affine = try std.heap.c_allocator.alloc(c.blst_p1_affine, pairs.len);
-    defer std.heap.c_allocator.free(points);
+    const zero96 = [_]u8{0} ** 96;
 
-    var scalars: []c.blst_scalar = try std.heap.c_allocator.alloc(c.blst_scalar, pairs.len);
+    // Parse points and scalars, filtering out infinity points (they contribute identity)
+    var points = try std.heap.c_allocator.alloc(c.blst_p1_affine, pairs.len);
+    defer std.heap.c_allocator.free(points);
+    var point_ptrs = try std.heap.c_allocator.alloc(*const c.blst_p1_affine, pairs.len);
+    defer std.heap.c_allocator.free(point_ptrs);
+    var scalar_ptrs = try std.heap.c_allocator.alloc(*const u8, pairs.len);
+    defer std.heap.c_allocator.free(scalar_ptrs);
+    // blst_scalar stores scalars in little-endian; blst_scalar_from_bendian converts from EIP-2537 big-endian
+    var scalars = try std.heap.c_allocator.alloc(c.blst_scalar, pairs.len);
     defer std.heap.c_allocator.free(scalars);
 
-    // Allocate arrays of pointers for blst API
-    var point_ptrs: []*const c.blst_p1_affine = try std.heap.c_allocator.alloc(*const c.blst_p1_affine, pairs.len);
-    defer std.heap.c_allocator.free(point_ptrs);
+    var active_count: usize = 0;
+    for (pairs) |pair| {
+        // Skip infinity points (identity contributes nothing to MSM sum)
+        if (std.mem.eql(u8, &pair.point, &zero96)) continue;
 
-    var scalar_ptrs: []*const u8 = try std.heap.c_allocator.alloc(*const u8, pairs.len);
-    defer std.heap.c_allocator.free(scalar_ptrs);
+        const i = active_count;
 
-    for (pairs, 0..) |pair, i| {
-        // Parse point
+        // EIP-2537: field elements must be canonical (0 <= x < p)
+        if (!isFpCanonical(pair.point[0..48]) or !isFpCanonical(pair.point[48..96])) {
+            return error.NonCanonicalFieldElement;
+        }
+
         var fp_x: c.blst_fp = undefined;
         var fp_y: c.blst_fp = undefined;
-        c.blst_fp_from_bendian(&fp_x, &pair.point[0..48].*);
-        c.blst_fp_from_bendian(&fp_y, &pair.point[48..96].*);
-
+        c.blst_fp_from_bendian(&fp_x, pair.point[0..48]);
+        c.blst_fp_from_bendian(&fp_y, pair.point[48..96]);
         points[i].x = fp_x;
         points[i].y = fp_y;
 
-        // Verify point
-        if (!c.blst_p1_affine_on_curve(&points[i]) or
-            !c.blst_p1_affine_in_g1(&points[i]))
-        {
+        // G1MSM requires subgroup membership
+        if (!c.blst_p1_affine_on_curve(&points[i]) or !c.blst_p1_affine_in_g1(&points[i])) {
             return error.InvalidG1Point;
         }
 
-        // Parse scalar (32 bytes big-endian)
+        // Convert scalar from big-endian (EIP-2537) to little-endian (blst pippenger format)
         c.blst_scalar_from_bendian(&scalars[i], &pair.scalar);
-
-        // Set up pointers
         point_ptrs[i] = &points[i];
-        scalar_ptrs[i] = @ptrCast(@as(*const u8, @ptrCast(&scalars[i])));
+        scalar_ptrs[i] = @ptrCast(&scalars[i].b[0]);
+        active_count += 1;
     }
 
-    // Allocate scratch space for MSM (aligned to 8 bytes for limb_t)
-    const scratch_size = c.blst_p1s_mult_pippenger_scratch_sizeof(pairs.len);
-    const scratch_bytes = try std.heap.page_allocator.alloc(u8, scratch_size + 7);
+    // If all points were infinity, result is infinity
+    if (active_count == 0) return [_]u8{0} ** 96;
+
+    // Allocate scratch space for MSM
+    const scratch_size = c.blst_p1s_mult_pippenger_scratch_sizeof(active_count);
+    const alloc_size = if (scratch_size == 0) @as(usize, 8) else scratch_size;
+    const scratch_bytes = try std.heap.page_allocator.alloc(u8, alloc_size);
     defer std.heap.page_allocator.free(scratch_bytes);
-    const scratch_aligned = @as([*]align(8) u8, @ptrCast(@alignCast(scratch_bytes.ptr)))[0..scratch_size];
 
-    // Perform MSM
     var result: c.blst_p1 = undefined;
-    c.blst_p1s_mult_pippenger(&result, point_ptrs.ptr, @intCast(pairs.len), scalar_ptrs.ptr, 256, @ptrCast(scratch_aligned.ptr));
+    c.blst_p1s_mult_pippenger(&result, point_ptrs.ptr, @intCast(active_count), scalar_ptrs.ptr, 256, @ptrCast(@alignCast(scratch_bytes.ptr)));
 
-    // Convert to affine and serialize
     var result_affine: c.blst_p1_affine = undefined;
     c.blst_p1_to_affine(&result_affine, &result);
 
@@ -224,74 +256,75 @@ pub fn g1Msm(pairs: []const struct { point: [96]u8, scalar: [32]u8 }) ![96]u8 {
     return output;
 }
 
+/// Parse a G2 affine point from 192 bytes, returning error for invalid non-infinity points.
+/// Treats all-zero bytes as the point at infinity (identity element).
+/// EIP-2537 G2 input: [Fp2.fp[0] (48B) || Fp2.fp[1] (48B)] for each of x and y.
+/// blst blst_fp2: fp[0] and fp[1] map directly to the input bytes (direct mapping, no swap).
+fn parseG2Affine(bytes: [192]u8, affine: *c.blst_p2_affine) !bool {
+    const zero192 = [_]u8{0} ** 192;
+    if (std.mem.eql(u8, &bytes, &zero192)) return true; // is_infinity
+
+    // EIP-2537: all four Fp components of Fp2 must be canonical (0 <= x < p)
+    if (!isFpCanonical(bytes[0..48]) or !isFpCanonical(bytes[48..96]) or
+        !isFpCanonical(bytes[96..144]) or !isFpCanonical(bytes[144..192]))
+    {
+        return error.NonCanonicalFieldElement;
+    }
+
+    // Direct mapping: EIP-2537 encodes Fp2 as two consecutive 48-byte field elements.
+    // blst's blst_fp2.fp[0] = first element, fp[1] = second element.
+    c.blst_fp_from_bendian(&affine.x.fp[0], bytes[0..48]);
+    c.blst_fp_from_bendian(&affine.x.fp[1], bytes[48..96]);
+    c.blst_fp_from_bendian(&affine.y.fp[0], bytes[96..144]);
+    c.blst_fp_from_bendian(&affine.y.fp[1], bytes[144..192]);
+
+    // For G2Add: only check on-curve, NOT subgroup membership (per EIP-2537)
+    if (!c.blst_p2_affine_on_curve(affine)) return error.InvalidG2Point;
+    return false; // not infinity
+}
+
 /// BLS12-381 G2 point addition
 /// Input: two 192-byte unpadded G2 points
 /// Output: 192-byte unpadded G2 point
+/// Note: EIP-2537 G2Add accepts points not in the prime-order subgroup (only on-curve required)
 pub fn g2Add(a: [192]u8, b: [192]u8) ![192]u8 {
     if (!isAvailable()) {
         return error.BlstNotAvailable;
     }
 
-    // Parse G2 points
-    // G2 points are (x0 || x1 || y0 || y1) where each is 48 bytes
     var p1_affine: c.blst_p2_affine = undefined;
     var p2_affine: c.blst_p2_affine = undefined;
 
-    // Parse first point
-    var fp1_x0: c.blst_fp = undefined;
-    var fp1_x1: c.blst_fp = undefined;
-    var fp1_y0: c.blst_fp = undefined;
-    var fp1_y1: c.blst_fp = undefined;
+    const a_is_inf = try parseG2Affine(a, &p1_affine);
+    const b_is_inf = try parseG2Affine(b, &p2_affine);
 
-    c.blst_fp_from_bendian(&fp1_x0, &a[0..48].*);
-    c.blst_fp_from_bendian(&fp1_x1, &a[48..96].*);
-    c.blst_fp_from_bendian(&fp1_y0, &a[96..144].*);
-    c.blst_fp_from_bendian(&fp1_y1, &a[144..192].*);
-
-    p1_affine.x.fp[0] = fp1_x0;
-    p1_affine.x.fp[1] = fp1_x1;
-    p1_affine.y.fp[0] = fp1_y0;
-    p1_affine.y.fp[1] = fp1_y1;
-
-    // Parse second point
-    var fp2_x0: c.blst_fp = undefined;
-    var fp2_x1: c.blst_fp = undefined;
-    var fp2_y0: c.blst_fp = undefined;
-    var fp2_y1: c.blst_fp = undefined;
-
-    c.blst_fp_from_bendian(&fp2_x0, &b[0..48].*);
-    c.blst_fp_from_bendian(&fp2_x1, &b[48..96].*);
-    c.blst_fp_from_bendian(&fp2_y0, &b[96..144].*);
-    c.blst_fp_from_bendian(&fp2_y1, &b[144..192].*);
-
-    p2_affine.x.fp[0] = fp2_x0;
-    p2_affine.x.fp[1] = fp2_x1;
-    p2_affine.y.fp[0] = fp2_y0;
-    p2_affine.y.fp[1] = fp2_y1;
-
-    // Verify points
-    if (!c.blst_p2_affine_on_curve(&p1_affine) or
-        !c.blst_p2_affine_in_g2(&p1_affine))
-    {
-        return error.InvalidG2Point;
+    // Handle infinity (identity element)
+    if (a_is_inf and b_is_inf) return [_]u8{0} ** 192;
+    if (a_is_inf) {
+        var output: [192]u8 = undefined;
+        c.blst_bendian_from_fp(output[0..48], &p2_affine.x.fp[0]);
+        c.blst_bendian_from_fp(output[48..96], &p2_affine.x.fp[1]);
+        c.blst_bendian_from_fp(output[96..144], &p2_affine.y.fp[0]);
+        c.blst_bendian_from_fp(output[144..192], &p2_affine.y.fp[1]);
+        return output;
     }
-
-    if (!c.blst_p2_affine_on_curve(&p2_affine) or
-        !c.blst_p2_affine_in_g2(&p2_affine))
-    {
-        return error.InvalidG2Point;
+    if (b_is_inf) {
+        var output: [192]u8 = undefined;
+        c.blst_bendian_from_fp(output[0..48], &p1_affine.x.fp[0]);
+        c.blst_bendian_from_fp(output[48..96], &p1_affine.x.fp[1]);
+        c.blst_bendian_from_fp(output[96..144], &p1_affine.y.fp[0]);
+        c.blst_bendian_from_fp(output[144..192], &p1_affine.y.fp[1]);
+        return output;
     }
 
     // Convert to projective and add
     var p1: c.blst_p2 = undefined;
-    var p2: c.blst_p2 = undefined;
     c.blst_p2_from_affine(&p1, &p1_affine);
-    c.blst_p2_from_affine(&p2, &p2_affine);
 
     var result: c.blst_p2 = undefined;
     c.blst_p2_add_or_double_affine(&result, &p1, &p2_affine);
 
-    // Convert back to affine and serialize
+    // Convert back to affine and serialize (direct mapping)
     var result_affine: c.blst_p2_affine = undefined;
     c.blst_p2_to_affine(&result_affine, &result);
 
@@ -307,6 +340,8 @@ pub fn g2Add(a: [192]u8, b: [192]u8) ![192]u8 {
 /// BLS12-381 G2 multi-scalar multiplication
 /// Input: array of (point, scalar) pairs
 /// Output: 192-byte unpadded G2 point
+/// Note: G2MSM requires points to be in the G2 prime-order subgroup (per EIP-2537)
+///       Scalars are 32 bytes big-endian (passed directly to pippenger)
 pub fn g2Msm(pairs: []const struct { point: [192]u8, scalar: [32]u8 }) ![192]u8 {
     if (!isAvailable()) {
         return error.BlstNotAvailable;
@@ -316,66 +351,64 @@ pub fn g2Msm(pairs: []const struct { point: [192]u8, scalar: [32]u8 }) ![192]u8 
         return error.InvalidInput;
     }
 
-    // Parse points and scalars
-    var points: []c.blst_p2_affine = try std.heap.c_allocator.alloc(c.blst_p2_affine, pairs.len);
-    defer std.heap.c_allocator.free(points);
+    const zero192 = [_]u8{0} ** 192;
 
-    var scalars: []c.blst_scalar = try std.heap.c_allocator.alloc(c.blst_scalar, pairs.len);
+    var points = try std.heap.c_allocator.alloc(c.blst_p2_affine, pairs.len);
+    defer std.heap.c_allocator.free(points);
+    var point_ptrs = try std.heap.c_allocator.alloc(*const c.blst_p2_affine, pairs.len);
+    defer std.heap.c_allocator.free(point_ptrs);
+    var scalar_ptrs = try std.heap.c_allocator.alloc(*const u8, pairs.len);
+    defer std.heap.c_allocator.free(scalar_ptrs);
+    // blst_scalar stores scalars in little-endian; blst_scalar_from_bendian converts from EIP-2537 big-endian
+    var scalars = try std.heap.c_allocator.alloc(c.blst_scalar, pairs.len);
     defer std.heap.c_allocator.free(scalars);
 
-    // Allocate arrays of pointers for blst API
-    var point_ptrs: []*const c.blst_p2_affine = try std.heap.c_allocator.alloc(*const c.blst_p2_affine, pairs.len);
-    defer std.heap.c_allocator.free(point_ptrs);
+    var active_count: usize = 0;
+    for (pairs) |pair| {
+        // Skip infinity points (identity contributes nothing to MSM sum)
+        if (std.mem.eql(u8, &pair.point, &zero192)) continue;
 
-    var scalar_ptrs: []*const u8 = try std.heap.c_allocator.alloc(*const u8, pairs.len);
-    defer std.heap.c_allocator.free(scalar_ptrs);
+        const i = active_count;
 
-    for (pairs, 0..) |pair, i| {
-        // Parse G2 point
-        var fp_x0: c.blst_fp = undefined;
-        var fp_x1: c.blst_fp = undefined;
-        var fp_y0: c.blst_fp = undefined;
-        var fp_y1: c.blst_fp = undefined;
-
-        c.blst_fp_from_bendian(&fp_x0, &pair.point[0..48].*);
-        c.blst_fp_from_bendian(&fp_x1, &pair.point[48..96].*);
-        c.blst_fp_from_bendian(&fp_y0, &pair.point[96..144].*);
-        c.blst_fp_from_bendian(&fp_y1, &pair.point[144..192].*);
-
-        points[i].x.fp[0] = fp_x0;
-        points[i].x.fp[1] = fp_x1;
-        points[i].y.fp[0] = fp_y0;
-        points[i].y.fp[1] = fp_y1;
-
-        // Verify point
-        if (!c.blst_p2_affine_on_curve(&points[i]) or
-            !c.blst_p2_affine_in_g2(&points[i]))
+        // EIP-2537: all four Fp components of Fp2 must be canonical (0 <= x < p)
+        if (!isFpCanonical(pair.point[0..48]) or !isFpCanonical(pair.point[48..96]) or
+            !isFpCanonical(pair.point[96..144]) or !isFpCanonical(pair.point[144..192]))
         {
+            return error.NonCanonicalFieldElement;
+        }
+
+        // Direct mapping: EIP-2537 Fp2 bytes map to blst fp2.fp[0] and fp2.fp[1] directly
+        c.blst_fp_from_bendian(&points[i].x.fp[0], pair.point[0..48]);
+        c.blst_fp_from_bendian(&points[i].x.fp[1], pair.point[48..96]);
+        c.blst_fp_from_bendian(&points[i].y.fp[0], pair.point[96..144]);
+        c.blst_fp_from_bendian(&points[i].y.fp[1], pair.point[144..192]);
+
+        // G2MSM requires subgroup membership
+        if (!c.blst_p2_affine_on_curve(&points[i]) or !c.blst_p2_affine_in_g2(&points[i])) {
             return error.InvalidG2Point;
         }
 
-        // Parse scalar
+        // Convert scalar from big-endian (EIP-2537) to little-endian (blst pippenger format)
         c.blst_scalar_from_bendian(&scalars[i], &pair.scalar);
-
-        // Set up pointers
         point_ptrs[i] = &points[i];
-        scalar_ptrs[i] = @ptrCast(@as(*const u8, @ptrCast(&scalars[i])));
+        scalar_ptrs[i] = @ptrCast(&scalars[i].b[0]);
+        active_count += 1;
     }
 
-    // Allocate scratch space for MSM (aligned to 8 bytes for limb_t)
-    const scratch_size = c.blst_p2s_mult_pippenger_scratch_sizeof(pairs.len);
-    const scratch_bytes = try std.heap.page_allocator.alloc(u8, scratch_size + 7);
+    if (active_count == 0) return [_]u8{0} ** 192;
+
+    const scratch_size = c.blst_p2s_mult_pippenger_scratch_sizeof(active_count);
+    const alloc_size = if (scratch_size == 0) @as(usize, 8) else scratch_size;
+    const scratch_bytes = try std.heap.page_allocator.alloc(u8, alloc_size);
     defer std.heap.page_allocator.free(scratch_bytes);
-    const scratch_aligned = @as([*]align(8) u8, @ptrCast(@alignCast(scratch_bytes.ptr)))[0..scratch_size];
 
-    // Perform MSM
     var result: c.blst_p2 = undefined;
-    c.blst_p2s_mult_pippenger(&result, point_ptrs.ptr, @intCast(pairs.len), scalar_ptrs.ptr, 256, @ptrCast(scratch_aligned.ptr));
+    c.blst_p2s_mult_pippenger(&result, point_ptrs.ptr, @intCast(active_count), scalar_ptrs.ptr, 256, @ptrCast(@alignCast(scratch_bytes.ptr)));
 
-    // Convert to affine and serialize
     var result_affine: c.blst_p2_affine = undefined;
     c.blst_p2_to_affine(&result_affine, &result);
 
+    // Direct mapping output (same as input convention)
     var output: [192]u8 = undefined;
     c.blst_bendian_from_fp(output[0..48], &result_affine.x.fp[0]);
     c.blst_bendian_from_fp(output[48..96], &result_affine.x.fp[1]);
@@ -387,78 +420,96 @@ pub fn g2Msm(pairs: []const struct { point: [192]u8, scalar: [32]u8 }) ![192]u8 
 
 /// BLS12-381 pairing check
 /// Input: array of (G1, G2) point pairs
-/// Returns true if pairing is valid
+/// Returns true if pairing product == 1 (identity in GT)
+/// Pairs where G1 or G2 is the point at infinity are skipped (they contribute 1 to product)
 pub fn pairingCheck(pairs: []const struct { g1: [96]u8, g2: [192]u8 }) !bool {
     if (!isAvailable()) {
         return error.BlstNotAvailable;
     }
 
     if (pairs.len == 0) {
-        return true; // Empty pairing is valid
+        return true; // Empty pairing is valid (product of no terms = 1)
     }
 
-    // Parse all pairs
-    var g1_points: []c.blst_p1_affine = try std.heap.c_allocator.alloc(c.blst_p1_affine, pairs.len);
-    defer std.heap.c_allocator.free(g1_points);
+    const zero96 = [_]u8{0} ** 96;
+    const zero192 = [_]u8{0} ** 192;
 
-    var g2_points: []c.blst_p2_affine = try std.heap.c_allocator.alloc(c.blst_p2_affine, pairs.len);
+    // Parse valid (non-infinity) pairs
+    var g1_points = try std.heap.c_allocator.alloc(c.blst_p1_affine, pairs.len);
+    defer std.heap.c_allocator.free(g1_points);
+    var g2_points = try std.heap.c_allocator.alloc(c.blst_p2_affine, pairs.len);
     defer std.heap.c_allocator.free(g2_points);
 
-    for (pairs, 0..) |pair, i| {
-        // Parse G1 point
-        var fp_x: c.blst_fp = undefined;
-        var fp_y: c.blst_fp = undefined;
-        c.blst_fp_from_bendian(&fp_x, &pair.g1[0..48].*);
-        c.blst_fp_from_bendian(&fp_y, &pair.g1[48..96].*);
+    var active_count: usize = 0;
 
-        g1_points[i].x = fp_x;
-        g1_points[i].y = fp_y;
+    for (pairs) |pair| {
+        const g1_is_inf = std.mem.eql(u8, &pair.g1, &zero96);
+        const g2_is_inf = std.mem.eql(u8, &pair.g2, &zero192);
 
-        if (!c.blst_p1_affine_on_curve(&g1_points[i]) or
-            !c.blst_p1_affine_in_g1(&g1_points[i]))
-        {
-            return error.InvalidG1Point;
+        // EIP-2537: ALL non-infinity points must be validated, even when the paired
+        // point is infinity. Infinity (all-zeros) is valid without curve checks.
+        // Only skip adding to the Miller loop if a point is infinity.
+
+        var g1_affine: c.blst_p1_affine = undefined;
+        var g2_affine: c.blst_p2_affine = undefined;
+
+        if (!g1_is_inf) {
+            // EIP-2537: G1 field elements must be canonical (0 <= x < p)
+            if (!isFpCanonical(pair.g1[0..48]) or !isFpCanonical(pair.g1[48..96])) {
+                return error.NonCanonicalFieldElement;
+            }
+            var fp_x: c.blst_fp = undefined;
+            var fp_y: c.blst_fp = undefined;
+            c.blst_fp_from_bendian(&fp_x, pair.g1[0..48]);
+            c.blst_fp_from_bendian(&fp_y, pair.g1[48..96]);
+            g1_affine.x = fp_x;
+            g1_affine.y = fp_y;
+            if (!c.blst_p1_affine_on_curve(&g1_affine) or !c.blst_p1_affine_in_g1(&g1_affine)) {
+                return error.InvalidG1Point;
+            }
         }
 
-        // Parse G2 point
-        var fp2_x0: c.blst_fp = undefined;
-        var fp2_x1: c.blst_fp = undefined;
-        var fp2_y0: c.blst_fp = undefined;
-        var fp2_y1: c.blst_fp = undefined;
+        if (!g2_is_inf) {
+            // EIP-2537: G2 field elements must be canonical (0 <= x < p)
+            if (!isFpCanonical(pair.g2[0..48]) or !isFpCanonical(pair.g2[48..96]) or
+                !isFpCanonical(pair.g2[96..144]) or !isFpCanonical(pair.g2[144..192]))
+            {
+                return error.NonCanonicalFieldElement;
+            }
+            // Parse G2 point — direct mapping (no swap)
+            c.blst_fp_from_bendian(&g2_affine.x.fp[0], pair.g2[0..48]);
+            c.blst_fp_from_bendian(&g2_affine.x.fp[1], pair.g2[48..96]);
+            c.blst_fp_from_bendian(&g2_affine.y.fp[0], pair.g2[96..144]);
+            c.blst_fp_from_bendian(&g2_affine.y.fp[1], pair.g2[144..192]);
+            if (!c.blst_p2_affine_on_curve(&g2_affine) or !c.blst_p2_affine_in_g2(&g2_affine)) {
+                return error.InvalidG2Point;
+            }
+        }
 
-        c.blst_fp_from_bendian(&fp2_x0, &pair.g2[0..48].*);
-        c.blst_fp_from_bendian(&fp2_x1, &pair.g2[48..96].*);
-        c.blst_fp_from_bendian(&fp2_y0, &pair.g2[96..144].*);
-        c.blst_fp_from_bendian(&fp2_y1, &pair.g2[144..192].*);
-
-        g2_points[i].x.fp[0] = fp2_x0;
-        g2_points[i].x.fp[1] = fp2_x1;
-        g2_points[i].y.fp[0] = fp2_y0;
-        g2_points[i].y.fp[1] = fp2_y1;
-
-        if (!c.blst_p2_affine_on_curve(&g2_points[i]) or
-            !c.blst_p2_affine_in_g2(&g2_points[i]))
-        {
-            return error.InvalidG2Point;
+        // Only add to Miller loop if neither point is infinity
+        if (!g1_is_inf and !g2_is_inf) {
+            g1_points[active_count] = g1_affine;
+            g2_points[active_count] = g2_affine;
+            active_count += 1;
         }
     }
 
-    // Compute pairing product
+    // If all pairs were infinity, result is 1 (valid)
+    if (active_count == 0) return true;
+
+    // Compute pairing product over active pairs only
     var fp12: c.blst_fp12 = undefined;
     c.blst_miller_loop(&fp12, &g2_points[0], &g1_points[0]);
 
-    // Multiply remaining pairs
-    for (1..pairs.len) |i| {
+    for (1..active_count) |i| {
         var temp: c.blst_fp12 = undefined;
         c.blst_miller_loop(&temp, &g2_points[i], &g1_points[i]);
         c.blst_fp12_mul(&fp12, &fp12, &temp);
     }
 
-    // Final exponentiation
     var result: c.blst_fp12 = undefined;
     c.blst_final_exp(&result, &fp12);
 
-    // Check if result is identity (pairing is valid if result == 1)
     return c.blst_fp12_is_one(&result);
 }
 
@@ -468,6 +519,11 @@ pub fn pairingCheck(pairs: []const struct { g1: [96]u8, g2: [192]u8 }) !bool {
 pub fn mapFpToG1(fp: [48]u8) ![96]u8 {
     if (!isAvailable()) {
         return error.BlstNotAvailable;
+    }
+
+    // EIP-2537: field element must be canonical (0 <= fp < p)
+    if (!isFpCanonical(&fp)) {
+        return error.NonCanonicalFieldElement;
     }
 
     // Parse field element
@@ -497,7 +553,12 @@ pub fn mapFp2ToG2(fp2: [96]u8) ![192]u8 {
         return error.BlstNotAvailable;
     }
 
-    // Parse Fp2 element (two 48-byte field elements)
+    // EIP-2537: both Fp2 components must be canonical (0 <= x < p)
+    if (!isFpCanonical(fp2[0..48]) or !isFpCanonical(fp2[48..96])) {
+        return error.NonCanonicalFieldElement;
+    }
+
+    // Parse Fp2 element — direct mapping: fp[0] = first 48 bytes, fp[1] = second 48 bytes
     var fp2_elem: c.blst_fp2 = undefined;
     c.blst_fp_from_bendian(&fp2_elem.fp[0], &fp2[0..48].*);
     c.blst_fp_from_bendian(&fp2_elem.fp[1], &fp2[48..96].*);
@@ -510,6 +571,7 @@ pub fn mapFp2ToG2(fp2: [96]u8) ![192]u8 {
     var result_affine: c.blst_p2_affine = undefined;
     c.blst_p2_to_affine(&result_affine, &result);
 
+    // Serialize with direct mapping (fp[0] first, fp[1] second)
     var output: [192]u8 = undefined;
     c.blst_bendian_from_fp(output[0..48], &result_affine.x.fp[0]);
     c.blst_bendian_from_fp(output[48..96], &result_affine.x.fp[1]);
@@ -647,4 +709,5 @@ pub const BlstError = error{
     InvalidG1Point,
     InvalidG2Point,
     InvalidInput,
+    NonCanonicalFieldElement,
 };

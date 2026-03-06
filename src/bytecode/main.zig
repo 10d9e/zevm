@@ -512,22 +512,33 @@ pub const Bytecode = union(enum) {
     }
 
     /// Returns jump table if bytecode is analyzed.
-    pub fn legacyJumpTable(self: Self) ?*JumpTable {
-        return switch (self) {
-            .legacy_analyzed => |analyzed| analyzed.jumpTable(),
+    pub fn legacyJumpTable(self: *const Self) ?*const JumpTable {
+        return switch (self.*) {
+            .legacy_analyzed => &self.legacy_analyzed.jump_table,
             else => null,
         };
     }
 
     /// Calculates hash of the bytecode.
     pub fn hashSlow(self: Self) primitives.Hash {
-        if (self.isEmpty()) {
-            return primitives.KECCAK_EMPTY;
-        } else {
-            const bytes = self.originalBytes();
-            var hash: primitives.Hash = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(bytes, &hash, .{});
-            return hash;
+        switch (self) {
+            .eip7702 => |eip7702| {
+                // Hash the 23-byte delegation pointer directly from the switch-arm copy.
+                // Avoids the dangling-pointer that arises when routing through raw() which
+                // takes Self by value and returns &self.raw_bytes into its own stack frame.
+                var hash: primitives.Hash = undefined;
+                std.crypto.hash.sha3.Keccak256.hash(&eip7702.raw_bytes, &hash, .{});
+                return hash;
+            },
+            .legacy_analyzed => {
+                if (self.isEmpty()) {
+                    return primitives.KECCAK_EMPTY;
+                }
+                const bytes = self.originalBytes();
+                var hash: primitives.Hash = undefined;
+                std.crypto.hash.sha3.Keccak256.hash(bytes, &hash, .{});
+                return hash;
+            },
         }
     }
 
@@ -579,6 +590,27 @@ pub const Bytecode = union(enum) {
     pub fn isEmpty(self: Self) bool {
         return self.len() == 0;
     }
+
+    /// Returns true if the given position is a valid JUMPDEST.
+    pub fn isValidJump(self: Self, dest: usize) bool {
+        return switch (self) {
+            .legacy_analyzed => |analyzed| analyzed.jump_table.isValid(dest),
+            .eip7702 => false,
+        };
+    }
+
+    /// Creates a new legacy Bytecode from raw bytes (alias for newLegacy).
+    pub fn newRaw(raw: []const u8) Self {
+        return Self.newLegacy(raw);
+    }
+
+    /// Free any heap memory owned by this Bytecode (the jump table bit vector for legacy analyzed).
+    pub fn deinit(self: *Self) void {
+        switch (self.*) {
+            .legacy_analyzed => |*bc| bc.deinit(),
+            .eip7702 => {}, // 23-byte inline array, no heap allocation
+        }
+    }
 };
 
 /// Legacy analyzed bytecode with jump table
@@ -592,13 +624,9 @@ pub const LegacyAnalyzedBytecode = struct {
     pub fn default() Self {
         return Self{
             .bytecode = &[_]u8{STOP},
-            .original_len = 1,
+            .original_len = 0,
             .jump_table = JumpTable.fromBytes(&[_]u8{0}, 1),
         };
-    }
-
-    pub fn jumpTable(self: Self) *JumpTable {
-        return &self.jump_table;
     }
 
     pub fn getBytecode(self: Self) []const u8 {
@@ -607,6 +635,17 @@ pub const LegacyAnalyzedBytecode = struct {
 
     pub fn originalBytes(self: Self) []const u8 {
         return self.bytecode[0..self.original_len];
+    }
+
+    pub fn deinit(self: *LegacyAnalyzedBytecode) void {
+        // The bit vector is heap-allocated via c_allocator only when original_len > 0
+        // (non-empty bytecode) AND the allocation succeeded (data.len > 0).
+        // Cases that must NOT be freed:
+        //   - default() / empty input: original_len == 0, data is a static &[_]u8{0}
+        //   - alloc-failure fallback: jump_table.data.len == 0, data is static &[_]u8{}
+        if (self.original_len > 0 and self.jump_table.data.len > 0) {
+            std.heap.c_allocator.free(self.jump_table.data);
+        }
     }
 };
 
@@ -694,10 +733,7 @@ pub const JumpTable = struct {
 };
 
 /// Analyzes the bytecode for use in LegacyAnalyzedBytecode.
-/// The bytecode may be padded with up to 33 zero bytes to ensure it ends with STOP
-/// and there are no incomplete immediates.
-/// Note: This is a simplified version that doesn't handle padding.
-/// For full padding support, the caller should manage memory allocation.
+/// The jump table bit vector is heap-allocated to avoid dangling stack pointers.
 fn analyzeLegacy(bytecode: []const u8) LegacyAnalyzedBytecode {
     if (bytecode.len == 0) {
         return LegacyAnalyzedBytecode{
@@ -707,13 +743,17 @@ fn analyzeLegacy(bytecode: []const u8) LegacyAnalyzedBytecode {
         };
     }
 
-    // Allocate bit vector (one bit per bytecode position)
+    // Allocate bit vector on heap (one bit per bytecode position) to avoid dangling pointer
     const bit_vec_len = (bytecode.len + 7) / 8;
-    var bit_vec_buf: [256]u8 = undefined; // Stack buffer for small bytecode
-    var bit_vec: []u8 = if (bit_vec_len <= bit_vec_buf.len) bit_vec_buf[0..bit_vec_len] else &[_]u8{};
-    if (bit_vec.len > 0) {
-        @memset(bit_vec, 0);
-    }
+    const bit_vec = std.heap.c_allocator.alloc(u8, bit_vec_len) catch {
+        // Allocation failed: return bytecode with empty jump table
+        return LegacyAnalyzedBytecode{
+            .bytecode = bytecode,
+            .original_len = bytecode.len,
+            .jump_table = JumpTable.init(),
+        };
+    };
+    @memset(bit_vec, 0);
 
     var i: usize = 0;
 
@@ -722,14 +762,9 @@ fn analyzeLegacy(bytecode: []const u8) LegacyAnalyzedBytecode {
         const opcode = bytecode[i];
 
         if (opcode == JUMPDEST) {
-            // Set bit at position i
-            if (i < bytecode.len) {
-                const byte_idx = i >> 3;
-                const bit_idx = i & 7;
-                if (byte_idx < bit_vec.len) {
-                    bit_vec[byte_idx] |= @as(u8, 1) << @intCast(bit_idx);
-                }
-            }
+            const byte_idx = i >> 3;
+            const bit_idx = i & 7;
+            bit_vec[byte_idx] |= @as(u8, 1) << @intCast(bit_idx);
             i += 1;
         } else {
             // Check if it's a PUSH instruction
@@ -744,14 +779,10 @@ fn analyzeLegacy(bytecode: []const u8) LegacyAnalyzedBytecode {
         }
     }
 
-    // For now, use the original bytecode without padding
-    // Full padding support would require proper memory management
-    const jump_table = if (bit_vec.len > 0) JumpTable.fromBytes(bit_vec, bytecode.len) else JumpTable.init();
-
     return LegacyAnalyzedBytecode{
         .bytecode = bytecode,
         .original_len = bytecode.len,
-        .jump_table = jump_table,
+        .jump_table = JumpTable.fromBytes(bit_vec, bytecode.len),
     };
 }
 

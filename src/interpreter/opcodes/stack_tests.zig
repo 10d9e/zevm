@@ -1,234 +1,209 @@
 const std = @import("std");
 const primitives = @import("primitives");
-const Stack = @import("../stack.zig").Stack;
-const Gas = @import("../gas.zig").Gas;
-const InstructionResult = @import("../instruction_result.zig").InstructionResult;
+const bytecode_mod = @import("bytecode");
+const Interpreter = @import("../interpreter.zig").Interpreter;
+const ExtBytecode = @import("../interpreter.zig").ExtBytecode;
+const InstructionContext = @import("../instruction_context.zig").InstructionContext;
 const stack_ops = @import("stack.zig");
 
 const opPop = stack_ops.opPop;
 const opPush0 = stack_ops.opPush0;
-const opPushN = stack_ops.opPushN;
-const opDupN = stack_ops.opDupN;
-const opSwapN = stack_ops.opSwapN;
+const makePushFn = stack_ops.makePushFn;
+const makeDupFn = stack_ops.makeDupFn;
+const makeSwapFn = stack_ops.makeSwapFn;
 
 const expectEqual = std.testing.expectEqual;
+const expect = std.testing.expect;
 const U = primitives.U256;
 
 // --- POP tests ---
 
 test "POP: remove top item" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 42));
-    stack.pushUnsafe(@as(U, 100));
-    const result = opPop(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(usize, 1), stack.len());
-    try expectEqual(@as(U, 42), stack.peekUnsafe(0));
-    try expectEqual(@as(u64, 98), gas.getRemaining());
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 42));
+    interp.stack.pushUnsafe(@as(U, 100));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opPop(&ctx);
+    try expect(interp.bytecode.continue_execution);
+    try expectEqual(@as(usize, 1), interp.stack.len());
+    try expectEqual(@as(U, 42), interp.stack.peekUnsafe(0));
 }
 
 test "POP: stack underflow" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    const result = opPop(&stack, &gas);
-    try expectEqual(InstructionResult.stack_underflow, result);
-}
-
-test "POP: out of gas" {
-    var stack = Stack.new();
-    var gas = Gas.new(1); // Not enough gas
-    stack.pushUnsafe(@as(U, 1));
-    const result = opPop(&stack, &gas);
-    try expectEqual(InstructionResult.out_of_gas, result);
+    var interp = Interpreter.defaultExt();
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opPop(&ctx);
+    try expectEqual(.stack_underflow, interp.result);
 }
 
 // --- PUSH0 tests ---
 
-test "PUSH0: push zero onto stack" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    const result = opPush0(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(usize, 1), stack.len());
-    try expectEqual(@as(U, 0), stack.popUnsafe());
-    try expectEqual(@as(u64, 98), gas.getRemaining());
+test "PUSH0: pushes zero" {
+    var interp = Interpreter.defaultExt();
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opPush0(&ctx);
+    try expect(interp.bytecode.continue_execution);
+    try expectEqual(@as(usize, 1), interp.stack.len());
+    try expectEqual(@as(U, 0), interp.stack.popUnsafe());
 }
 
 test "PUSH0: stack overflow" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    // Fill stack to max capacity (1024)
+    var interp = Interpreter.defaultExt();
     var i: usize = 0;
-    while (i < 1024) : (i += 1) {
-        stack.pushUnsafe(@as(U, i));
-    }
-    const result = opPush0(&stack, &gas);
-    try expectEqual(InstructionResult.stack_overflow, result);
+    while (i < 1024) : (i += 1) interp.stack.pushUnsafe(@as(U, i));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opPush0(&ctx);
+    try expectEqual(.stack_overflow, interp.result);
 }
 
-// --- PUSH1-PUSH32 tests ---
+// --- makePushFn tests (PUSH1..PUSH4 spot checks) ---
 
-test "PUSH1: push 1 byte" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    var pc: usize = 0;
-    const bytecode = [_]u8{ 0x60, 0x42 }; // PUSH1 0x42
-    const result = opPushN(&stack, &gas, &bytecode, &pc, 1);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0x42), stack.popUnsafe());
-    try expectEqual(@as(usize, 1), pc); // PC advanced by 1
+test "PUSH1: read 1 byte immediate" {
+    const opPush1 = makePushFn(1);
+    var interp = Interpreter.defaultExt();
+    defer interp.deinit();
+    // Bytecode: PUSH1 0x42 (but step() already consumed the PUSH1 byte; pc points to 0x42)
+    const code = [_]u8{ 0x60, 0x42 }; // PUSH1 0x42
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode.pc = 1; // simulates step() having advanced past opcode byte
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opPush1(&ctx);
+    try expect(interp.bytecode.continue_execution);
+    try expectEqual(@as(U, 0x42), interp.stack.popUnsafe());
+    try expectEqual(@as(usize, 2), interp.bytecode.pc); // advanced by 1
 }
 
-test "PUSH2: push 2 bytes" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    var pc: usize = 0;
-    const bytecode = [_]u8{ 0x61, 0x12, 0x34 }; // PUSH2 0x1234
-    const result = opPushN(&stack, &gas, &bytecode, &pc, 2);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0x1234), stack.popUnsafe());
-    try expectEqual(@as(usize, 2), pc);
+test "PUSH2: read 2 byte immediate" {
+    const opPush2 = makePushFn(2);
+    var interp = Interpreter.defaultExt();
+    defer interp.deinit();
+    const code = [_]u8{ 0x61, 0xAB, 0xCD }; // PUSH2 0xABCD
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode.pc = 1;
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opPush2(&ctx);
+    try expectEqual(@as(U, 0xABCD), interp.stack.popUnsafe());
+    try expectEqual(@as(usize, 3), interp.bytecode.pc);
 }
 
-test "PUSH4: push 4 bytes" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    var pc: usize = 0;
-    const bytecode = [_]u8{ 0x63, 0xDE, 0xAD, 0xBE, 0xEF }; // PUSH4 0xDEADBEEF
-    const result = opPushN(&stack, &gas, &bytecode, &pc, 4);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0xDEADBEEF), stack.popUnsafe());
-    try expectEqual(@as(usize, 4), pc);
+test "PUSH4: 4-byte immediate big-endian" {
+    const opPush4 = makePushFn(4);
+    var interp = Interpreter.defaultExt();
+    defer interp.deinit();
+    const code = [_]u8{ 0x63, 0xDE, 0xAD, 0xBE, 0xEF };
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode.pc = 1;
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opPush4(&ctx);
+    try expectEqual(@as(U, 0xDEADBEEF), interp.stack.popUnsafe());
 }
 
-test "PUSH32: push 32 bytes" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    var pc: usize = 0;
-    var bytecode: [33]u8 = undefined;
-    bytecode[0] = 0x7F; // PUSH32 opcode
-    var i: usize = 1;
-    while (i <= 32) : (i += 1) {
-        bytecode[i] = @as(u8, @intCast(i));
-    }
-    const result = opPushN(&stack, &gas, &bytecode, &pc, 32);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(usize, 32), pc);
+test "PUSH1: near end of code (zero padding)" {
+    const opPush1 = makePushFn(1);
+    var interp = Interpreter.defaultExt();
+    defer interp.deinit();
+    // Only the PUSH1 opcode, no data byte
+    const code = [_]u8{0x60};
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode.pc = 1; // past end
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opPush1(&ctx);
+    // Should push 0 (zero-padded)
+    try expectEqual(@as(U, 0), interp.stack.popUnsafe());
 }
 
-test "PUSH: not enough bytecode" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    var pc: usize = 0;
-    const bytecode = [_]u8{ 0x61, 0x12 }; // PUSH2 but only 1 byte available
-    const result = opPushN(&stack, &gas, &bytecode, &pc, 2);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0x12), stack.popUnsafe()); // Should push partial data
+test "PUSH1: stack overflow" {
+    const opPush1 = makePushFn(1);
+    var interp = Interpreter.defaultExt();
+    defer interp.deinit();
+    const code = [_]u8{ 0x60, 0x01 };
+    interp.bytecode = ExtBytecode.newOwned(bytecode_mod.Bytecode.newLegacy(&code));
+    interp.bytecode.pc = 1;
+    var i: usize = 0;
+    while (i < 1024) : (i += 1) interp.stack.pushUnsafe(@as(U, i));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opPush1(&ctx);
+    try expectEqual(.stack_overflow, interp.result);
 }
 
-// --- DUP tests ---
+// --- makeDupFn tests ---
 
 test "DUP1: duplicate top item" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 42));
-    const result = opDupN(&stack, &gas, 1);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(usize, 2), stack.len());
-    try expectEqual(@as(U, 42), stack.peekUnsafe(0));
-    try expectEqual(@as(U, 42), stack.peekUnsafe(1));
+    const opDup1 = makeDupFn(1);
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 100));
+    interp.stack.pushUnsafe(@as(U, 200));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opDup1(&ctx);
+    try expect(interp.bytecode.continue_execution);
+    try expectEqual(@as(usize, 3), interp.stack.len());
+    try expectEqual(@as(U, 200), interp.stack.peekUnsafe(0));
+    try expectEqual(@as(U, 200), interp.stack.peekUnsafe(1));
+    try expectEqual(@as(U, 100), interp.stack.peekUnsafe(2));
 }
 
 test "DUP2: duplicate second item" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 10));
-    stack.pushUnsafe(@as(U, 20));
-    const result = opDupN(&stack, &gas, 2);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(usize, 3), stack.len());
-    try expectEqual(@as(U, 10), stack.peekUnsafe(0)); // Duplicated
-    try expectEqual(@as(U, 20), stack.peekUnsafe(1));
-    try expectEqual(@as(U, 10), stack.peekUnsafe(2));
+    const opDup2 = makeDupFn(2);
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 10));
+    interp.stack.pushUnsafe(@as(U, 20));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opDup2(&ctx);
+    try expectEqual(@as(U, 10), interp.stack.peekUnsafe(0));
+    try expectEqual(@as(U, 20), interp.stack.peekUnsafe(1));
+    try expectEqual(@as(U, 10), interp.stack.peekUnsafe(2));
 }
 
-test "DUP16: duplicate 16th item" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    var i: u8 = 0;
-    while (i < 16) : (i += 1) {
-        stack.pushUnsafe(@as(U, i));
-    }
-    const result = opDupN(&stack, &gas, 16);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(usize, 17), stack.len());
-    try expectEqual(@as(U, 0), stack.peekUnsafe(0)); // Duplicated 16th item
+test "DUP1: stack underflow" {
+    const opDup1 = makeDupFn(1);
+    var interp = Interpreter.defaultExt();
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opDup1(&ctx);
+    try expectEqual(.stack_underflow, interp.result);
 }
 
-test "DUP: stack underflow" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 1));
-    const result = opDupN(&stack, &gas, 2); // Need 2 items, only have 1
-    try expectEqual(InstructionResult.stack_underflow, result);
-}
-
-test "DUP: stack overflow" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    // Fill stack to max capacity
+test "DUP1: stack overflow" {
+    const opDup1 = makeDupFn(1);
+    var interp = Interpreter.defaultExt();
     var i: usize = 0;
-    while (i < 1024) : (i += 1) {
-        stack.pushUnsafe(@as(U, i));
-    }
-    const result = opDupN(&stack, &gas, 1);
-    try expectEqual(InstructionResult.stack_overflow, result);
+    while (i < 1024) : (i += 1) interp.stack.pushUnsafe(@as(U, i));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opDup1(&ctx);
+    try expectEqual(.stack_overflow, interp.result);
 }
 
-// --- SWAP tests ---
+// --- makeSwapFn tests ---
 
 test "SWAP1: swap top two items" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 10));
-    stack.pushUnsafe(@as(U, 20));
-    const result = opSwapN(&stack, &gas, 1);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 10), stack.peekUnsafe(0));
-    try expectEqual(@as(U, 20), stack.peekUnsafe(1));
+    const opSwap1 = makeSwapFn(1);
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 10));
+    interp.stack.pushUnsafe(@as(U, 20));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opSwap1(&ctx);
+    try expect(interp.bytecode.continue_execution);
+    try expectEqual(@as(U, 10), interp.stack.peekUnsafe(0));
+    try expectEqual(@as(U, 20), interp.stack.peekUnsafe(1));
 }
 
-test "SWAP2: swap top with 3rd item" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 10));
-    stack.pushUnsafe(@as(U, 20));
-    stack.pushUnsafe(@as(U, 30));
-    const result = opSwapN(&stack, &gas, 2);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 10), stack.peekUnsafe(0)); // Was 3rd
-    try expectEqual(@as(U, 20), stack.peekUnsafe(1)); // Unchanged
-    try expectEqual(@as(U, 30), stack.peekUnsafe(2)); // Was top
+test "SWAP2: swap top with third item" {
+    const opSwap2 = makeSwapFn(2);
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 10));
+    interp.stack.pushUnsafe(@as(U, 20));
+    interp.stack.pushUnsafe(@as(U, 30));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opSwap2(&ctx);
+    try expectEqual(@as(U, 10), interp.stack.peekUnsafe(0)); // was at depth 2, now top
+    try expectEqual(@as(U, 20), interp.stack.peekUnsafe(1));
+    try expectEqual(@as(U, 30), interp.stack.peekUnsafe(2)); // was top, now at depth 2
 }
 
-test "SWAP16: swap top with 17th item" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    var i: u8 = 0;
-    while (i < 17) : (i += 1) {
-        stack.pushUnsafe(@as(U, i));
-    }
-    const result = opSwapN(&stack, &gas, 16);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.peekUnsafe(0)); // Was 17th
-    try expectEqual(@as(U, 16), stack.peekUnsafe(16)); // Was top
-}
-
-test "SWAP: stack underflow" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 1));
-    const result = opSwapN(&stack, &gas, 1); // Need 2 items, only have 1
-    try expectEqual(InstructionResult.stack_underflow, result);
+test "SWAP1: stack underflow (need 2, have 1)" {
+    const opSwap1 = makeSwapFn(1);
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 1));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opSwap1(&ctx);
+    try expectEqual(.stack_underflow, interp.result);
 }

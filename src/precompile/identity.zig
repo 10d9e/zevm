@@ -24,5 +24,10 @@ pub fn identityRun(input: []const u8, gas_limit: u64) main.PrecompileResult {
         return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
     }
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, input) };
+    // Must return an owned copy: the caller's RETURNDATACOPY would alias their own
+    // execution memory if we returned `input` directly (input is a slice of the
+    // caller's memory buffer).
+    const output = std.heap.c_allocator.dupe(u8, input) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, output) };
 }

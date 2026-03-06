@@ -15,24 +15,29 @@ pub const G_SSET = 20000; // Storage set (from zero to non-zero)
 pub const G_SRESET = 5000; // Storage reset (non-zero to non-zero or zero)
 
 // Call costs
-pub const G_CALL = 700;
+pub const G_CALL_FRONTIER = 40; // Frontier/Homestead CALL base gas
+pub const G_CALL = 700; // Tangerine+ (EIP-150) through pre-Berlin CALL base gas
 pub const COLD_ACCOUNT_ACCESS = 2600;
 pub const WARM_ACCOUNT_ACCESS = 100;
 pub const COLD_SLOAD = 2100;
 pub const WARM_SLOAD = 100;
+pub const CALL_STIPEND = 2300; // Gas gifted to callee on value-bearing CALL (not deducted from caller)
 
 // Storage costs - Pre-Berlin
-pub const G_SLOAD_TANGERINE = 200;
-pub const G_SLOAD_ISTANBUL = 800;
+pub const G_SLOAD_FRONTIER = 50; // Frontier/Homestead SLOAD gas
+pub const G_SLOAD_TANGERINE = 200; // Tangerine (EIP-150) through pre-Istanbul SLOAD gas
+pub const G_SLOAD_ISTANBUL = 800; // Istanbul (EIP-1884) SLOAD gas
 
 // Storage costs - Berlin and later (EIP-2929)
 pub const G_SLOAD_BERLIN_COLD = 2100;
 pub const G_SLOAD_BERLIN_WARM = 100;
 
-// SSTORE costs (EIP-2200, EIP-2929)
+// SSTORE costs (EIP-2200, EIP-2929, EIP-3529)
 pub const SSTORE_SET = 20000;
 pub const SSTORE_RESET = 5000;
-pub const SSTORE_CLEARS_SCHEDULE = 15000; // Refund for clearing storage
+pub const SSTORE_CLEARS_SCHEDULE = 15000; // Istanbul refund for clearing storage
+// EIP-3529 (London): R_sclear reduced from 15000 → 4800 = SSTORE_RESET_GAS + ACCESS_LIST_STORAGE_KEY_COST (2900+1900)
+pub const SSTORE_CLEARS_SCHEDULE_LONDON = 4800;
 
 // Create costs
 pub const G_CREATE = 32000;
@@ -63,7 +68,8 @@ pub const G_KECCAK256WORD = 6;
 
 // EXP costs
 pub const G_EXP = 10;
-pub const G_EXPBYTE = 50;
+pub const G_EXPBYTE = 50; // Post-Spurious Dragon (EIP-160)
+pub const G_EXPBYTE_FRONTIER = 10; // Pre-Spurious Dragon
 
 // SELFDESTRUCT
 pub const G_SELFDESTRUCT = 5000;
@@ -94,8 +100,8 @@ pub fn toWordSize(size: usize) usize {
 // Get SLOAD gas cost based on spec and cold/warm access
 pub fn getSloadCost(spec: primitives.SpecId, is_cold: bool) u64 {
     return switch (spec) {
-        .frontier, .homestead, .tangerine, .spurious => G_SLOAD_TANGERINE,
-        .byzantium, .constantinople, .petersburg => G_SLOAD_ISTANBUL,
+        .frontier, .homestead => G_SLOAD_FRONTIER,
+        .tangerine, .spurious, .byzantium, .constantinople, .petersburg => G_SLOAD_TANGERINE,
         .istanbul, .muir_glacier => G_SLOAD_ISTANBUL,
         .berlin, .london, .arrow_glacier, .gray_glacier => {
             return if (is_cold) G_SLOAD_BERLIN_COLD else G_SLOAD_BERLIN_WARM;
@@ -112,6 +118,15 @@ pub const SstoreGas = struct {
     gas_refund: i64,
 };
 
+/// Returns the fork-appropriate SSTORE clearing refund (R_sclear):
+///   - London+ (EIP-3529): 4800 = SSTORE_RESET_GAS(2900) + ACCESS_LIST_STORAGE_KEY_COST(1900)
+///   - Berlin and earlier (including Istanbul): 15000
+///   Note: EIP-2929 (Berlin) does NOT reduce R_sclear. Only EIP-3529 (London) reduces it to 4800.
+fn sstoreClearsRefund(spec: primitives.SpecId) i64 {
+    if (primitives.isEnabledIn(spec, .london)) return SSTORE_CLEARS_SCHEDULE_LONDON;
+    return SSTORE_CLEARS_SCHEDULE;
+}
+
 // Calculate SSTORE gas cost based on EIP-2200 and EIP-2929
 pub fn getSstoreCost(
     spec: primitives.SpecId,
@@ -120,30 +135,36 @@ pub fn getSstoreCost(
     new: primitives.U256,
     is_cold: bool,
 ) SstoreGas {
-    // Pre-Istanbul: simple gas model
+    // Pre-Istanbul: simple gas model based only on current and new values.
+    // EIP-2200 "original" tracking did not exist before Istanbul.
+    // Every SSTORE is evaluated independently:
+    //   current=0 → non-zero: G_SSET (20000)
+    //   otherwise:             G_SRESET (5000), with R_sclear (15000) refund if clearing
     if (!primitives.isEnabledIn(spec, .istanbul)) {
-        if (current == new) {
-            return .{ .gas_cost = WARM_SLOAD, .gas_refund = 0 };
-        }
-
-        if (original == current and original == 0) {
+        if (current == 0 and new != 0) {
             return .{ .gas_cost = SSTORE_SET, .gas_refund = 0 };
+        } else {
+            const refund: i64 = if (current != 0 and new == 0) SSTORE_CLEARS_SCHEDULE else 0;
+            return .{ .gas_cost = SSTORE_RESET, .gas_refund = refund };
         }
-
-        if (original == current) {
-            return .{ .gas_cost = SSTORE_RESET, .gas_refund = 0 };
-        }
-
-        // Modifying already modified slot
-        return .{ .gas_cost = WARM_SLOAD, .gas_refund = 0 };
     }
 
     // EIP-2200 (Istanbul) and EIP-2929 (Berlin) gas model
     const cold_cost: u64 = if (primitives.isEnabledIn(spec, .berlin) and is_cold) COLD_SLOAD else 0;
 
+    // EIP-2929: Berlin+ reduces the base SSTORE_RESET by COLD_SLOAD to avoid
+    // double-counting when cold_cost is separately added. Pre-Berlin uses 5000.
+    const sstore_reset_cost: u64 = if (primitives.isEnabledIn(spec, .berlin)) SSTORE_RESET - COLD_SLOAD else SSTORE_RESET;
+
+    // Fork-appropriate R_sclear: 4800 (London+), 15000 (Berlin and earlier)
+    const clears_refund = sstoreClearsRefund(spec);
+
     if (current == new) {
-        // No change
-        return .{ .gas_cost = WARM_SLOAD + cold_cost, .gas_refund = 0 };
+        // EIP-2200 no-op: costs 1 SLOAD worth of gas.
+        // Istanbul (pre-Berlin): G_sload = G_SLOAD_ISTANBUL = 800 (set by EIP-1884).
+        // Berlin+: WARM_STORAGE_READ_COST = 100, plus COLD_SLOAD if the slot is cold.
+        const base_no_change: u64 = if (primitives.isEnabledIn(spec, .berlin)) WARM_SLOAD else G_SLOAD_ISTANBUL;
+        return .{ .gas_cost = base_no_change + cold_cost, .gas_refund = 0 };
     }
 
     if (original == current) {
@@ -154,15 +175,11 @@ pub fn getSstoreCost(
         } else {
             // Modifying non-zero value
             if (new == 0) {
-                // Clearing storage - provide refund
-                const refund = if (primitives.isEnabledIn(spec, .london))
-                    @as(i64, SSTORE_CLEARS_SCHEDULE) - @as(i64, COLD_SLOAD)
-                else
-                    @as(i64, SSTORE_CLEARS_SCHEDULE);
-                return .{ .gas_cost = SSTORE_RESET + cold_cost, .gas_refund = refund };
+                // Clearing storage - provide refund (R_sclear)
+                return .{ .gas_cost = sstore_reset_cost + cold_cost, .gas_refund = clears_refund };
             } else {
                 // Non-zero to non-zero
-                return .{ .gas_cost = SSTORE_RESET + cold_cost, .gas_refund = 0 };
+                return .{ .gas_cost = sstore_reset_cost + cold_cost, .gas_refund = 0 };
             }
         }
     }
@@ -172,24 +189,30 @@ pub fn getSstoreCost(
 
     if (original != 0) {
         if (current == 0) {
-            // Previously cleared, now setting
-            refund -= SSTORE_CLEARS_SCHEDULE;
+            // Previously cleared, now setting — undo previous R_sclear refund
+            refund -= clears_refund;
         } else if (new == 0) {
-            // Now clearing
-            refund += SSTORE_CLEARS_SCHEDULE;
+            // Now clearing — earn R_sclear refund
+            refund += clears_refund;
         }
     }
+
+    // Dirty base cost: warm-storage read cost for the current fork.
+    // Istanbul (EIP-2200): G_SLOAD_ISTANBUL = 800.
+    // Berlin+ (EIP-2929): WARM_STORAGE_READ_COST = 100.
+    const dirty_base: u64 = if (primitives.isEnabledIn(spec, .berlin)) WARM_SLOAD else G_SLOAD_ISTANBUL;
 
     if (original == new) {
-        // Restoring original value
+        // Restoring original value: refund net cost of the initial modification
+        // (making the effective cost of this SSTORE = dirty_base, i.e. one SLOAD).
         if (original == 0) {
-            refund += SSTORE_SET - WARM_SLOAD;
+            refund += @as(i64, @intCast(SSTORE_SET)) - @as(i64, @intCast(dirty_base));
         } else {
-            refund += SSTORE_RESET - WARM_SLOAD;
+            refund += @as(i64, @intCast(sstore_reset_cost)) - @as(i64, @intCast(dirty_base));
         }
     }
 
-    return .{ .gas_cost = WARM_SLOAD + cold_cost, .gas_refund = refund };
+    return .{ .gas_cost = dirty_base + cold_cost, .gas_refund = refund };
 }
 
 // Calculate call gas cost
@@ -199,20 +222,29 @@ pub fn getCallGasCost(
     transfers_value: bool,
     account_exists: bool,
 ) u64 {
-    var cost: u64 = G_CALL;
+    // Base access cost:
+    //   Berlin+ (EIP-2929): cold/warm account access replaces the flat G_CALL
+    //   Tangerine+ (EIP-150) through pre-Berlin: flat 700
+    //   Frontier/Homestead (pre-Tangerine): flat 40
+    var cost: u64 = if (primitives.isEnabledIn(spec, .berlin))
+        (if (is_cold) COLD_ACCOUNT_ACCESS else WARM_ACCOUNT_ACCESS)
+    else if (primitives.isEnabledIn(spec, .tangerine))
+        G_CALL
+    else
+        G_CALL_FRONTIER;
 
-    // EIP-2929: Cold/warm account access
-    if (primitives.isEnabledIn(spec, .berlin)) {
-        cost += if (is_cold) COLD_ACCOUNT_ACCESS else WARM_ACCOUNT_ACCESS;
-    }
-
-    // Value transfer cost
+    // Value transfer cost (G_CALLVALUE = 9000, unchanged across all forks)
     if (transfers_value) {
         cost += 9000;
-        // Account creation cost
+        // New account creation cost (G_NEWACCOUNT = 25000)
         if (!account_exists) {
             cost += 25000;
         }
+    } else if (!primitives.isEnabledIn(spec, .spurious_dragon) and !account_exists) {
+        // Pre-EIP-161 (pre-Spurious Dragon): G_NEWACCOUNT is charged for any CALL to a
+        // non-existent (dead) account, even with zero value.
+        // EIP-161 changed this to only charge G_NEWACCOUNT when value > 0.
+        cost += 25000;
     }
 
     return cost;

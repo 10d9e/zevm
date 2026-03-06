@@ -33,7 +33,9 @@ pub fn sha256Run(input: []const u8, gas_limit: u64) main.PrecompileResult {
     var output: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(input, &output, .{});
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(cost, &output) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &output) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(cost, heap_out) };
 }
 
 /// Computes the RIPEMD-160 hash of the input data
@@ -55,5 +57,7 @@ pub fn ripemd160Run(input: []const u8, gas_limit: u64) main.PrecompileResult {
     var padded_output: [32]u8 = [_]u8{0} ** 32;
     std.mem.copyForwards(u8, padded_output[12..32], &output);
 
-    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, &padded_output) };
+    const heap_out = std.heap.c_allocator.dupe(u8, &padded_output) catch
+        return main.PrecompileResult{ .err = main.PrecompileError.OutOfGas };
+    return main.PrecompileResult{ .success = main.PrecompileOutput.new(gas_used, heap_out) };
 }

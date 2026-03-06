@@ -171,18 +171,18 @@ pub fn register(bench: anytype, filter: []const u8) !void {
 }
 
 pub fn gasCost(name: []const u8) ?f64 {
-    if (std.mem.startsWith(u8, name, "OP_ADDMOD")) return @floatFromInt(m.g_instruction_table[bytecode.ADDMOD].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_ADD")) return @floatFromInt(m.g_instruction_table[bytecode.ADD].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_SUB")) return @floatFromInt(m.g_instruction_table[bytecode.SUB].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_MULMOD")) return @floatFromInt(m.g_instruction_table[bytecode.MULMOD].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_MUL")) return @floatFromInt(m.g_instruction_table[bytecode.MUL].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_SDIV")) return @floatFromInt(m.g_instruction_table[bytecode.SDIV].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_DIV")) return @floatFromInt(m.g_instruction_table[bytecode.DIV].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_SMOD")) return @floatFromInt(m.g_instruction_table[bytecode.SMOD].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_MOD")) return @floatFromInt(m.g_instruction_table[bytecode.MOD].base_gas);
-    if (std.mem.startsWith(u8, name, "OP_SIGNEXTEND")) return @floatFromInt(m.g_instruction_table[bytecode.SIGNEXTEND].base_gas);
+    if (std.mem.startsWith(u8, name, "OP_ADDMOD")) return @floatFromInt(m.g_instruction_table[bytecode.ADDMOD].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_ADD")) return @floatFromInt(m.g_instruction_table[bytecode.ADD].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_SUB")) return @floatFromInt(m.g_instruction_table[bytecode.SUB].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_MULMOD")) return @floatFromInt(m.g_instruction_table[bytecode.MULMOD].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_MUL")) return @floatFromInt(m.g_instruction_table[bytecode.MUL].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_SDIV")) return @floatFromInt(m.g_instruction_table[bytecode.SDIV].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_DIV")) return @floatFromInt(m.g_instruction_table[bytecode.DIV].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_SMOD")) return @floatFromInt(m.g_instruction_table[bytecode.SMOD].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_MOD")) return @floatFromInt(m.g_instruction_table[bytecode.MOD].static_gas);
+    if (std.mem.startsWith(u8, name, "OP_SIGNEXTEND")) return @floatFromInt(m.g_instruction_table[bytecode.SIGNEXTEND].static_gas);
     if (std.mem.startsWith(u8, name, "OP_EXP")) {
-        const base_gas: f64 = @floatFromInt(m.g_instruction_table[bytecode.EXP].base_gas);
+        const base_gas: f64 = @floatFromInt(m.g_instruction_table[bytecode.EXP].static_gas);
         const exp_byte_gas: f64 = @floatFromInt(gas_costs.G_EXPBYTE);
         if (std.mem.indexOf(u8, name, "32B")) |_| return base_gas + exp_byte_gas * 32.0;
         return base_gas + exp_byte_gas;

@@ -1,8 +1,7 @@
 const std = @import("std");
 const primitives = @import("primitives");
-const Stack = @import("../stack.zig").Stack;
-const Gas = @import("../gas.zig").Gas;
-const InstructionResult = @import("../instruction_result.zig").InstructionResult;
+const Interpreter = @import("../interpreter.zig").Interpreter;
+const InstructionContext = @import("../instruction_context.zig").InstructionContext;
 const bitwise = @import("bitwise.zig");
 
 const opAnd = bitwise.opAnd;
@@ -15,318 +14,221 @@ const opShr = bitwise.opShr;
 const opSar = bitwise.opSar;
 
 const expectEqual = std.testing.expectEqual;
+const expect = std.testing.expect;
 const U = primitives.U256;
 const MAX = std.math.maxInt(U);
 
 // --- AND tests ---
 
-test "AND: basic operation" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0xFF));
-    stack.pushUnsafe(@as(U, 0x0F));
-    const result = opAnd(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0x0F), stack.popUnsafe());
-    try expectEqual(@as(u64, 97), gas.getRemaining());
+test "AND: basic" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 0xFF));
+    interp.stack.pushUnsafe(@as(U, 0x0F));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opAnd(&ctx);
+    try expect(interp.bytecode.continue_execution);
+    try expectEqual(@as(U, 0x0F), interp.stack.popUnsafe());
 }
 
 test "AND: identity with MAX" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 42));
-    stack.pushUnsafe(MAX);
-    const result = opAnd(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 42), stack.popUnsafe());
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 42));
+    interp.stack.pushUnsafe(MAX);
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opAnd(&ctx);
+    try expectEqual(@as(U, 42), interp.stack.popUnsafe());
 }
 
 test "AND: zero annihilator" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 12345));
-    stack.pushUnsafe(@as(U, 0));
-    const result = opAnd(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 12345));
+    interp.stack.pushUnsafe(@as(U, 0));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opAnd(&ctx);
+    try expectEqual(@as(U, 0), interp.stack.popUnsafe());
 }
 
-test "AND: commutative" {
-    var s1 = Stack.new();
-    var g1 = Gas.new(100);
-    s1.pushUnsafe(@as(U, 0xABCD));
-    s1.pushUnsafe(@as(U, 0x1234));
-    _ = opAnd(&s1, &g1);
-    const r1 = s1.popUnsafe();
-
-    var s2 = Stack.new();
-    var g2 = Gas.new(100);
-    s2.pushUnsafe(@as(U, 0x1234));
-    s2.pushUnsafe(@as(U, 0xABCD));
-    _ = opAnd(&s2, &g2);
-    const r2 = s2.popUnsafe();
-
-    try expectEqual(r1, r2);
+test "AND: stack underflow" {
+    var interp = Interpreter.defaultExt();
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opAnd(&ctx);
+    try expectEqual(.stack_underflow, interp.result);
 }
 
 // --- OR tests ---
 
-test "OR: basic operation" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0xF0));
-    stack.pushUnsafe(@as(U, 0x0F));
-    const result = opOr(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0xFF), stack.popUnsafe());
+test "OR: basic" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 0xF0));
+    interp.stack.pushUnsafe(@as(U, 0x0F));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opOr(&ctx);
+    try expectEqual(@as(U, 0xFF), interp.stack.popUnsafe());
 }
 
 test "OR: identity with zero" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 42));
-    stack.pushUnsafe(@as(U, 0));
-    const result = opOr(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 42), stack.popUnsafe());
-}
-
-test "OR: absorbing with MAX" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 12345));
-    stack.pushUnsafe(MAX);
-    const result = opOr(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(MAX, stack.popUnsafe());
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 42));
+    interp.stack.pushUnsafe(@as(U, 0));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opOr(&ctx);
+    try expectEqual(@as(U, 42), interp.stack.popUnsafe());
 }
 
 // --- XOR tests ---
 
-test "XOR: basic operation" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0xFF));
-    stack.pushUnsafe(@as(U, 0xF0));
-    const result = opXor(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0x0F), stack.popUnsafe());
+test "XOR: basic" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 0xFF));
+    interp.stack.pushUnsafe(@as(U, 0x0F));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opXor(&ctx);
+    try expectEqual(@as(U, 0xF0), interp.stack.popUnsafe());
 }
 
-test "XOR: self is zero" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 42));
-    stack.pushUnsafe(@as(U, 42));
-    const result = opXor(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
-}
-
-test "XOR: identity with zero" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 12345));
-    stack.pushUnsafe(@as(U, 0));
-    const result = opXor(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 12345), stack.popUnsafe());
+test "XOR: self = 0" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 12345));
+    interp.stack.pushUnsafe(@as(U, 12345));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opXor(&ctx);
+    try expectEqual(@as(U, 0), interp.stack.popUnsafe());
 }
 
 // --- NOT tests ---
 
-test "NOT: basic operation" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0));
-    const result = opNot(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(MAX, stack.popUnsafe());
+test "NOT: ~0 = MAX" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 0));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opNot(&ctx);
+    try expectEqual(MAX, interp.stack.popUnsafe());
+}
+
+test "NOT: ~MAX = 0" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(MAX);
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opNot(&ctx);
+    try expectEqual(@as(U, 0), interp.stack.popUnsafe());
 }
 
 test "NOT: double negation" {
-    const value: U = 12345;
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(value);
-    _ = opNot(&stack, &gas);
-    _ = opNot(&stack, &gas);
-    try expectEqual(value, stack.popUnsafe());
-}
-
-test "NOT: MAX becomes zero" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(MAX);
-    const result = opNot(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 0xDEADBEEF));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opNot(&ctx);
+    opNot(&ctx);
+    try expectEqual(@as(U, 0xDEADBEEF), interp.stack.popUnsafe());
 }
 
 // --- BYTE tests ---
 
-test "BYTE: extract first byte" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0xABCDEF));
-    stack.pushUnsafe(@as(U, 31)); // Byte 31 (rightmost)
-    const result = opByte(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0xEF), stack.popUnsafe());
+test "BYTE: extract byte 31 (least significant)" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 0xABCDEF));
+    interp.stack.pushUnsafe(@as(U, 31));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opByte(&ctx);
+    try expectEqual(@as(U, 0xEF), interp.stack.popUnsafe());
 }
 
-test "BYTE: extract middle byte" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0xABCDEF));
-    stack.pushUnsafe(@as(U, 30)); // Byte 30
-    const result = opByte(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0xCD), stack.popUnsafe());
+test "BYTE: index >= 32 returns 0" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 0xDEAD));
+    interp.stack.pushUnsafe(@as(U, 32));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opByte(&ctx);
+    try expectEqual(@as(U, 0), interp.stack.popUnsafe());
 }
 
-test "BYTE: out of range returns zero" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0xABCDEF));
-    stack.pushUnsafe(@as(U, 32)); // Out of range
-    const result = opByte(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+test "BYTE: index 0 extracts most significant byte" {
+    var interp = Interpreter.defaultExt();
+    // Value with 0xAB in position 0 (byte 31 from right = byte 0 from left)
+    const value: U = @as(U, 0xAB) << 248;
+    interp.stack.pushUnsafe(value);
+    interp.stack.pushUnsafe(@as(U, 0));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opByte(&ctx);
+    try expectEqual(@as(U, 0xAB), interp.stack.popUnsafe());
 }
 
 // --- SHL tests ---
 
-test "SHL: shift left by 1" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 5));
-    stack.pushUnsafe(@as(U, 1));
-    const result = opShl(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 10), stack.popUnsafe());
+test "SHL: 1 << 4 = 16" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 1));
+    interp.stack.pushUnsafe(@as(U, 4));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opShl(&ctx);
+    try expectEqual(@as(U, 16), interp.stack.popUnsafe());
 }
 
-test "SHL: shift left by 8" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0xFF));
-    stack.pushUnsafe(@as(U, 8));
-    const result = opShl(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0xFF00), stack.popUnsafe());
-}
-
-test "SHL: shift by 256 or more returns zero" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 12345));
-    stack.pushUnsafe(@as(U, 256));
-    const result = opShl(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
-}
-
-test "SHL: shift by zero is identity" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 42));
-    stack.pushUnsafe(@as(U, 0));
-    const result = opShl(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 42), stack.popUnsafe());
+test "SHL: shift >= 256 = 0" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 0xDEAD));
+    interp.stack.pushUnsafe(@as(U, 256));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opShl(&ctx);
+    try expectEqual(@as(U, 0), interp.stack.popUnsafe());
 }
 
 // --- SHR tests ---
 
-test "SHR: shift right by 1" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 10));
-    stack.pushUnsafe(@as(U, 1));
-    const result = opShr(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 5), stack.popUnsafe());
+test "SHR: 16 >> 4 = 1" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 16));
+    interp.stack.pushUnsafe(@as(U, 4));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opShr(&ctx);
+    try expectEqual(@as(U, 1), interp.stack.popUnsafe());
 }
 
-test "SHR: shift right by 8" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 0xFF00));
-    stack.pushUnsafe(@as(U, 8));
-    const result = opShr(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0xFF), stack.popUnsafe());
-}
-
-test "SHR: shift by 256 or more returns zero" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 12345));
-    stack.pushUnsafe(@as(U, 256));
-    const result = opShr(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
+test "SHR: shift >= 256 = 0" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(MAX);
+    interp.stack.pushUnsafe(@as(U, 256));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opShr(&ctx);
+    try expectEqual(@as(U, 0), interp.stack.popUnsafe());
 }
 
 // --- SAR tests ---
 
-test "SAR: positive number shift right" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 10));
-    stack.pushUnsafe(@as(U, 1));
-    const result = opSar(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 5), stack.popUnsafe());
+test "SAR: positive value right shift" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 0x100));
+    interp.stack.pushUnsafe(@as(U, 4));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opSar(&ctx);
+    try expectEqual(@as(U, 0x10), interp.stack.popUnsafe());
 }
 
-test "SAR: negative number shift right (sign extension)" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    const negative_one: U = MAX; // -1 in two's complement
-    stack.pushUnsafe(negative_one);
-    stack.pushUnsafe(@as(U, 4));
-    const result = opSar(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(negative_one, stack.popUnsafe()); // Should remain -1
+test "SAR: negative value preserves sign (arithmetic)" {
+    var interp = Interpreter.defaultExt();
+    // MAX = all 1s (negative in two's complement)
+    interp.stack.pushUnsafe(MAX);
+    interp.stack.pushUnsafe(@as(U, 4));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opSar(&ctx);
+    // Arithmetic shift right of -1 by 4 = -1 (all 1s)
+    try expectEqual(MAX, interp.stack.popUnsafe());
 }
 
-test "SAR: negative number large shift" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    const negative_value: U = (@as(U, 1) << 255) | 0xFFFF; // Negative number
-    stack.pushUnsafe(negative_value);
-    stack.pushUnsafe(@as(U, 256)); // Shift >= 256
-    const result = opSar(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(MAX, stack.popUnsafe()); // Should be all 1s
+test "SAR: shift >= 256 negative = MAX" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(MAX); // negative
+    interp.stack.pushUnsafe(@as(U, 256));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opSar(&ctx);
+    try expectEqual(MAX, interp.stack.popUnsafe());
 }
 
-test "SAR: positive number large shift" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 12345));
-    stack.pushUnsafe(@as(U, 300)); // Shift >= 256
-    const result = opSar(&stack, &gas);
-    try expectEqual(InstructionResult.continue_, result);
-    try expectEqual(@as(U, 0), stack.popUnsafe());
-}
-
-// --- Error conditions ---
-
-test "AND: stack underflow" {
-    var stack = Stack.new();
-    var gas = Gas.new(100);
-    stack.pushUnsafe(@as(U, 1));
-    const result = opAnd(&stack, &gas);
-    try expectEqual(InstructionResult.stack_underflow, result);
-}
-
-test "NOT: out of gas" {
-    var stack = Stack.new();
-    var gas = Gas.new(2); // Not enough gas
-    stack.pushUnsafe(@as(U, 1));
-    const result = opNot(&stack, &gas);
-    try expectEqual(InstructionResult.out_of_gas, result);
+test "SAR: shift >= 256 positive = 0" {
+    var interp = Interpreter.defaultExt();
+    interp.stack.pushUnsafe(@as(U, 1)); // positive
+    interp.stack.pushUnsafe(@as(U, 256));
+    var ctx = InstructionContext{ .interpreter = &interp };
+    opSar(&ctx);
+    try expectEqual(@as(U, 0), interp.stack.popUnsafe());
 }

@@ -5,6 +5,9 @@ const context = @import("context");
 pub const InputsImpl = @import("interpreter.zig").InputsImpl;
 pub const Interpreter = @import("interpreter.zig").Interpreter;
 pub const ExtBytecode = @import("interpreter.zig").ExtBytecode;
+pub const PendingCallData = @import("interpreter.zig").PendingCallData;
+pub const PendingCreateData = @import("interpreter.zig").PendingCreateData;
+pub const PendingSubCall = @import("interpreter.zig").PendingSubCall;
 
 // Re-export commonly used types
 pub const U256 = primitives.U256;
@@ -26,8 +29,19 @@ pub const InstructionResult = @import("instruction_result.zig").InstructionResul
 pub const InterpreterAction = @import("interpreter_action.zig").InterpreterAction;
 pub const CallScheme = @import("interpreter_action.zig").CallScheme;
 pub const InstructionContext = @import("instruction_context.zig").InstructionContext;
+pub const InstructionFn = @import("instruction_context.zig").InstructionFn;
+pub const InstructionEntry = @import("interpreter.zig").InstructionEntry;
+pub const InstructionTable = @import("interpreter.zig").InstructionTable;
+pub const host_module = @import("host.zig");
+pub const Host = host_module.Host;
+pub const CallInputs = host_module.CallInputs;
+pub const CallResult = host_module.CallResult;
+pub const CreateResult = host_module.CreateResult;
+pub const CreateInputs = @import("interpreter_action.zig").CreateInputs;
 pub const opcodes = @import("opcodes/main.zig");
 pub const instruction_table = @import("instruction_table.zig");
+pub const protocol_schedule = @import("protocol_schedule.zig");
+pub const ProtocolSchedule = protocol_schedule.ProtocolSchedule;
 pub const gas_costs = @import("gas_costs.zig");
 
 // Constants
@@ -38,6 +52,7 @@ test {
     _ = @import("stack.zig");
     _ = @import("opcodes/arithmetic.zig");
     _ = @import("opcodes/arithmetic_tests.zig");
+    _ = @import("opcodes/host_ops_tests.zig");
 }
 
 /// Main interpreter module for EVM bytecode execution
@@ -73,6 +88,7 @@ pub const testing = struct {
         const inputs = InputsImpl.new([_]u8{0} ** 20, [_]u8{0} ** 20, @as(primitives.U256, 0), &[_]u8{}, 1000000, CallScheme.call, false, 0);
 
         var interpreter = Interpreter.new(Memory.new(), ExtBytecode.new(bytecode.Bytecode.new()), inputs, false, primitives.SpecId.prague, 1000000);
+        defer interpreter.deinit();
 
         std.debug.assert(interpreter.gas.getLimit() == 1000000);
         std.debug.assert(interpreter.stack.len() == 0);

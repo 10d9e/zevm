@@ -442,7 +442,7 @@ pub const testing = struct {
             interpreter.InputsImpl.new(
                 primitives.ZERO_ADDRESS,
                 primitives.ZERO_ADDRESS,
-                primitives.U256.zero(),
+                @as(primitives.U256, 0),
                 &[_]u8{},
                 100000,
                 interpreter.CallScheme.call,
@@ -453,6 +453,7 @@ pub const testing = struct {
             primitives.SpecId.prague,
             100000,
         );
+        defer interp.deinit();
         var ctx = context.Context.new(database.InMemoryDB.init(std.heap.c_allocator), primitives.SpecId.prague);
 
         count_inspector.step(&interp, &ctx);

@@ -137,7 +137,12 @@ pub const AccountInfo = struct {
     /// - balance is zero
     /// - nonce is zero
     pub fn isEmpty(self: Self) bool {
-        const code_empty = self.isEmptyCodeHash() or self.code_hash[0] == 0;
+        // code_hash is "empty" if it is KECCAK_EMPTY or the all-zeros hash (uninitialized).
+        // Per revm: `is_empty_code_hash() || code_hash == B256::ZERO`.
+        // Note: checking only code_hash[0] == 0 is wrong — any contract whose code hashes
+        // to a value starting with 0x00 would be misclassified as empty.
+        const zero_hash = [_]u8{0} ** 32;
+        const code_empty = self.isEmptyCodeHash() or std.mem.eql(u8, &self.code_hash, &zero_hash);
         return code_empty and self.balance == 0 and self.nonce == 0;
     }
 
@@ -446,6 +451,12 @@ pub const Account = struct {
     /// Is account marked for self destruct.
     pub fn isSelfdestructed(self: Self) bool {
         return self.status.self_destructed;
+    }
+
+    /// Increment balance in-place and mark account as touched.
+    pub fn incrBalance(self: *Self, amount: primitives.U256) void {
+        self.markTouch();
+        self.info.balance = std.math.add(primitives.U256, self.info.balance, amount) catch self.info.balance;
     }
 
     /// Marks the account as touched

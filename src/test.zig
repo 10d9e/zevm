@@ -152,7 +152,7 @@ fn testDatabase() !void {
 
     try db.insertCode(code_hash, zevm.bytecode.Bytecode.new());
     const retrieved_code = try db.codeByHash(code_hash);
-    std.debug.assert(retrieved_code.len() == 1); // Default bytecode has 1 byte (STOP)
+    std.debug.assert(retrieved_code.len() == 0); // Default bytecode is empty (STOP is execution padding, original_len=0)
 
     std.log.info("✓ Database tests passed", .{});
 }
@@ -194,6 +194,7 @@ fn testInterpreter() !void {
 
     // Test stack operations
     var stack = zevm.interpreter.Stack.new();
+    defer stack.deinit();
     std.debug.assert(stack.len() == 0);
 
     try stack.push(@as(zevm.primitives.U256, 42));
@@ -233,6 +234,7 @@ fn testInterpreter() !void {
         zevm.primitives.SpecId.prague,
         100000,
     );
+    defer interpreter.deinit();
 
     std.debug.assert(interpreter.gas.getLimit() == 100000);
     std.debug.assert(interpreter.stack.len() == 0);
@@ -390,6 +392,7 @@ fn testIntegration() !void {
         zevm.primitives.SpecId.prague,
         ctx.tx.gas_limit,
     );
+    defer interpreter.deinit();
 
     // Test basic execution setup
     std.debug.assert(interpreter.gas.getLimit() == ctx.tx.gas_limit);

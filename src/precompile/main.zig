@@ -5,6 +5,7 @@ const primitives = @import("primitives");
 pub const identity = @import("identity.zig");
 pub const hash = @import("hash.zig");
 pub const secp256k1 = @import("secp256k1.zig");
+pub const secp256k1_wrapper = @import("secp256k1_wrapper.zig");
 pub const secp256r1 = @import("secp256r1.zig");
 pub const modexp = @import("modexp.zig");
 pub const bn254 = @import("bn254.zig");

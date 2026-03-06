@@ -34,12 +34,14 @@ pub const ValidationError = validation.ValidationError;
 pub const ExecutionResult = struct {
     /// Execution status
     status: ExecutionStatus,
-    /// Gas used
+    /// Gas used (final, after refund capping and floor enforcement)
     gas_used: u64,
+    /// Gas refunded (final capped refund, set in postExecution)
+    gas_refunded: u64,
     /// Logs emitted during execution
-    logs: std.ArrayList(Log),
-    /// Return data
-    return_data: []const u8,
+    logs: std.ArrayList(primitives.Log),
+    /// Return data (heap-allocated copy; freed in deinit)
+    return_data: []u8,
     /// Halt reason if execution halted
     halt_reason: ?HaltReason,
 
@@ -48,17 +50,26 @@ pub const ExecutionResult = struct {
         return ExecutionResult{
             .status = status,
             .gas_used = gas_used,
-            .logs = std.ArrayList(Log){ .items = &[_]Log{}, .capacity = 0 },
-            .return_data = &[_]u8{},
+            .gas_refunded = 0,
+            .logs = std.ArrayList(primitives.Log){},
+            .return_data = @constCast(&[_]u8{}),
             .halt_reason = null,
         };
     }
 
     /// Deinitialize execution result
     pub fn deinit(self: *ExecutionResult) void {
-        // ArrayList deinit requires allocator in Zig 0.15.1
-        // For now, just clear the items
-        self.logs.items = &[_]Log{};
+        // Free topic slices (heap-allocated via page_allocator by the journal's LOG opcodes).
+        for (self.logs.items) |log| {
+            if (log.topics.len > 0) {
+                std.heap.page_allocator.free(@constCast(log.topics));
+            }
+        }
+        self.logs.deinit(std.heap.page_allocator);
+        // Free heap-allocated return data copy (len==0 means static empty slice, skip).
+        if (self.return_data.len > 0) {
+            std.heap.c_allocator.free(self.return_data);
+        }
     }
 };
 
@@ -126,16 +137,19 @@ pub const FrameResult = struct {
     result: ExecutionResult,
     /// Gas remaining
     gas_remaining: u64,
+    /// Raw refund counter from interpreter (before capping)
+    gas_refunded: i64,
     /// Memory
     memory: interpreter.Memory,
     /// Stack
     stack: interpreter.Stack,
 
     /// Create new frame result
-    pub fn new(result: ExecutionResult, gas_remaining: u64) FrameResult {
+    pub fn new(result: ExecutionResult, gas_remaining: u64, gas_refunded: i64) FrameResult {
         return FrameResult{
             .result = result,
             .gas_remaining = gas_remaining,
+            .gas_refunded = gas_refunded,
             .memory = interpreter.Memory.new(),
             .stack = interpreter.Stack.new(),
         };
@@ -145,6 +159,7 @@ pub const FrameResult = struct {
     pub fn deinit(self: *FrameResult) void {
         self.result.deinit();
         self.memory.deinit();
+        self.stack.deinit();
     }
 };
 
@@ -273,54 +288,64 @@ pub const Frame = struct {
         };
     }
 
-    /// Execute frame
-    pub fn execute(self: *Frame, _: *context.Context) !FrameResult {
-        // Execute the interpreter
-        _ = self.interpreter.execute();
+    /// Free resources owned by this frame (interpreter stack + memory).
+    pub fn deinit(self: *Frame) void {
+        self.interpreter.deinit();
+    }
 
-        // Create frame result
-        var frame_result = FrameResult.new(
-            ExecutionResult.new(.Success, self.data.gas_limit - self.interpreter.gas.getLimit()),
-            self.interpreter.gas.getLimit(),
+    /// Execute frame with host access for full EVM semantics.
+    pub fn execute(self: *Frame, ctx: *context.Context) !FrameResult {
+        const schedule = interpreter.protocol_schedule.ProtocolSchedule.forSpec(
+            self.interpreter.runtime_flags.spec_id,
         );
 
-        // Copy logs
-        for (self.interpreter.logs.items) |log| {
-            try frame_result.result.logs.append(log);
-        }
+        // Build a Host that delegates to the context and wire up the precompile set.
+        var host = interpreter.Host{
+            .ctx = ctx,
+            .precompiles = &self.precompiles.precompiles,
+        };
 
-        return frame_result;
+        _ = self.interpreter.runWithHost(&schedule.instructions, &host);
+
+        const gas_used = self.interpreter.gas.getSpent();
+        const gas_refunded = self.interpreter.gas.refunded;
+        const status: ExecutionStatus = switch (self.interpreter.result) {
+            .stop, .@"return", .selfdestruct => .Success,
+            .revert => .Revert,
+            else => .Halt,
+        };
+
+        return FrameResult.new(
+            ExecutionResult.new(status, gas_used),
+            self.interpreter.gas.remaining,
+            gas_refunded,
+        );
     }
 };
 
 /// Instructions provider for EVM execution
 pub const Instructions = struct {
     /// Instruction table for the configured spec
-    table: interpreter.instruction_table.InstructionTable,
+    table: interpreter.protocol_schedule.InstructionTable,
     /// Hardfork specification
     spec: primitives.SpecId,
 
     /// Create instructions provider for a specific hardfork spec
     pub fn new(spec: primitives.SpecId) Instructions {
         return Instructions{
-            .table = interpreter.instruction_table.makeInstructionTable(spec),
+            .table = interpreter.protocol_schedule.makeInstructionTable(spec),
             .spec = spec,
         };
     }
 
     /// Get instruction entry for an opcode
-    pub fn getInstruction(self: *const Instructions, opcode: u8) interpreter.instruction_table.InstructionEntry {
+    pub fn getInstruction(self: *const Instructions, opcode: u8) interpreter.protocol_schedule.InstructionEntry {
         return self.table[opcode];
     }
 
-    /// Check if opcode is enabled for this spec
-    pub fn isEnabled(self: *const Instructions, opcode: u8) bool {
-        return self.table[opcode].enabled;
-    }
-
-    /// Get base gas cost for an opcode
-    pub fn getBaseGas(self: *const Instructions, opcode: u8) u64 {
-        return self.table[opcode].base_gas;
+    /// Get static gas cost for an opcode
+    pub fn getStaticGas(self: *const Instructions, opcode: u8) u64 {
+        return self.table[opcode].static_gas;
     }
 };
 
@@ -428,9 +453,6 @@ pub const testing = struct {
         // Test execution
         try execution.testing.testExecution();
 
-        // Test validation
-        try validation.testing.testValidation();
-
         std.log.info("Handler module test passed!", .{});
     }
 
@@ -497,3 +519,11 @@ pub const testing = struct {
         std.debug.assert(stack.len() == 0);
     }
 };
+
+// Pull in tests from submodules
+test {
+    _ = @import("validation.zig");
+    _ = @import("validation_tests.zig");
+    _ = @import("mainnet_builder.zig");
+    _ = @import("postexecution_tests.zig");
+}
